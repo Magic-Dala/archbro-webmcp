@@ -1,0 +1,36 @@
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+
+# Local runtime state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# QA / browser artifacts
+qa/playwright_artifacts/
+playwright-report/
+test-results/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

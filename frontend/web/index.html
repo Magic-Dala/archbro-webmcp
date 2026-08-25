@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Archbro</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/styles.css?v=20260826-2" />
+  <link rel="stylesheet" href="/static/progress.css?v=20260826-2" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">A</span><span>Archbro</span></div>
+      <div class="project-manager">
+        <small>CURRENT PROJECT</small>
+        <select id="projectSelect" aria-label="Select project" disabled><option>No project</option></select>
+        <div class="project-actions">
+          <button id="editProjectBtn" type="button" disabled>Edit</button>
+          <button id="deleteProjectBtn" type="button" class="danger" disabled>Delete</button>
+        </div>
+      </div>
+      <nav id="nav">
+        <button class="nav-item active" data-view="overview">Overview</button>
+        <button class="nav-item" data-view="tasks">Tasks</button>
+        <button class="nav-item" data-view="architecture">Living Graph</button>
+        <button class="nav-item" data-view="attention">Needs You <span id="attentionBadge" class="badge hidden">0</span></button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="avatar">JH</div>
+        <div><strong>Human</strong><small>Collaborative</small></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><h1 id="pageTitle">Overview</h1><p id="pageSubtitle">Keep project reality aligned with the accepted architecture.</p></div>
+        <div class="top-actions">
+          <span id="agentStatus" class="agent-status"><span class="pulse"></span>Agent ready</span>
+          <button class="btn secondary" id="newProjectBtn">New project</button>
+        </div>
+      </header>
+
+      <section id="emptyState" class="onboarding-state hidden">
+        <div class="onboarding-head">
+          <span class="eyebrow">STEP 1 · GOAL + ASK</span>
+          <h2>What are you trying to build?</h2>
+          <p>Write the Goal directly, talk to the Agent, or use both. Ask always merges with the current Goal instead of replacing it.</p>
+        </div>
+        <div class="onboarding-grid">
+          <article class="panel onboarding-chat">
+            <div class="panel-head"><div><h3>Ask the Agent</h3><p>Use Ask to add, refine, or correct the Goal. The existing Goal remains the baseline unless you explicitly change part of it.</p></div><span class="version-pill">No project yet</span></div>
+            <div id="onboardingConversation" class="onboarding-conversation">
+              <div class="onboarding-empty">Describe the product, problem, or outcome you want. You can also write the Goal directly on the right.</div>
+            </div>
+            <form id="onboardingForm" class="onboarding-ask">
+              <textarea id="onboardingAsk" rows="4" autocomplete="off" placeholder="Example: I want to build a simple issue tracker for a small engineering team. Users should be able to create, view, and update issues. I prefer React, FastAPI, and PostgreSQL."></textarea>
+              <div class="onboarding-ask-actions"><small>Goal + Ask → merged Goal draft</small><button class="btn soft" type="submit">Send</button></div>
+            </form>
+          </article>
+
+          <aside class="panel goal-draft-panel">
+            <div class="panel-head"><div><span class="eyebrow">LIVE GOAL DRAFT</span><h3 id="goalDraftStatus">Write a Goal or start with Ask</h3></div><span id="goalReadyBadge" class="status-pill">DRAFT</span></div>
+            <label class="goal-field">Project name<input id="goalProjectName" placeholder="Name this project" /></label>
+            <label class="goal-field">Goal / Project Brief<textarea id="goalDraftText" rows="16" placeholder="Write the Goal directly, or leave it blank and start with Ask. Future Ask messages merge into whatever is currently written here."></textarea></label>
+            <div id="missingInfoWrap" class="goal-missing hidden"><small class="eyebrow">STILL USEFUL TO KNOW</small><ul id="missingInfo"></ul></div>
+            <button id="useGoalBtn" class="btn primary goal-use" type="button" disabled>Use this goal & generate architecture</button>
+            <button id="onboardingBackBtn" class="btn secondary goal-back hidden" type="button">Back to current project</button>
+            <p class="muted">Goal and Ask are two inputs to the same draft. Ask merges with the current Goal instead of replacing it. Nothing is persisted until you confirm.</p>
+          </aside>
+        </div>
+      </section>
+
+      <section id="workspace" class="workspace hidden">
+        <div id="view-overview" class="view active">
+          <div class="welcome"><div><h2 id="welcomeTitle">Project overview</h2><p id="overviewMessage">The system is aligned with the latest observed state.</p></div></div>
+          <div class="metrics">
+            <article class="metric blue"><small>WHAT CAN I DO?</small><strong id="readyCount">0 ready tasks</strong><span id="readySub">No actionable human task yet</span></article>
+            <article class="metric purple"><small>WHAT IS RUNNING?</small><strong id="runningCount">0 in progress</strong><span>Current execution state</span></article>
+            <article class="metric green"><small>ARCHITECTURE</small><strong id="archVersion">Version 0</strong><span id="archState">Waiting for first architecture</span></article>
+            <article class="metric amber"><small>WHAT NEEDS ME?</small><strong id="needsCount">0 reviews</strong><span>Only meaningful approval boundaries</span></article>
+          </div>
+
+          <article id="bootstrapPanel" class="panel architecture-summary hidden" style="margin-top:24px">
+            <div class="panel-head">
+              <div>
+                <span class="eyebrow">ARCHITECTURE GENERATION PENDING</span>
+                <h3 style="margin-top:7px">The Goal is saved, but Architecture v1 has not been created yet</h3>
+                <p>This normally happens automatically after Goal confirmation. Retry uses the already saved Goal as the source of truth.</p>
+              </div>
+              <button id="generateArchitectureBtn" class="btn primary" type="button">Retry initial architecture</button>
+            </div>
+            <div id="architectureProgress" class="architecture-progress hidden" aria-live="polite">
+              <div class="architecture-progress-row"><span class="progress-spinner"></span><strong id="architectureProgressText">Preparing Architecture v1...</strong><span id="architectureElapsed">0s</span></div>
+              <p id="architectureProgressHint">Reading the confirmed Goal and generating a bounded V0 architecture.</p>
+            </div>
+            <div class="divider"></div>
+            <small class="eyebrow">GOAL / PROJECT BRIEF</small>
+            <p id="bootstrapGoal" style="white-space:pre-wrap;line-height:1.65;font-size:13px"></p>
+          </article>
+
+          <div class="overview-grid">
+            <article class="panel architecture-summary architecture-entry" data-go-card="architecture" role="link" tabindex="0" aria-label="Open Living Architecture">
+              <div class="panel-head"><div><h3>Living Architecture</h3><p id="architectureSummary">No architecture generated yet.</p></div><button class="link-btn" data-go="architecture">Open architecture</button></div>
+              <div class="divider"></div>
+              <div class="summary-grid"><div><small>GOAL</small><strong id="goalText">—</strong></div><div><small>PROJECT STATUS</small><strong id="projectStatus">—</strong></div></div>
+              <div class="alignment-row"><span>Architecture status</span><div class="alignment-track"><div id="alignmentFill" class="alignment-fill"></div></div><strong id="alignmentText">Awaiting evidence</strong></div>
+            </article>
+            <article class="panel attention-panel">
+              <h3>Needs your attention</h3>
+              <div id="overviewAttention" class="attention-content"><p>No pending architecture decision.</p></div>
+            </article>
+            <article class="panel next-tasks"><div class="panel-head"><h3>Next tasks</h3><button class="link-btn" data-go="tasks">View all →</button></div><div id="overviewTasks" class="task-list compact"></div></article>
+            <article class="panel last-run"><h3>Latest agent result</h3><div id="lastRun"><p class="muted">No event processed in this browser session.</p></div></article>
+          </div>
+        </div>
+
+        <div id="view-tasks" class="view">
+          <div class="section-intro"><div><h2>Tasks</h2><p>Everything humans and the agent can act on, using the shared V0 Task contract.</p></div></div>
+          <div class="tasks-layout"><article class="panel task-queue"><div class="panel-head"><h3>Queue</h3><span id="taskTotal" class="muted">0 tasks</span></div><div id="taskList" class="task-list"></div></article><aside class="panel filter-panel"><h3>Status legend</h3><div class="legend"><span><i class="status-dot todo"></i>TODO</span><span><i class="status-dot progress"></i>IN PROGRESS</span><span><i class="status-dot blocked"></i>BLOCKED</span><span><i class="status-dot done"></i>DONE</span></div><p class="muted">Human Start/Done clicks are authoritative task state and apply immediately. The Agent observes that state alongside later project signals.</p></aside></div>
+        </div>
+
+        <div id="view-architecture" class="view">
+          <div class="section-intro"><div><h2>Living Graph</h2><p>Start with the system health map. Healthy areas stay quiet; colored problem areas are the ones worth opening.</p></div><span id="graphVersion" class="version-pill">v0</span></div>
+          <div class="graph-layout">
+            <article class="panel graph-panel"><div class="panel-head"><div><h3>System health map</h3><p>Red or amber areas need attention. Healthy areas require no inspection.</p></div><span id="graphReviewState" class="muted">Aligned</span></div><div class="graph-health-legend"><span><i class="health-dot healthy"></i>Healthy</span><span><i class="health-dot active"></i>Active, no action needed</span><span><i class="health-dot review"></i>Needs review</span><span><i class="health-dot blocked"></i>Blocked</span></div><div id="graphCanvas" class="graph-canvas"></div><div id="selectedNode" class="selected-node"><small>SYSTEM HEALTH</small><h3>No inspection selected</h3><p>Only open a colored problem area when you need to understand what changed or what is blocked.</p></div></article>
+            <aside class="graph-side"><article class="panel"><h3>Why this status?</h3><div id="nodeEvidence"><p class="muted">Select a node to inspect the accepted architecture.</p></div></article><article class="panel"><h3>Architecture decisions</h3><div id="decisionList" class="bullet-list"></div></article><article class="panel"><h3>Risks & assumptions</h3><div id="riskList" class="bullet-list"></div></article></aside>
+          </div>
+        </div>
+
+        <div id="view-attention" class="view">
+          <div class="section-intro"><div><h2>Needs You</h2><p>Only architecture changes that cross the human approval boundary appear here.</p></div></div>
+          <div id="proposalList" class="proposal-list"></div>
+        </div>
+
+        <div id="globalAgentDock" class="global-agent-dock hidden">
+          <div id="globalAgentReply" class="global-agent-reply hidden"></div>
+          <form id="instructionForm" class="instruction-box global-agent-composer">
+            <div class="instruction-icon">✦</div>
+            <div class="instruction-input">
+              <div class="instruction-context-row"><span>ASK AGENT</span><span id="instructionContext" class="instruction-context-chip">Project context</span></div>
+              <label id="instructionLabel" for="instruction">Ask about this project, add a task, or describe a change</label>
+              <input id="instruction" autocomplete="off" placeholder="Describe what changed or what you want the Agent to evaluate." />
+            </div>
+            <button class="btn soft" type="submit">Send</button>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="editProjectDialog" class="project-dialog">
+    <form id="editProjectForm" method="dialog">
+      <div class="dialog-head"><div><small>PROJECT SETTINGS</small><h3>Edit project</h3></div><button class="dialog-close" type="button" data-close-dialog="editProjectDialog" aria-label="Close">×</button></div>
+      <label>Project name<input id="editProjectName" required /></label>
+      <label>Goal / Project brief<textarea id="editProjectGoal" rows="7" required></textarea></label>
+      <p id="editGoalHint" class="dialog-hint hidden">Architecture already exists. Change requirements through “Ask the Agent” so architecture changes still cross the human review boundary.</p>
+      <label>Description<textarea id="editProjectDescription" rows="3"></textarea></label>
+      <div class="dialog-actions"><button class="btn secondary" type="button" data-close-dialog="editProjectDialog">Cancel</button><button class="btn primary" type="submit">Save changes</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="deleteProjectDialog" class="project-dialog delete-dialog">
+    <form id="deleteProjectForm" method="dialog">
+      <div class="dialog-head"><div><small>DELETE PROJECT</small><h3>Delete <span id="deleteProjectName">this project</span>?</h3></div><button class="dialog-close" type="button" data-close-dialog="deleteProjectDialog" aria-label="Close">×</button></div>
+      <p>This permanently removes its architecture, tasks, proposals, events, and notes. This cannot be undone.</p>
+      <div class="dialog-actions"><button class="btn secondary" type="button" data-close-dialog="deleteProjectDialog">Cancel</button><button class="btn danger-btn" type="submit">Delete project</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js?v=20260826-2"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+Build an AI-assisted rental discovery platform for people searching for apartments in a new city.
+
+Users should be able to search rental listings, receive personalized recommendations, inspect listing details, compare shortlisted homes, and understand estimated commute time to important destinations such as work or school.
+
+The product should include a web frontend, user profiles and preferences, persistent shortlist and search history, an agent orchestration layer, rental search and recommendation capabilities, listing verification, and Google Maps integration for location and commute analysis.
+
+The first usable milestone should let a user create or load a profile, describe what kind of home they want, receive ranked rental recommendations, inspect commute estimates, and save properties to a shortlist.
+
+Keep the first version small enough to build as a V0, but preserve clear boundaries between user experience, agent behavior, rental-domain capabilities, persistent state, and external services.

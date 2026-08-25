@@ -1,0 +1,305 @@
+from pathlib import Path
+import tempfile
+
+import pytest
+from fastapi.testclient import TestClient
+
+from archbro.platform.runtime.app import build_app
+from archbro.backend.llm.fake import FakeModelProvider
+from archbro.platform.persistence.repository import ProjectRepository
+
+
+def make_client():
+    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "api.db"))
+    return repo, TestClient(build_app(repo, FakeModelProvider()))
+
+
+def test_goal_is_required_before_project_creation():
+    _, client = make_client()
+    response = client.post("/projects", json={"name": "Issue Tracker", "goal": "   ", "description": ""})
+    assert response.status_code == 422
+
+
+def test_ask_conversation_drafts_goal_before_project_creation():
+    _, client = make_client()
+
+    first = client.post("/onboarding/goal", json={
+        "messages": [
+            {"role": "user", "content": "I want to build an issue tracker."},
+        ],
+        "current_goal": "",
+    })
+    assert first.status_code == 200
+    assert first.json()["ready"] is False
+    assert first.json()["goal"]
+    assert first.json()["missing_information"]
+
+    second = client.post("/onboarding/goal", json={
+        "messages": [
+            {"role": "user", "content": "I want to build an issue tracker."},
+            {"role": "assistant", "content": first.json()["assistant_message"]},
+            {
+                "role": "user",
+                "content": (
+                    "The first milestone lets a small engineering team create, view, and update issues. "
+                    "Use React for the frontend, FastAPI for the backend, and PostgreSQL for persistence."
+                ),
+            },
+        ],
+        "current_goal": first.json()["goal"],
+    })
+    assert second.status_code == 200
+    body = second.json()
+    assert body["ready"] is True
+    assert body["suggested_project_name"] == "Issue Tracker"
+    assert "PostgreSQL" in body["goal"]
+
+    created = client.post("/projects", json={
+        "name": body["suggested_project_name"],
+        "goal": body["goal"],
+        "description": "Goal drafted through Ask conversation.",
+    })
+    assert created.status_code == 200
+    assert created.json()["architecture_version"] == 0
+
+
+def test_manual_goal_can_be_used_without_ask():
+    _, client = make_client()
+    goal = (
+        "Build an issue tracker for a small engineering team. Users can create, view, and update issues. "
+        "Use React, FastAPI, and PostgreSQL for the first local milestone."
+    )
+    reviewed = client.post("/onboarding/goal", json={"messages": [], "current_goal": goal})
+    assert reviewed.status_code == 200
+    assert reviewed.json()["goal"] == goal
+    assert reviewed.json()["ready"] is True
+
+    created = client.post("/projects", json={"name": "Issue Tracker", "goal": goal, "description": "Manual Goal."})
+    assert created.status_code == 200
+    assert created.json()["goal"] == goal
+
+
+def test_project_list_edit_select_contract_and_goal_boundary():
+    repo, client = make_client()
+    first = client.post("/projects", json={
+        "name": "First Project",
+        "goal": "Build the first project with React and FastAPI.",
+        "description": "Initial description",
+    }).json()
+    second = client.post("/projects", json={
+        "name": "Second Project",
+        "goal": "Build the second project.",
+        "description": "",
+    }).json()
+
+    listed = client.get("/projects")
+    assert listed.status_code == 200
+    assert [project["id"] for project in listed.json()] == [second["id"], first["id"]]
+
+    edited = client.patch(f"/projects/{first['id']}", json={
+        "name": "Renamed Project",
+        "goal": "Build the first project with React, FastAPI, and PostgreSQL.",
+        "description": "Edited before Architecture v1",
+    })
+    assert edited.status_code == 200
+    assert edited.json()["name"] == "Renamed Project"
+    assert "PostgreSQL" in edited.json()["goal"]
+
+    bootstrap = client.post(f"/projects/{first['id']}/events", json={
+        "type": "USER_MESSAGE",
+        "source": "FRONTEND",
+        "payload": {"intent": "INITIAL_ARCHITECTURE"},
+    })
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["result"] == "SUCCESS"
+
+    metadata_edit = client.patch(f"/projects/{first['id']}", json={
+        "name": "Renamed Again",
+        "description": "Metadata remains directly editable",
+    })
+    assert metadata_edit.status_code == 200
+    assert metadata_edit.json()["name"] == "Renamed Again"
+
+    blocked_goal_edit = client.patch(f"/projects/{first['id']}", json={
+        "goal": "Replace PostgreSQL with Firestore directly.",
+    })
+    assert blocked_goal_edit.status_code == 409
+    assert "must go through the Agent" in blocked_goal_edit.json()["detail"]
+    assert "PostgreSQL" in repo.get_project(first["id"]).goal
+
+
+def test_project_delete_removes_project_owned_state():
+    repo, client = make_client()
+    created = client.post("/projects", json={
+        "name": "Delete Me",
+        "goal": "Build an issue tracker using React, FastAPI, and PostgreSQL.",
+        "description": "Disposable project",
+    }).json()
+    project_id = created["id"]
+    bootstrap = client.post(f"/projects/{project_id}/events", json={
+        "type": "USER_MESSAGE",
+        "source": "FRONTEND",
+        "payload": {"intent": "INITIAL_ARCHITECTURE"},
+    })
+    assert bootstrap.json()["result"] == "SUCCESS"
+    repo.add_note(project_id, "Disposable note")
+    assert repo.list_tasks(project_id)
+
+    deleted = client.delete(f"/projects/{project_id}")
+    assert deleted.status_code == 204
+    assert client.get(f"/projects/{project_id}").status_code == 404
+    assert client.get("/projects").json() == []
+    assert repo.list_tasks(project_id) == []
+    assert repo.list_proposals(project_id) == []
+    assert repo.list_notes(project_id) == []
+    with pytest.raises(KeyError):
+        repo.get_project(project_id)
+
+
+def test_ask_merges_with_current_goal_instead_of_replacing_it():
+    _, client = make_client()
+    current_goal = (
+        "Build an issue tracker for a small engineering team. "
+        "Users can create and view issues. Use React for the frontend, FastAPI for the backend, "
+        "and PostgreSQL for persistence. The first milestone runs locally."
+    )
+    response = client.post("/onboarding/goal", json={
+        "current_goal": current_goal,
+        "messages": [
+            {"role": "user", "content": "Also let users export the issue list to CSV."},
+        ],
+    })
+    assert response.status_code == 200
+    merged = response.json()["goal"]
+    assert "PostgreSQL" in merged
+    assert "FastAPI" in merged
+    assert "React" in merged
+    assert "CSV" in merged
+    assert len(merged) > len("Also let users export the issue list to CSV.")
+
+
+def test_initial_architecture_requires_explicit_goal_bootstrap():
+    _, client = make_client()
+    created = client.post("/projects", json={
+        "name": "Issue Tracker",
+        "goal": "Build an issue tracker using React, FastAPI, and PostgreSQL.",
+        "description": "Users can create, view, and update issues.",
+    })
+    project_id = created.json()["id"]
+
+    accidental = client.post(f"/projects/{project_id}/events", json={
+        "type": "USER_MESSAGE",
+        "source": "FRONTEND",
+        "payload": {"message": "The backend skeleton is done."},
+    })
+    assert accidental.status_code == 200
+    assert accidental.json()["result"] == "ERROR"
+    assert "Generate initial architecture" in accidental.json()["error"]
+    assert client.get(f"/projects/{project_id}/architecture").json()["version"] == 0
+    assert client.get(f"/projects/{project_id}/tasks").json() == []
+
+    bootstrap = client.post(f"/projects/{project_id}/events", json={
+        "type": "USER_MESSAGE",
+        "source": "FRONTEND",
+        "payload": {"intent": "INITIAL_ARCHITECTURE", "message": "Ignore this temporary text."},
+    })
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["result"] == "SUCCESS"
+    assert client.get(f"/projects/{project_id}/architecture").json()["version"] == 1
+
+
+def test_minimal_api_contract_end_to_end():
+    _, client = make_client()
+
+    created = client.post("/projects", json={
+        "name": "Archbro",
+        "goal": "Build a collaborative project-management app with a React frontend, FastAPI backend, and PostgreSQL database where an AI agent maintains architecture and actionable human tasks.",
+        "description": "V0 walking skeleton",
+    })
+    assert created.status_code == 200
+    project_id = created.json()["id"]
+
+    first = client.post(f"/projects/{project_id}/events", json={
+        "type": "USER_MESSAGE",
+        "source": "HUMAN",
+        "payload": {"intent": "INITIAL_ARCHITECTURE"},
+    })
+    assert first.status_code == 200
+    assert first.json()["result"] == "SUCCESS"
+
+    architecture = client.get(f"/projects/{project_id}/architecture")
+    assert architecture.status_code == 200
+    assert architecture.json()["version"] == 1
+    assert any(c["name"] == "PostgreSQL" for c in architecture.json()["components"])
+
+    tasks = client.get(f"/projects/{project_id}/tasks").json()
+    backend = next(t for t in tasks if t["related_component"] == "backend")
+    updated = client.post(f"/projects/{project_id}/events", json={
+        "type": "TASK_UPDATED",
+        "source": "HUMAN",
+        "payload": {"task_id": backend["id"], "status": "DONE", "message": "Backend API skeleton completed."},
+    })
+    assert updated.status_code == 200
+    assert client.get(f"/projects/{project_id}/architecture").json()["version"] == 1
+
+    change = client.post(f"/projects/{project_id}/events", json={
+        "type": "USER_MESSAGE",
+        "source": "HUMAN",
+        "payload": {"message": "We decided to replace PostgreSQL with Firestore."},
+    })
+    assert change.status_code == 200
+    body = change.json()
+    assert body["architecture_review_required"] is True
+    proposal_id = body["proposal_ids"][0]
+
+    pending_arch = client.get(f"/projects/{project_id}/architecture").json()
+    assert pending_arch["version"] == 1
+    assert any(c["name"] == "PostgreSQL" for c in pending_arch["components"])
+    proposal = next(p for p in client.get(f"/projects/{project_id}/architecture/proposals").json() if p["id"] == proposal_id)
+    assert proposal["status"] == "PENDING"
+
+    accepted = client.post(f"/projects/{project_id}/architecture/proposals/{proposal_id}/accept")
+    assert accepted.status_code == 200
+    final_arch = client.get(f"/projects/{project_id}/architecture").json()
+    assert final_arch["version"] == 2
+    assert any(c["name"] == "Firestore" for c in final_arch["components"])
+
+
+def test_web_surface_is_served_from_same_app():
+    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "web.db"))
+    client = TestClient(build_app(repo, FakeModelProvider()))
+
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "Archbro" in page.text
+    assert "Living Graph" in page.text
+    assert "Needs You" in page.text
+    assert "What are you trying to build?" in page.text
+    assert "Ask the Agent" in page.text
+    assert "LIVE GOAL DRAFT" in page.text
+    assert "Write the Goal directly" in page.text
+    assert "Ask merges with the current Goal" in page.text
+    assert "Use this goal & generate architecture" in page.text
+    assert "Human Start/Done clicks are authoritative task state" in page.text
+    assert 'id="projectSelect"' in page.text
+    assert 'id="editProjectBtn"' in page.text
+    assert 'id="deleteProjectBtn"' in page.text
+    assert 'id="editProjectDialog"' in page.text
+    assert 'id="deleteProjectDialog"' in page.text
+
+    css = client.get("/static/styles.css")
+    js = client.get("/static/app.js")
+    assert css.status_code == 200
+    assert js.status_code == 200
+    assert "/onboarding/goal" in js.text
+    assert "current_goal" in js.text
+    assert "confirmGoalAndGenerate" in js.text
+    assert "INITIAL_ARCHITECTURE" in js.text
+    assert "loadProjects" in js.text
+    assert "selectProject" in js.text
+    assert "saveProjectEdits" in js.text
+    assert "data-go-card=\"architecture\"" in page.text
+    assert "architecture-entry" in page.text
+    assert "document.querySelectorAll('[data-go-card]')" in js.text
+    assert "if (name === 'architecture') renderGraph();" in js.text
+    assert "deleteCurrentProject" in js.text
