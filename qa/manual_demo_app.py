@@ -21,6 +21,11 @@ from archbro.backend.core.contracts import (
     TaskProposal,
     TaskSource,
 )
+from archbro.backend.core.evaluation import (
+    DriftClassification,
+    DriftEvaluation,
+    DriftRecommendedAction,
+)
 from archbro.backend.llm.provider import GoalConversationMessage, GoalDraft, ModelProvider
 from archbro.platform.persistence.repository import ProjectRepository
 
@@ -144,24 +149,41 @@ class ManualDemoProvider(ModelProvider):
             if task is None and ("stable listing" in lower or "listing verification" in lower):
                 task = next((t for t in context.tasks if t.related_component == "listing_verification"), None)
             if task:
+                affected_component = task.related_component if task.related_component and context.architecture.find_component(task.related_component) else None
                 return AgentDecision(
                     summary=f"{task.title} is blocked by the reported execution evidence. The accepted architecture still fits the problem, so no architecture change is proposed.",
                     actions=[AgentAction(type=AgentActionType.UPDATE_TASK, payload={"task_id": task.id, "changes": {"status": "BLOCKED", "description": task.description + " Blocked: external provider does not expose stable listing IDs."}})],
+                    evaluation=DriftEvaluation(
+                        classification=DriftClassification.IMPLEMENTATION_ISSUE,
+                        summary="The blocker remains inside the accepted component responsibility.",
+                        evidence=[message],
+                        affected_components=[affected_component] if affected_component else [],
+                        affected_tasks=[task.id],
+                        recommended_action=DriftRecommendedAction.UPDATE_TASK,
+                    ),
                 )
 
         if event.type == ProjectEventType.USER_MESSAGE and ("without changing" in lower or "keep current" in lower):
             return AgentDecision(
                 summary="KEEP_CURRENT: this can be handled inside the existing Listing Verification boundary with an internal mapping strategy; no accepted architecture boundary needs to change.",
                 actions=[AgentAction(type=AgentActionType.NO_ACTION)],
+                evaluation=DriftEvaluation(
+                    classification=DriftClassification.IMPLEMENTATION_ISSUE,
+                    summary="The implementation can adapt without changing accepted architecture.",
+                    evidence=[message],
+                    affected_components=["listing_verification"] if context.architecture.find_component("listing_verification") else [],
+                    recommended_action=DriftRecommendedAction.KEEP_CURRENT,
+                ),
             )
 
         if event.type == ProjectEventType.USER_MESSAGE and "cloud sql" in lower:
+            affected_components = ["data_state", "app_data_store"]
             proposal = ArchitectureChangeProposal(
                 project_id=context.project.id,
                 reason="Persistent favorites, history, reporting, and analytics now require relational joins that materially change the accepted persistence choice.",
                 evidence=[message],
                 observed_change="Primary persistent application data is moving from Firestore to relational storage.",
-                affected_components=["data_state", "app_data_store"],
+                affected_components=affected_components,
                 proposed_changes=[{
                     "operation": "replace_component",
                     "component_id": "app_data_store",
@@ -177,6 +199,14 @@ class ManualDemoProvider(ModelProvider):
                 summary="The new relational-query requirement crosses an accepted architecture boundary. Human review is required before changing Data & State.",
                 actions=[AgentAction(type=AgentActionType.PROPOSE_ARCHITECTURE_CHANGE, payload={"proposal": proposal.model_dump(mode="json")})],
                 architecture_review_required=True,
+                evaluation=DriftEvaluation(
+                    classification=DriftClassification.ARCHITECTURE_DRIFT,
+                    summary="The accepted Firestore persistence boundary no longer satisfies the relational requirement.",
+                    evidence=[message],
+                    affected_components=affected_components,
+                    architecture_change_required=True,
+                    recommended_action=DriftRecommendedAction.PROPOSE_ARCHITECTURE_CHANGE,
+                ),
             )
 
         if event.type == ProjectEventType.USER_MESSAGE and ui_context.get("proposal_id"):
@@ -194,9 +224,25 @@ class ManualDemoProvider(ModelProvider):
                         f"Related human work: {task_text}. The accepted architecture remains unchanged until you decide."
                     ),
                     actions=[AgentAction(type=AgentActionType.NO_ACTION)],
+                    evaluation=DriftEvaluation(
+                        classification=DriftClassification.ALIGNED,
+                        summary="Reviewing an existing pending proposal does not introduce new architecture drift.",
+                        evidence=[message] if message else [],
+                        affected_components=proposal.affected_components,
+                        recommended_action=DriftRecommendedAction.NO_ACTION,
+                    ),
                 )
 
-        return AgentDecision(summary="No justified project-state mutation is needed.", actions=[AgentAction(type=AgentActionType.NO_ACTION)])
+        return AgentDecision(
+            summary="No justified project-state mutation is needed.",
+            actions=[AgentAction(type=AgentActionType.NO_ACTION)],
+            evaluation=DriftEvaluation(
+                classification=DriftClassification.ALIGNED,
+                summary="No evidence changes the accepted architecture boundary.",
+                evidence=[message] if message else [],
+                recommended_action=DriftRecommendedAction.NO_ACTION,
+            ),
+        )
 
 
 _demo_db = os.environ.get("ARCHBRO_DEMO_DB", "qa/manual_demo.db")

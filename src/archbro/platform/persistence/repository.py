@@ -103,6 +103,67 @@ class ProjectRepository:
         with self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO events VALUES (?, ?, ?)", (event.id, event.project_id, event.model_dump_json()))
 
+    def commit_event_actions(
+        self,
+        *,
+        event: ProjectEvent,
+        project: Project | None,
+        architecture: Architecture | None,
+        tasks: list[Task],
+        proposals: list[ArchitectureChangeProposal],
+        notes: list[str],
+    ) -> None:
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute("SELECT 1 FROM projects WHERE id=?", (event.project_id,)).fetchone():
+                raise KeyError(event.project_id)
+            if project is not None and project.id != event.project_id:
+                raise ValueError("project mutation does not match event project")
+            for task in tasks:
+                row = conn.execute("SELECT project_id FROM tasks WHERE id=?", (task.id,)).fetchone()
+                if row and row["project_id"] != event.project_id:
+                    raise ValueError("task mutation does not match event project")
+            for proposal in proposals:
+                if proposal.project_id != event.project_id:
+                    raise ValueError("proposal project_id mismatch during event commit")
+
+            conn.execute(
+                "INSERT OR REPLACE INTO events VALUES (?, ?, ?)",
+                (event.id, event.project_id, event.model_dump_json()),
+            )
+            if architecture is not None:
+                conn.execute(
+                    "INSERT OR REPLACE INTO architectures VALUES (?, ?)",
+                    (event.project_id, architecture.model_dump_json()),
+                )
+            if project is not None:
+                conn.execute(
+                    "INSERT OR REPLACE INTO projects VALUES (?, ?)",
+                    (project.id, project.model_dump_json()),
+                )
+            for task in tasks:
+                conn.execute(
+                    "INSERT OR REPLACE INTO tasks VALUES (?, ?, ?)",
+                    (task.id, event.project_id, task.model_dump_json()),
+                )
+            for proposal in proposals:
+                conn.execute(
+                    "INSERT OR REPLACE INTO proposals VALUES (?, ?, ?)",
+                    (proposal.id, proposal.project_id, proposal.model_dump_json()),
+                )
+            for note in notes:
+                conn.execute(
+                    "INSERT INTO notes(project_id, note) VALUES (?, ?)",
+                    (event.project_id, note),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def add_note(self, project_id: str, note: str) -> None:
         with self._connect() as conn:
             conn.execute("INSERT INTO notes(project_id, note) VALUES (?, ?)", (project_id, note))

@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from archbro.backend.core.evaluation import DriftEvaluation
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -249,6 +251,7 @@ class AgentDecision(BaseModel):
     summary: str
     actions: list[AgentAction] = Field(default_factory=list)
     architecture_review_required: bool = False
+    evaluation: DriftEvaluation | None = None
 
     @model_validator(mode="after")
     def validate_decision(self) -> "AgentDecision":
@@ -257,6 +260,8 @@ class AgentDecision(BaseModel):
             raise ValueError("architecture proposal requires architecture_review_required=true")
         if self.architecture_review_required and not proposes:
             raise ValueError("architecture_review_required=true requires a proposal action")
+        if proposes and self.evaluation is None:
+            raise ValueError("architecture proposal requires a DriftEvaluation")
         return self
 
 
@@ -268,6 +273,7 @@ class AgentRunResult(BaseModel):
     actions: list[AgentAction]
     architecture_review_required: bool
     proposal_ids: list[str] = Field(default_factory=list)
+    evaluation: DriftEvaluation | None = None
     provider: str
     model: str
     result: Literal["SUCCESS", "ERROR"]

@@ -42,7 +42,9 @@ class _DocumentRef:
     def set(self, value) -> None:
         self._collection.docs[self.id] = deepcopy(value)
 
-    def get(self) -> _Snapshot:
+    def get(self, transaction=None) -> _Snapshot:
+        if transaction is not None and not transaction.in_progress:
+            raise ValueError("Transaction not in progress, cannot be used in API requests.")
         return _Snapshot(self._collection, self.id)
 
     def delete(self) -> None:
@@ -91,17 +93,60 @@ class _Collection:
         return _Query(self, field, value)
 
 
+class _Transaction:
+    def __init__(self, client: "_FakeFirestoreClient") -> None:
+        self.client = client
+        self.operations: list[tuple[_DocumentRef, dict]] = []
+        self.in_progress = False
+
+    def set(self, ref: _DocumentRef, value: dict) -> None:
+        self.operations.append((ref, deepcopy(value)))
+
+    def commit(self) -> None:
+        if not self.in_progress:
+            raise ValueError("Transaction not in progress")
+        if self.client.fail_next_transaction:
+            self.client.fail_next_transaction = False
+            raise RuntimeError("injected Firestore transaction failure")
+        for ref, value in self.operations:
+            ref.set(value)
+        self.client.transaction_commits += 1
+
+
 class _FakeFirestoreClient:
     def __init__(self) -> None:
         self.collections: dict[str, _Collection] = {}
+        self.transaction_commits = 0
+        self.fail_next_transaction = False
 
     def collection(self, name: str) -> _Collection:
         return self.collections.setdefault(name, _Collection())
 
+    def transaction(self):
+        return _Transaction(self)
+
+
+def _fake_transaction_runner(transaction: _Transaction, operation):
+    transaction.in_progress = True
+    try:
+        result = operation(transaction)
+        transaction.commit()
+        return result
+    finally:
+        transaction.in_progress = False
+
+
+def _repo(client: _FakeFirestoreClient, *, collection_prefix: str) -> FirestoreProjectRepository:
+    return FirestoreProjectRepository(
+        client,
+        collection_prefix=collection_prefix,
+        transaction_runner=_fake_transaction_runner,
+    )
+
 
 def test_firestore_repository_implements_archbro_project_state_contract():
     client = _FakeFirestoreClient()
-    repo = FirestoreProjectRepository(client, collection_prefix="qa")
+    repo = _repo(client, collection_prefix="qa")
 
     project = Project(name="Firestore QA", goal="Keep project state durable")
     repo.save_project(project)
@@ -134,6 +179,45 @@ def test_firestore_repository_implements_archbro_project_state_contract():
     assert repo.delete_project(project.id) is False
     with pytest.raises(KeyError):
         repo.get_project(project.id)
+
+
+def test_firestore_event_action_commit_is_atomic_on_failure():
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="atomic")
+    project = Project(name="Atomic", goal="Keep event and mutations together")
+    repo.save_project(project)
+    repo.save_architecture(project.id, Architecture(version=1))
+    task = Task(title="Original task")
+    repo.save_task(project.id, task)
+
+    event = ProjectEvent(project_id=project.id, type=ProjectEventType.USER_MESSAGE)
+    changed_task = task.model_copy(update={"title": "Changed task"})
+    proposal = ArchitectureChangeProposal(
+        project_id=project.id,
+        reason="Atomic test",
+        evidence=["test evidence"],
+        observed_change="test change",
+        impact="test impact",
+        recommended_option=ArchitectureOption.KEEP_CURRENT,
+    )
+
+    client.fail_next_transaction = True
+    with pytest.raises(RuntimeError, match="injected Firestore transaction failure"):
+        repo.commit_event_actions(
+            event=event,
+            project=None,
+            architecture=None,
+            tasks=[changed_task],
+            proposals=[proposal],
+            notes=["atomic note"],
+        )
+
+    assert repo.get_task(task.id).title == "Original task"
+    with pytest.raises(KeyError):
+        repo.get_proposal(proposal.id)
+    assert event.id not in client.collection("atomic_events").docs
+    assert client.collection("atomic_notes").docs == {}
+    assert client.transaction_commits == 0
 
 
 def test_runtime_selects_firestore_when_configured(monkeypatch):

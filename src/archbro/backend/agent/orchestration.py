@@ -4,6 +4,7 @@ import logging
 import time
 from uuid import uuid4
 
+from archbro.backend.agent.evaluation import DriftPolicy
 from archbro.backend.agent.prompts import SYSTEM_PROMPT
 from archbro.backend.core.contracts import (
     AgentAction,
@@ -25,6 +26,18 @@ class AgentOrchestrator:
         self.repository = repository
         self.provider = provider
         self.executor = ActionExecutor(repository)
+
+    def _commit(self, event: ProjectEvent, actions: list[AgentAction]):
+        plan = self.executor.build_plan(event.project_id, actions)
+        self.repository.commit_event_actions(
+            event=event,
+            project=plan.project,
+            architecture=plan.architecture,
+            tasks=plan.tasks,
+            proposals=plan.proposals,
+            notes=plan.notes,
+        )
+        return plan
 
     async def observe_event(self, event: ProjectEvent) -> AgentRunResult:
         project = self.repository.get_project(event.project_id)
@@ -52,8 +65,7 @@ class AgentOrchestrator:
                 raise ValueError("initial architecture already exists")
 
             # A human clicking Start/Done is authoritative project state, not a model
-            # suggestion. Apply the explicit transition deterministically, persist the
-            # observation, and let later agent/project signals evaluate implications.
+            # suggestion. Materialize and commit the event + transition as one unit.
             if event.type == ProjectEventType.TASK_UPDATED:
                 task_id = str(event.payload.get("task_id", "")).strip()
                 if not task_id or not any(task.id == task_id for task in context.tasks):
@@ -63,9 +75,7 @@ class AgentOrchestrator:
                     type=AgentActionType.UPDATE_TASK,
                     payload={"task_id": task_id, "changes": {"status": status.value}},
                 )
-                self.repository.save_event(event)
-                self.executor.validate_all(event.project_id, [action])
-                self.executor.apply(event.project_id, [action])
+                self._commit(event, [action])
                 result = AgentRunResult(
                     project_id=event.project_id,
                     event_id=event.id,
@@ -74,6 +84,7 @@ class AgentOrchestrator:
                     actions=[action],
                     architecture_review_required=False,
                     proposal_ids=[],
+                    evaluation=None,
                     provider="deterministic",
                     model="human-task-transition",
                     result="SUCCESS",
@@ -92,10 +103,12 @@ class AgentOrchestrator:
                 )
                 return result
 
-            self.repository.save_event(event)
             decision = await self.provider.generate(event=event, context=context, system_prompt=SYSTEM_PROMPT)
-            self.executor.validate_all(event.project_id, decision.actions)
-            proposal_ids = self.executor.apply(event.project_id, decision.actions)
+
+            # M4 safety boundary: provider output must be fully validated and fully
+            # materialized before the observed event or any derived state is written.
+            DriftPolicy.validate(context, decision)
+            plan = self._commit(event, decision.actions)
             used_model = getattr(self.provider, "last_model_id", self.provider.model_id)
             result = AgentRunResult(
                 project_id=event.project_id,
@@ -104,7 +117,8 @@ class AgentOrchestrator:
                 summary=decision.summary,
                 actions=decision.actions,
                 architecture_review_required=decision.architecture_review_required,
-                proposal_ids=proposal_ids,
+                proposal_ids=plan.proposal_ids,
+                evaluation=decision.evaluation,
                 provider=self.provider.name,
                 model=used_model,
                 result="SUCCESS",
@@ -122,6 +136,7 @@ class AgentOrchestrator:
                 actions=[],
                 architecture_review_required=False,
                 proposal_ids=[],
+                evaluation=None,
                 provider=self.provider.name,
                 model=used_model,
                 result="ERROR",

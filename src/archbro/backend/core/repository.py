@@ -37,6 +37,19 @@ class ProjectRepositoryPort(Protocol):
     def list_proposals(self, project_id: str) -> list[ArchitectureChangeProposal]: ...
 
     def save_event(self, event: ProjectEvent) -> None: ...
+    def commit_event_actions(
+        self,
+        *,
+        event: ProjectEvent,
+        project: Project | None,
+        architecture: Architecture | None,
+        tasks: list[Task],
+        proposals: list[ArchitectureChangeProposal],
+        notes: list[str],
+    ) -> None:
+        """Persist one accepted event and its derived mutations atomically."""
+        ...
+
     def add_note(self, project_id: str, note: str) -> None: ...
     def list_notes(self, project_id: str, limit: int = 20) -> list[str]: ...
 

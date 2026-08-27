@@ -23,6 +23,7 @@ from archbro.backend.core.contracts import (
     Relationship,
     TaskProposal,
 )
+from archbro.backend.core.evaluation import DriftEvaluation
 from archbro.backend.llm.provider import GoalConversationMessage, GoalDraft, ModelProvider
 
 load_dotenv()
@@ -182,6 +183,7 @@ class GeminiDecisionWire(BaseModel):
     """Provider-only structured output. It is converted into the shared AgentDecision contract."""
 
     summary: str
+    evaluation: DriftEvaluation
     architecture_review_required: bool = False
     architecture_proposal: GeminiArchitectureProposalWire | None = None
     actions: list[AgentAction] = Field(default_factory=list)
@@ -480,6 +482,7 @@ class GeminiProvider(ModelProvider):
             summary=wire.summary,
             actions=actions,
             architecture_review_required=wire.architecture_review_required,
+            evaluation=wire.evaluation,
         )
 
     async def generate(self, *, event: ProjectEvent, context: ProjectContext, system_prompt: str) -> AgentDecision:

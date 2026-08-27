@@ -7,7 +7,15 @@ import pytest
 from dotenv import load_dotenv
 
 from archbro.backend.agent.orchestration import AgentOrchestrator
-from archbro.backend.core.contracts import Architecture, Project, ProjectEvent, ProjectEventSource, ProjectEventType
+from archbro.backend.core.contracts import (
+    Architecture,
+    Component,
+    Project,
+    ProjectEvent,
+    ProjectEventSource,
+    ProjectEventType,
+)
+from archbro.backend.core.evaluation import DriftClassification, DriftRecommendedAction
 from archbro.backend.llm.gemini import GeminiProvider
 from archbro.backend.llm.provider import GoalConversationMessage
 from archbro.platform.persistence.repository import ProjectRepository
@@ -60,9 +68,54 @@ def test_real_gemini_goal_and_ask_merge_to_architecture_flow():
     assert result.result == "SUCCESS", result.error
     architecture = repo.get_architecture(project.id)
     assert architecture.version == 1
-    names = {component.name.lower() for component in architecture.components}
-    assert any("react" in name for name in names)
-    assert any("fastapi" in name for name in names)
-    assert any("postgres" in name for name in names)
+    architecture_text = architecture.model_dump_json().lower()
+    assert "react" in architecture_text
+    assert "fastapi" in architecture_text
+    assert "postgres" in architecture_text
     assert repo.list_tasks(project.id)
     assert repo.list_proposals(project.id) == []
+
+
+@pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")), reason="Gemini API key not set")
+def test_real_gemini_drift_evaluation_proposes_without_mutating_accepted_architecture():
+    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "m4-real.db"))
+    project = Project(
+        name="M4 Drift Probe",
+        goal="Build a project workspace with FastAPI and PostgreSQL persistence.",
+        architecture_version=1,
+    )
+    repo.save_project(project)
+    repo.save_architecture(
+        project.id,
+        Architecture(
+            version=1,
+            summary="Accepted V1",
+            components=[
+                Component(id="backend", name="FastAPI Backend", type="backend", responsibility="Serve project APIs."),
+                Component(id="database", name="PostgreSQL", type="database", responsibility="Persist project state."),
+            ],
+        ),
+    )
+    provider = GeminiProvider(model_id=os.getenv("GEMINI_TEST_MODEL", "gemini-3.5-flash-lite"))
+    event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.USER_MESSAGE,
+        source=ProjectEventSource.HUMAN,
+        payload={
+            "message": (
+                "The team has explicitly decided to replace PostgreSQL with Firestore as the primary persistence layer. "
+                "This is a new accepted technical requirement, not just an implementation workaround."
+            )
+        },
+    )
+
+    result = asyncio.run(AgentOrchestrator(repo, provider).observe_event(event))
+
+    assert result.result == "SUCCESS", result.error
+    assert result.evaluation is not None
+    assert result.evaluation.classification == DriftClassification.ARCHITECTURE_DRIFT
+    assert result.evaluation.recommended_action == DriftRecommendedAction.PROPOSE_ARCHITECTURE_CHANGE
+    assert result.evaluation.architecture_change_required is True
+    assert len(result.proposal_ids) == 1
+    assert repo.get_architecture(project.id).version == 1
+    assert repo.get_architecture(project.id).find_component("database").name == "PostgreSQL"

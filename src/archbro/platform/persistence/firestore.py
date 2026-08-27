@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
+from uuid import uuid4
 
 from archbro.backend.core.contracts import (
     Architecture,
@@ -15,6 +16,16 @@ from archbro.backend.core.contracts import (
 )
 
 
+TransactionRunner = Callable[[Any, Callable[[Any], Any]], Any]
+
+
+def _google_transaction_runner(transaction: Any, operation: Callable[[Any], Any]) -> Any:
+    """Run one Firestore transaction through the SDK-managed lifecycle."""
+    from google.cloud import firestore
+
+    return firestore.transactional(operation)(transaction)
+
+
 class FirestoreProjectRepository:
     """Firestore implementation of Jim's ProjectRepositoryPort.
 
@@ -23,8 +34,15 @@ class FirestoreProjectRepository:
     Firestore SDK.
     """
 
-    def __init__(self, client: Any, *, collection_prefix: str = "archbro") -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        collection_prefix: str = "archbro",
+        transaction_runner: TransactionRunner | None = None,
+    ) -> None:
         self.client = client
+        self._transaction_runner = transaction_runner or _google_transaction_runner
         prefix = collection_prefix.strip() or "archbro"
         self._projects = f"{prefix}_projects"
         self._architectures = f"{prefix}_architectures"
@@ -139,6 +157,76 @@ class FirestoreProjectRepository:
         self._collection(self._events).document(event.id).set(
             {"project_id": event.project_id, "data": event.model_dump(mode="json")}
         )
+
+    def commit_event_actions(
+        self,
+        *,
+        event: ProjectEvent,
+        project: Project | None,
+        architecture: Architecture | None,
+        tasks: list[Task],
+        proposals: list[ArchitectureChangeProposal],
+        notes: list[str],
+    ) -> None:
+        write_count = 1 + int(project is not None) + int(architecture is not None) + len(tasks) + len(proposals) + len(notes)
+        if write_count > 500:
+            raise ValueError(f"event mutation requires {write_count} Firestore writes; maximum is 500")
+
+        project_ref = self._collection(self._projects).document(event.project_id)
+        if project is not None and project.id != event.project_id:
+            raise ValueError("project mutation does not match event project")
+        for proposal in proposals:
+            if proposal.project_id != event.project_id:
+                raise ValueError("proposal project_id mismatch during event commit")
+
+        transaction = self.client.transaction()
+
+        def commit(transaction: Any) -> None:
+            project_snapshot = project_ref.get(transaction=transaction)
+            if not project_snapshot.exists:
+                raise KeyError(event.project_id)
+
+            for task in tasks:
+                task_ref = self._collection(self._tasks).document(task.id)
+                task_snapshot = task_ref.get(transaction=transaction)
+                if task_snapshot.exists:
+                    raw = task_snapshot.to_dict() or {}
+                    if raw.get("project_id") != event.project_id:
+                        raise ValueError("task mutation does not match event project")
+
+            transaction.set(
+                self._collection(self._events).document(event.id),
+                {"project_id": event.project_id, "data": event.model_dump(mode="json")},
+            )
+            if architecture is not None:
+                transaction.set(
+                    self._collection(self._architectures).document(event.project_id),
+                    {"project_id": event.project_id, "data": architecture.model_dump(mode="json")},
+                )
+            if project is not None:
+                transaction.set(project_ref, {"data": project.model_dump(mode="json")})
+            for task in tasks:
+                transaction.set(
+                    self._collection(self._tasks).document(task.id),
+                    {"project_id": event.project_id, "data": task.model_dump(mode="json")},
+                )
+            for proposal in proposals:
+                transaction.set(
+                    self._collection(self._proposals).document(proposal.id),
+                    {"project_id": proposal.project_id, "data": proposal.model_dump(mode="json")},
+                )
+            for note in notes:
+                note_ref = self._collection(self._notes).document(f"note_{uuid4().hex}")
+                transaction.set(
+                    note_ref,
+                    {
+                        "project_id": event.project_id,
+                        "note": note,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+        self._transaction_runner(transaction, commit)
 
     def add_note(self, project_id: str, note: str) -> None:
         self._collection(self._notes).add(

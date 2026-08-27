@@ -4,6 +4,7 @@ from types import MethodType
 import pytest
 
 from archbro.backend.core.contracts import AgentAction, AgentActionType, Architecture, Project, ProjectContext, ProjectEvent, ProjectEventType
+from archbro.backend.core.evaluation import DriftClassification, DriftEvaluation, DriftRecommendedAction
 from archbro.backend.llm.gemini import (
     DEFAULT_GEMINI_GOAL_CHAIN,
     DEFAULT_GEMINI_ROUTINE_CHAIN,
@@ -14,6 +15,13 @@ from archbro.backend.llm.gemini import (
     GeminiProvider,
 )
 
+
+def _aligned_evaluation() -> DriftEvaluation:
+    return DriftEvaluation(
+        classification=DriftClassification.ALIGNED,
+        summary="No architecture drift in fallback-routing fixture.",
+        recommended_action=DriftRecommendedAction.NO_ACTION,
+    )
 
 def _provider_with_chain() -> GeminiProvider:
     provider = object.__new__(GeminiProvider)
@@ -65,6 +73,7 @@ def test_503_falls_through_full_real_gemini_chain():
             raise RuntimeError("503 UNAVAILABLE: model currently experiencing high demand")
         return GeminiDecisionWire(
             summary="No change.",
+            evaluation=_aligned_evaluation(),
             actions=[AgentAction(type=AgentActionType.NO_ACTION)],
         )
 
@@ -135,6 +144,7 @@ def test_task_updated_uses_routine_chain_before_architecture_models():
         if model_id == "gemini-3.1-flash-lite":
             return GeminiDecisionWire(
                 summary="Routine task update handled.",
+                evaluation=_aligned_evaluation(),
                 actions=[AgentAction(type=AgentActionType.NO_ACTION)],
             )
         raise AssertionError(f"unexpected model reached: {model_id}")
@@ -156,6 +166,7 @@ def test_user_message_stays_on_architecture_chain():
         attempts.append(model_id)
         return GeminiDecisionWire(
             summary="Architecture-sensitive message handled.",
+            evaluation=_aligned_evaluation(),
             actions=[AgentAction(type=AgentActionType.NO_ACTION)],
         )
 

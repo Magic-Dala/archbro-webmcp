@@ -15,6 +15,11 @@ from archbro.backend.core.contracts import (
     TaskOwner,
     TaskSource,
 )
+from archbro.backend.core.evaluation import (
+    DriftClassification,
+    DriftEvaluation,
+    DriftRecommendedAction,
+)
 from archbro.backend.llm.provider import GoalConversationMessage, GoalDraft, ModelProvider
 
 
@@ -71,6 +76,7 @@ class FakeModelProvider(ModelProvider):
 
     async def generate(self, *, event: ProjectEvent, context: ProjectContext, system_prompt: str) -> AgentDecision:
         text = str(event.payload.get("message") or event.payload.get("note") or "")
+        lower = text.lower()
         bootstrap = (
             event.type == ProjectEventType.USER_MESSAGE
             and context.architecture.version == 0
@@ -105,21 +111,60 @@ class FakeModelProvider(ModelProvider):
                 ],
             )
 
-        if event.type == ProjectEventType.TASK_UPDATED:
-            task_id = event.payload.get("task_id")
-            status = event.payload.get("status", "DONE")
+        if "stable id" in lower or "stable listing" in lower or "unstable id" in lower:
+            affected_task = next(
+                (task for task in context.tasks if task.related_component == "listing_verification"),
+                None,
+            )
+            actions = [AgentAction(type=AgentActionType.NO_ACTION)]
+            affected_tasks: list[str] = []
+            if affected_task is not None:
+                affected_tasks = [affected_task.id]
+                actions = [
+                    AgentAction(
+                        type=AgentActionType.UPDATE_TASK,
+                        payload={
+                            "task_id": affected_task.id,
+                            "changes": {
+                                "status": "BLOCKED",
+                                "description": (
+                                    affected_task.description
+                                    + " Blocked: external provider does not expose stable listing IDs."
+                                ).strip(),
+                            },
+                        },
+                    )
+                ]
             return AgentDecision(
-                summary="Updated the reported task while preserving the current architecture.",
-                actions=[AgentAction(type=AgentActionType.UPDATE_TASK, payload={"task_id": task_id, "changes": {"status": status}})],
+                summary="The evidence blocks implementation work but still fits inside the existing Listing Verification responsibility.",
+                actions=actions,
+                evaluation=DriftEvaluation(
+                    classification=DriftClassification.IMPLEMENTATION_ISSUE,
+                    summary="Stable listing identity is an implementation issue inside the accepted Listing Verification boundary.",
+                    evidence=[text],
+                    affected_components=["listing_verification"] if context.architecture.find_component("listing_verification") else [],
+                    affected_tasks=affected_tasks,
+                    architecture_change_required=False,
+                    recommended_action=(
+                        DriftRecommendedAction.UPDATE_TASK
+                        if affected_task is not None
+                        else DriftRecommendedAction.KEEP_CURRENT
+                    ),
+                ),
             )
 
-        if event.type == ProjectEventType.USER_MESSAGE and "firestore" in text.lower():
+        if event.type == ProjectEventType.USER_MESSAGE and "firestore" in lower:
+            affected_components = [
+                component_id
+                for component_id in ("database", "backend")
+                if context.architecture.find_component(component_id) is not None
+            ]
             proposal = ArchitectureChangeProposal(
                 project_id=context.project.id,
                 reason="The human explicitly changed the persistence requirement from PostgreSQL to Firestore.",
                 evidence=[text],
                 observed_change="Persistence technology changed from PostgreSQL to Firestore.",
-                affected_components=["database", "backend"],
+                affected_components=affected_components,
                 proposed_changes=[{"operation": "replace_component", "component_id": "database", "new_name": "Firestore", "new_type": "database", "new_responsibility": "Persist project state"}],
                 impact="Backend persistence adapter and database-related tasks must be re-evaluated.",
                 recommended_option=ArchitectureOption.ACCEPT_PROPOSED_CHANGE,
@@ -128,6 +173,27 @@ class FakeModelProvider(ModelProvider):
                 summary="Detected an evidence-backed architecture-impacting requirement change; human approval is required.",
                 actions=[AgentAction(type=AgentActionType.PROPOSE_ARCHITECTURE_CHANGE, payload={"proposal": proposal.model_dump(mode="json")})],
                 architecture_review_required=True,
+                evaluation=DriftEvaluation(
+                    classification=DriftClassification.ARCHITECTURE_DRIFT,
+                    summary="The accepted persistence boundary no longer matches the explicit persistence requirement.",
+                    evidence=[text],
+                    affected_components=affected_components,
+                    affected_tasks=[],
+                    architecture_change_required=True,
+                    recommended_action=DriftRecommendedAction.PROPOSE_ARCHITECTURE_CHANGE,
+                ),
             )
 
-        return AgentDecision(summary="No justified project-state change was identified.", actions=[AgentAction(type=AgentActionType.NO_ACTION)])
+        return AgentDecision(
+            summary="Observed reality still fits the accepted architecture; no architecture change is justified.",
+            actions=[AgentAction(type=AgentActionType.NO_ACTION)],
+            evaluation=DriftEvaluation(
+                classification=DriftClassification.ALIGNED,
+                summary="No evidence changes an accepted architecture boundary.",
+                evidence=[text] if text else [],
+                affected_components=[],
+                affected_tasks=[],
+                architecture_change_required=False,
+                recommended_action=DriftRecommendedAction.NO_ACTION,
+            ),
+        )
