@@ -9,11 +9,15 @@ from archbro.backend.core.contracts import (
     Architecture,
     ArchitectureChangeProposal,
     ArchitectureOption,
+    Component,
     Project,
     ProjectEvent,
     ProjectEventType,
+    ProposalStatus,
     Task,
+    TaskStatus,
 )
+from archbro.backend.core.action_executor import ActionExecutor
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.platform.persistence.firestore import FirestoreProjectRepository
 from archbro.platform.runtime.app import create_app
@@ -257,3 +261,283 @@ def test_runtime_rejects_firestore_without_google_project(monkeypatch):
 
     with pytest.raises(ValueError, match="FIRESTORE_PROJECT_ID"):
         create_app(provider=FakeModelProvider())
+
+
+def test_firestore_acceptance_commits_architecture_project_tasks_and_proposal_in_one_transaction():
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="m5")
+    project = Project(name="Firestore M5", goal="Reconcile acceptance", architecture_version=1)
+    repo.save_project(project)
+    repo.save_architecture(
+        project.id,
+        Architecture(
+            version=1,
+            components=[
+                Component(
+                    id="database",
+                    name="PostgreSQL",
+                    type="database",
+                    responsibility="Persist project state.",
+                )
+            ],
+        ),
+    )
+    task = Task(title="Prepare PostgreSQL persistence", related_component="database")
+    repo.save_task(project.id, task)
+    proposal = ArchitectureChangeProposal(
+        project_id=project.id,
+        base_architecture_version=1,
+        reason="Persistence changed",
+        evidence=["Firestore selected"],
+        observed_change="PostgreSQL to Firestore",
+        affected_components=["database"],
+        proposed_changes=[
+            {
+                "operation": "replace_component",
+                "component_id": "database",
+                "new_name": "Firestore",
+            }
+        ],
+        impact="Persistence work changes",
+        recommended_option=ArchitectureOption.ACCEPT_PROPOSED_CHANGE,
+    )
+    repo.save_proposal(proposal)
+
+    ActionExecutor(repo).accept_proposal(project.id, proposal.id)
+
+    assert client.transaction_commits == 1
+    assert repo.get_architecture(project.id).version == 2
+    assert repo.get_project(project.id).architecture_version == 2
+    assert repo.get_task(task.id).status == TaskStatus.BLOCKED
+    assert repo.get_proposal(proposal.id).status.value == "ACCEPTED"
+
+
+def test_firestore_acceptance_transaction_failure_leaves_all_previous_state_unchanged():
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="m5fail")
+    project = Project(name="Firestore M5", goal="Reconcile acceptance", architecture_version=1)
+    repo.save_project(project)
+    repo.save_architecture(
+        project.id,
+        Architecture(
+            version=1,
+            components=[
+                Component(
+                    id="database",
+                    name="PostgreSQL",
+                    type="database",
+                    responsibility="Persist project state.",
+                )
+            ],
+        ),
+    )
+    task = Task(title="Prepare PostgreSQL persistence", related_component="database")
+    repo.save_task(project.id, task)
+    proposal = ArchitectureChangeProposal(
+        project_id=project.id,
+        base_architecture_version=1,
+        reason="Persistence changed",
+        evidence=["Firestore selected"],
+        observed_change="PostgreSQL to Firestore",
+        affected_components=["database"],
+        proposed_changes=[
+            {
+                "operation": "replace_component",
+                "component_id": "database",
+                "new_name": "Firestore",
+            }
+        ],
+        impact="Persistence work changes",
+        recommended_option=ArchitectureOption.ACCEPT_PROPOSED_CHANGE,
+    )
+    repo.save_proposal(proposal)
+    client.fail_next_transaction = True
+
+    with pytest.raises(RuntimeError, match="injected Firestore transaction failure"):
+        ActionExecutor(repo).accept_proposal(project.id, proposal.id)
+
+    assert repo.get_architecture(project.id).version == 1
+    assert repo.get_project(project.id).architecture_version == 1
+    assert repo.get_task(task.id).status == TaskStatus.TODO
+    assert repo.get_proposal(proposal.id).status.value == "PENDING"
+
+
+def test_firestore_acceptance_rechecks_base_version_inside_transaction(monkeypatch):
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="m5race")
+    project = Project(name="Firestore Race", goal="Serialize approval", architecture_version=1)
+    repo.save_project(project)
+    initial_architecture = Architecture(
+        version=1,
+        components=[
+            Component(
+                id="database",
+                name="PostgreSQL",
+                type="database",
+                responsibility="Persist project state.",
+            )
+        ],
+    )
+    repo.save_architecture(project.id, initial_architecture)
+
+    def proposal(new_name: str) -> ArchitectureChangeProposal:
+        return ArchitectureChangeProposal(
+            project_id=project.id,
+            base_architecture_version=1,
+            reason="Persistence changed",
+            evidence=[f"{new_name} selected"],
+            observed_change=f"PostgreSQL to {new_name}",
+            affected_components=["database"],
+            proposed_changes=[
+                {
+                    "operation": "replace_component",
+                    "component_id": "database",
+                    "new_name": new_name,
+                }
+            ],
+            impact="Persistence work changes",
+            recommended_option=ArchitectureOption.ACCEPT_PROPOSED_CHANGE,
+        )
+
+    first = proposal("Firestore")
+    second = proposal("Spanner")
+    repo.save_proposal(first)
+    repo.save_proposal(second)
+    ActionExecutor(repo).accept_proposal(project.id, first.id)
+
+    monkeypatch.setattr(repo, "get_architecture", lambda _project_id: initial_architecture)
+    monkeypatch.setattr(repo, "get_project", lambda _project_id: project)
+
+    with pytest.raises(ValueError, match="accepted architecture changed before proposal commit"):
+        ActionExecutor(repo).accept_proposal(project.id, second.id)
+
+    accepted = FirestoreProjectRepository.get_architecture(repo, project.id)
+    assert accepted.version == 2
+    assert accepted.find_component("database").name == "Firestore"
+    assert FirestoreProjectRepository.get_proposal(repo, second.id).status.value == "PENDING"
+
+
+def test_firestore_reject_cannot_overwrite_a_concurrent_accept(monkeypatch):
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="m5decision")
+    project = Project(name="Firestore Decision", goal="Serialize review", architecture_version=1)
+    repo.save_project(project)
+    repo.save_architecture(
+        project.id,
+        Architecture(
+            version=1,
+            components=[
+                Component(
+                    id="database",
+                    name="PostgreSQL",
+                    type="database",
+                    responsibility="Persist project state.",
+                )
+            ],
+        ),
+    )
+    proposal = ArchitectureChangeProposal(
+        project_id=project.id,
+        base_architecture_version=1,
+        reason="Persistence changed",
+        evidence=["Firestore selected"],
+        observed_change="PostgreSQL to Firestore",
+        affected_components=["database"],
+        proposed_changes=[
+            {
+                "operation": "replace_component",
+                "component_id": "database",
+                "new_name": "Firestore",
+            }
+        ],
+        impact="Persistence work changes",
+        recommended_option=ArchitectureOption.ACCEPT_PROPOSED_CHANGE,
+    )
+    repo.save_proposal(proposal)
+    stale_pending = repo.get_proposal(proposal.id)
+
+    ActionExecutor(repo).accept_proposal(project.id, proposal.id)
+    assert FirestoreProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.ACCEPTED
+
+    monkeypatch.setattr(repo, "get_proposal", lambda _proposal_id: stale_pending)
+    with pytest.raises(ValueError, match="proposal status changed before decision commit"):
+        ActionExecutor(repo).reject_proposal(project.id, proposal.id)
+
+    assert FirestoreProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.ACCEPTED
+
+
+def test_firestore_acceptance_rejects_concurrent_task_update(monkeypatch):
+    from datetime import timedelta
+
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="m5taskrace")
+    project = Project(
+        name="Firestore Task Race",
+        goal="Protect human task state",
+        architecture_version=1,
+    )
+    repo.save_project(project)
+    repo.save_architecture(
+        project.id,
+        Architecture(
+            version=1,
+            components=[
+                Component(
+                    id="database",
+                    name="PostgreSQL",
+                    type="database",
+                    responsibility="Persist project state.",
+                )
+            ],
+        ),
+    )
+    task = Task(
+        title="Validate persistence recovery",
+        status=TaskStatus.IN_PROGRESS,
+        related_component="database",
+    )
+    repo.save_task(project.id, task)
+    proposal = ArchitectureChangeProposal(
+        project_id=project.id,
+        base_architecture_version=1,
+        reason="Persistence changed",
+        evidence=["Firestore selected"],
+        observed_change="PostgreSQL to Firestore",
+        affected_components=["database"],
+        proposed_changes=[
+            {
+                "operation": "replace_component",
+                "component_id": "database",
+                "new_name": "Firestore",
+            }
+        ],
+        impact="Persistence work changes",
+        recommended_option=ArchitectureOption.ACCEPT_PROPOSED_CHANGE,
+    )
+    repo.save_proposal(proposal)
+    stale_tasks = repo.list_tasks(project.id)
+
+    original_save = repo.save_acceptance_state
+
+    def concurrent_save(**kwargs):
+        current = repo.get_task(task.id)
+        repo.save_task(
+            project.id,
+            current.model_copy(
+                update={
+                    "status": TaskStatus.DONE,
+                    "updated_at": current.updated_at + timedelta(seconds=1),
+                }
+            ),
+        )
+        return original_save(**kwargs)
+
+    monkeypatch.setattr(repo, "list_tasks", lambda _project_id: stale_tasks)
+    monkeypatch.setattr(repo, "save_acceptance_state", concurrent_save)
+
+    with pytest.raises(ValueError, match="acceptance task changed before proposal commit"):
+        ActionExecutor(repo).accept_proposal(project.id, proposal.id)
+
+    assert FirestoreProjectRepository.get_task(repo, task.id).status == TaskStatus.DONE
+    assert FirestoreProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.PENDING
+    assert FirestoreProjectRepository.get_architecture(repo, project.id).version == 1

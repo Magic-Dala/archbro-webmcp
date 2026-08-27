@@ -8,6 +8,7 @@ from archbro.backend.core.contracts import (
     Project,
     ProjectContext,
     ProjectEvent,
+    ProposalStatus,
     Task,
 )
 
@@ -35,6 +36,30 @@ class ProjectRepositoryPort(Protocol):
     def save_proposal(self, proposal: ArchitectureChangeProposal) -> None: ...
     def get_proposal(self, proposal_id: str) -> ArchitectureChangeProposal: ...
     def list_proposals(self, project_id: str) -> list[ArchitectureChangeProposal]: ...
+
+    def save_acceptance_state(
+        self,
+        *,
+        project_id: str,
+        expected_architecture_version: int,
+        expected_task_updated_at: dict[str, str],
+        project: Project,
+        architecture: Architecture,
+        tasks: list[Task],
+        proposal: ArchitectureChangeProposal,
+    ) -> None:
+        """Persist one accepted architecture transition atomically."""
+        ...
+
+    def save_proposal_decision(
+        self,
+        *,
+        project_id: str,
+        proposal: ArchitectureChangeProposal,
+        expected_status: ProposalStatus,
+    ) -> None:
+        """Persist a human proposal decision only if its current status still matches."""
+        ...
 
     def save_event(self, event: ProjectEvent) -> None: ...
     def commit_event_actions(

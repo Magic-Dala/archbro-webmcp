@@ -206,6 +206,7 @@ class ProjectEvent(BaseModel):
 class ArchitectureChangeProposal(BaseModel):
     id: str = Field(default_factory=lambda: new_id("proposal"))
     project_id: str
+    base_architecture_version: int | None = Field(default=None, ge=0)
     reason: str
     evidence: list[str]
     observed_change: str

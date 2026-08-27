@@ -66,6 +66,7 @@ def test_scenario_a_and_b():
     assert any(c.name == "PostgreSQL" for c in repo.get_architecture(project.id).components)
     proposal = repo.get_proposal(r3.proposal_ids[0])
     assert proposal.status == ProposalStatus.PENDING
+    assert proposal.base_architecture_version == 1
 
     ActionExecutor(repo).accept_proposal(project.id, proposal.id)
     accepted_arch = repo.get_architecture(project.id)
@@ -132,6 +133,8 @@ def test_provider_abstraction():
 
 def test_hierarchical_architecture_contract_and_recursive_replacement():
     repo, project = make_repo()
+    project.architecture_version = 1
+    repo.save_project(project)
     architecture = Architecture(
         version=1,
         summary="Human-readable hierarchy",
@@ -157,6 +160,7 @@ def test_hierarchical_architecture_contract_and_recursive_replacement():
     repo.save_architecture(project.id, architecture)
     proposal = ArchitectureChangeProposal(
         project_id=project.id,
+        base_architecture_version=1,
         reason="Move the child persistence boundary to Firestore.",
         evidence=["Human requested Firestore."],
         observed_change="Persistence technology changed.",

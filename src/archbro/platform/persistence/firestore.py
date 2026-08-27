@@ -153,6 +153,110 @@ class FirestoreProjectRepository:
         ]
         return sorted(proposals, key=lambda proposal: proposal.created_at)
 
+    def save_acceptance_state(
+        self,
+        *,
+        project_id: str,
+        expected_architecture_version: int,
+        expected_task_updated_at: dict[str, str],
+        project: Project,
+        architecture: Architecture,
+        tasks: list[Task],
+        proposal: ArchitectureChangeProposal,
+    ) -> None:
+        write_count = 3 + len(tasks)
+        if write_count > 500:
+            raise ValueError(
+                f"accepted architecture reconciliation requires {write_count} Firestore writes; maximum is 500"
+            )
+
+        architecture_ref = self._collection(self._architectures).document(project_id)
+        project_ref = self._collection(self._projects).document(project.id)
+        proposal_ref = self._collection(self._proposals).document(proposal.id)
+        transaction = self.client.transaction()
+
+        def commit(transaction: Any) -> None:
+            architecture_snapshot = architecture_ref.get(transaction=transaction)
+            current_architecture = (
+                Architecture.model_validate(self._payload(architecture_snapshot))
+                if architecture_snapshot.exists
+                else Architecture()
+            )
+            if current_architecture.version != expected_architecture_version:
+                raise ValueError(
+                    "accepted architecture changed before proposal commit: "
+                    f"expected v{expected_architecture_version}, current is v{current_architecture.version}"
+                )
+
+            project_snapshot = project_ref.get(transaction=transaction)
+            current_project = Project.model_validate(self._payload(project_snapshot))
+            if current_project.architecture_version != expected_architecture_version:
+                raise ValueError(
+                    "project architecture version changed before proposal commit: "
+                    f"expected v{expected_architecture_version}, current is v{current_project.architecture_version}"
+                )
+
+            proposal_snapshot = proposal_ref.get(transaction=transaction)
+            current_proposal = ArchitectureChangeProposal.model_validate(self._payload(proposal_snapshot))
+            if current_proposal.status != ProposalStatus.PENDING:
+                raise ValueError("proposal is no longer pending at acceptance commit")
+
+            for task_id, expected_updated_at in expected_task_updated_at.items():
+                task_snapshot = self._collection(self._tasks).document(task_id).get(transaction=transaction)
+                raw_task = task_snapshot.to_dict() or {} if task_snapshot.exists else {}
+                if not task_snapshot.exists or raw_task.get("project_id") != project_id:
+                    raise ValueError("acceptance task changed before proposal commit")
+                current_task = Task.model_validate(self._payload(task_snapshot))
+                if current_task.updated_at.isoformat() != expected_updated_at:
+                    raise ValueError("acceptance task changed before proposal commit")
+
+            transaction.set(
+                architecture_ref,
+                {"project_id": project_id, "data": architecture.model_dump(mode="json")},
+            )
+            transaction.set(
+                project_ref,
+                {"data": project.model_dump(mode="json")},
+            )
+            for task in tasks:
+                transaction.set(
+                    self._collection(self._tasks).document(task.id),
+                    {"project_id": project_id, "data": task.model_dump(mode="json")},
+                )
+            transaction.set(
+                proposal_ref,
+                {"project_id": proposal.project_id, "data": proposal.model_dump(mode="json")},
+            )
+
+        self._transaction_runner(transaction, commit)
+
+    def save_proposal_decision(
+        self,
+        *,
+        project_id: str,
+        proposal: ArchitectureChangeProposal,
+        expected_status: ProposalStatus,
+    ) -> None:
+        proposal_ref = self._collection(self._proposals).document(proposal.id)
+        transaction = self.client.transaction()
+
+        def commit(transaction: Any) -> None:
+            snapshot = proposal_ref.get(transaction=transaction)
+            current = ArchitectureChangeProposal.model_validate(self._payload(snapshot))
+            if current.project_id != project_id:
+                raise KeyError(proposal.id)
+            if current.status != expected_status:
+                raise ValueError(
+                    "proposal status changed before decision commit: "
+                    f"expected {expected_status.value}, current is {current.status.value}"
+                )
+            transaction.set(
+                proposal_ref,
+                {"project_id": proposal.project_id, "data": proposal.model_dump(mode="json")},
+            )
+
+        self._transaction_runner(transaction, commit)
+
     def save_event(self, event: ProjectEvent) -> None:
         self._collection(self._events).document(event.id).set(
             {"project_id": event.project_id, "data": event.model_dump(mode="json")}

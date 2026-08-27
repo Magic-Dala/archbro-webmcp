@@ -264,6 +264,18 @@ def test_minimal_api_contract_end_to_end():
     assert final_arch["version"] == 2
     assert any(c["name"] == "Firestore" for c in final_arch["components"])
 
+    reconciled_tasks = client.get(f"/projects/{project_id}/tasks").json()
+    database_task = next(t for t in reconciled_tasks if t["related_component"] == "database" and t["title"] == "Prepare PostgreSQL persistence")
+    assert database_task["status"] == "BLOCKED"
+    assert "PostgreSQL to Firestore" in database_task["description"]
+    migration_task = next(t for t in reconciled_tasks if t["title"] == "Migrate PostgreSQL to Firestore")
+    assert migration_task["status"] == "TODO"
+    assert migration_task["owner"] == "HUMAN"
+    assert migration_task["source"] == "ARCHITECTURE"
+    assert migration_task["related_component"] == "database"
+    completed_backend = next(t for t in reconciled_tasks if t["id"] == backend["id"])
+    assert completed_backend["status"] == "DONE"
+
 
 def test_web_surface_is_served_from_same_app():
     repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "web.db"))

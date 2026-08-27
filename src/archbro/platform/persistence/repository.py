@@ -99,6 +99,131 @@ class ProjectRepository:
             rows = conn.execute("SELECT data FROM proposals WHERE project_id=? ORDER BY rowid", (project_id,)).fetchall()
         return [ArchitectureChangeProposal.model_validate_json(r["data"]) for r in rows]
 
+    def save_acceptance_state(
+        self,
+        *,
+        project_id: str,
+        expected_architecture_version: int,
+        expected_task_updated_at: dict[str, str],
+        project: Project,
+        architecture: Architecture,
+        tasks: list[Task],
+        proposal: ArchitectureChangeProposal,
+    ) -> None:
+        # Acceptance is one domain transition. Keep architecture, project version,
+        # reconciled tasks, and proposal status in the same SQLite transaction so
+        # a persistence failure cannot expose a half-accepted architecture.
+        conn = self._connect()
+        try:
+            # Acquire the write reservation before re-checking the accepted base
+            # state. This closes the race between ActionExecutor's planning read
+            # and persistence when two approvals arrive at nearly the same time.
+            conn.execute("BEGIN IMMEDIATE")
+            architecture_row = conn.execute(
+                "SELECT data FROM architectures WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            current_architecture = (
+                Architecture.model_validate_json(architecture_row["data"])
+                if architecture_row
+                else Architecture()
+            )
+            if current_architecture.version != expected_architecture_version:
+                raise ValueError(
+                    "accepted architecture changed before proposal commit: "
+                    f"expected v{expected_architecture_version}, current is v{current_architecture.version}"
+                )
+
+            project_row = conn.execute(
+                "SELECT data FROM projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+            if not project_row:
+                raise KeyError(project_id)
+            current_project = Project.model_validate_json(project_row["data"])
+            if current_project.architecture_version != expected_architecture_version:
+                raise ValueError(
+                    "project architecture version changed before proposal commit: "
+                    f"expected v{expected_architecture_version}, current is v{current_project.architecture_version}"
+                )
+
+            proposal_row = conn.execute(
+                "SELECT data FROM proposals WHERE id=? AND project_id=?",
+                (proposal.id, project_id),
+            ).fetchone()
+            if not proposal_row:
+                raise KeyError(proposal.id)
+            current_proposal = ArchitectureChangeProposal.model_validate_json(proposal_row["data"])
+            if current_proposal.status != ProposalStatus.PENDING:
+                raise ValueError("proposal is no longer pending at acceptance commit")
+
+            for task_id, expected_updated_at in expected_task_updated_at.items():
+                task_row = conn.execute(
+                    "SELECT project_id, data FROM tasks WHERE id=?",
+                    (task_id,),
+                ).fetchone()
+                if not task_row or task_row["project_id"] != project_id:
+                    raise ValueError("acceptance task changed before proposal commit")
+                current_task = Task.model_validate_json(task_row["data"])
+                if current_task.updated_at.isoformat() != expected_updated_at:
+                    raise ValueError("acceptance task changed before proposal commit")
+            conn.execute(
+                "INSERT OR REPLACE INTO architectures VALUES (?, ?)",
+                (project_id, architecture.model_dump_json()),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO projects VALUES (?, ?)",
+                (project.id, project.model_dump_json()),
+            )
+            for task in tasks:
+                conn.execute(
+                    "INSERT OR REPLACE INTO tasks VALUES (?, ?, ?)",
+                    (task.id, project_id, task.model_dump_json()),
+                )
+            conn.execute(
+                "INSERT OR REPLACE INTO proposals VALUES (?, ?, ?)",
+                (proposal.id, proposal.project_id, proposal.model_dump_json()),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def save_proposal_decision(
+        self,
+        *,
+        project_id: str,
+        proposal: ArchitectureChangeProposal,
+        expected_status: ProposalStatus,
+    ) -> None:
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT data FROM proposals WHERE id=? AND project_id=?",
+                (proposal.id, project_id),
+            ).fetchone()
+            if not row:
+                raise KeyError(proposal.id)
+            current = ArchitectureChangeProposal.model_validate_json(row["data"])
+            if current.status != expected_status:
+                raise ValueError(
+                    "proposal status changed before decision commit: "
+                    f"expected {expected_status.value}, current is {current.status.value}"
+                )
+            conn.execute(
+                "INSERT OR REPLACE INTO proposals VALUES (?, ?, ?)",
+                (proposal.id, proposal.project_id, proposal.model_dump_json()),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def save_event(self, event: ProjectEvent) -> None:
         with self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO events VALUES (?, ?, ?)", (event.id, event.project_id, event.model_dump_json()))
