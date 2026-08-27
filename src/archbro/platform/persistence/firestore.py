@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from typing import Any, Callable
 from uuid import uuid4
 
 from archbro.backend.core.contracts import (
+    AgentRunResult,
     Architecture,
     ArchitectureChangeProposal,
+    ObservationClaim,
+    ObservationClaimState,
     Project,
     ProjectContext,
     ProjectEvent,
     ProposalStatus,
     Task,
 )
+from archbro.backend.core.observation import ObservationMutationPlan
+
+
+_OBSERVATION_CLAIM_TTL = timedelta(minutes=2)
 
 
 TransactionRunner = Callable[[Any, Callable[[Any], Any]], Any]
@@ -49,6 +57,9 @@ class FirestoreProjectRepository:
         self._tasks = f"{prefix}_tasks"
         self._proposals = f"{prefix}_proposals"
         self._events = f"{prefix}_events"
+        self._event_keys = f"{prefix}_event_keys"
+        self._event_processing = f"{prefix}_event_processing"
+        self._agent_runs = f"{prefix}_agent_runs"
         self._notes = f"{prefix}_notes"
 
     def _collection(self, name: str):
@@ -77,6 +88,51 @@ class FirestoreProjectRepository:
         query = self._where_eq(self._collection(collection_name), "project_id", project_id)
         return list(query.stream())
 
+    @staticmethod
+    def _source_key(event: ProjectEvent) -> str | None:
+        if not event.source_event_id:
+            return None
+        raw = f"{event.project_id}|{event.source.value}|{event.source_event_id}".encode("utf-8")
+        return sha256(raw).hexdigest()
+
+    @staticmethod
+    def _same_observation(left: ProjectEvent, right: ProjectEvent) -> bool:
+        return (
+            left.project_id == right.project_id
+            and left.source == right.source
+            and left.type == right.type
+            and left.payload == right.payload
+            and (
+                left.source_event_id == right.source_event_id
+                or left.source_event_id is None
+                or right.source_event_id is None
+            )
+        )
+
+    def _bounded_project_docs(
+        self,
+        collection_name: str,
+        project_id: str,
+        *,
+        order_field: str,
+        limit: int,
+    ) -> list[Any]:
+        if limit <= 0:
+            return []
+        query = self._where_eq(self._collection(collection_name), "project_id", project_id)
+        query = query.order_by(order_field, direction="DESCENDING").limit(limit)
+        return list(query.stream())
+
+    @staticmethod
+    def _claim_is_stale(updated_at: str) -> bool:
+        try:
+            claimed_at = datetime.fromisoformat(updated_at)
+        except (TypeError, ValueError):
+            return True
+        if claimed_at.tzinfo is None:
+            claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - claimed_at > _OBSERVATION_CLAIM_TTL
+
     def save_project(self, project: Project) -> None:
         self._collection(self._projects).document(project.id).set(
             {"data": project.model_dump(mode="json")}
@@ -101,7 +157,15 @@ class FirestoreProjectRepository:
         if not project_ref.get().exists:
             return False
         self._collection(self._architectures).document(project_id).delete()
-        for collection_name in (self._tasks, self._proposals, self._events, self._notes):
+        for collection_name in (
+            self._tasks,
+            self._proposals,
+            self._events,
+            self._event_keys,
+            self._event_processing,
+            self._agent_runs,
+            self._notes,
+        ):
             for snapshot in self._project_docs(collection_name, project_id):
                 snapshot.reference.delete()
         project_ref.delete()
@@ -258,9 +322,342 @@ class FirestoreProjectRepository:
         self._transaction_runner(transaction, commit)
 
     def save_event(self, event: ProjectEvent) -> None:
-        self._collection(self._events).document(event.id).set(
-            {"project_id": event.project_id, "data": event.model_dump(mode="json")}
+        source_key = self._source_key(event)
+        if source_key is None:
+            self._collection(self._events).document(event.id).set(
+                {"project_id": event.project_id, "data": event.model_dump(mode="json")}
+            )
+            return
+
+        transaction = self.client.transaction()
+        key_ref = self._collection(self._event_keys).document(source_key)
+
+        def commit(transaction: Any) -> None:
+            key_snapshot = key_ref.get(transaction=transaction)
+            if key_snapshot.exists:
+                raw_key = key_snapshot.to_dict() or {}
+                existing_event_id = str(raw_key.get("event_id", ""))
+                existing_snapshot = self._collection(self._events).document(existing_event_id).get(
+                    transaction=transaction
+                )
+                existing_event = ProjectEvent.model_validate(self._payload(existing_snapshot))
+                if not self._same_observation(existing_event, event):
+                    raise ValueError("source event id is already registered with different observation data")
+                return
+
+            event_ref = self._collection(self._events).document(event.id)
+            existing_snapshot = event_ref.get(transaction=transaction)
+            if existing_snapshot.exists:
+                existing_event = ProjectEvent.model_validate(self._payload(existing_snapshot))
+                if not self._same_observation(existing_event, event):
+                    raise ValueError("event id is already registered with different observation data")
+            else:
+                transaction.set(
+                    event_ref,
+                    {"project_id": event.project_id, "data": event.model_dump(mode="json")},
+                )
+            transaction.set(
+                key_ref,
+                {"project_id": event.project_id, "event_id": event.id},
+            )
+
+        self._transaction_runner(transaction, commit)
+
+    def get_event(self, event_id: str) -> ProjectEvent:
+        snapshot = self._collection(self._events).document(event_id).get()
+        try:
+            return ProjectEvent.model_validate(self._payload(snapshot))
+        except KeyError as exc:
+            raise KeyError(event_id) from exc
+
+    def list_events(self, project_id: str, limit: int = 100) -> list[ProjectEvent]:
+        events = [
+            ProjectEvent.model_validate(self._payload(doc))
+            for doc in self._bounded_project_docs(
+                self._events,
+                project_id,
+                order_field="data.received_at",
+                limit=limit,
+            )
+        ]
+        return list(reversed(events))
+
+    def list_agent_runs(self, project_id: str, limit: int = 100) -> list[AgentRunResult]:
+        runs = [
+            AgentRunResult.model_validate(self._payload(doc))
+            for doc in self._bounded_project_docs(
+                self._agent_runs,
+                project_id,
+                order_field="data.completed_at",
+                limit=limit,
+            )
+        ]
+        return list(reversed(runs))
+
+    def claim_observation(self, event: ProjectEvent, *, run_id: str) -> ObservationClaim:
+        transaction = self.client.transaction()
+
+        def commit(transaction: Any) -> ObservationClaim:
+            project_ref = self._collection(self._projects).document(event.project_id)
+            if not project_ref.get(transaction=transaction).exists:
+                raise KeyError(event.project_id)
+
+            source_key = self._source_key(event)
+            canonical_event_id = event.id
+            key_ref = None
+            key_snapshot = None
+            if source_key is not None:
+                key_ref = self._collection(self._event_keys).document(source_key)
+                key_snapshot = key_ref.get(transaction=transaction)
+                if key_snapshot.exists:
+                    raw_key = key_snapshot.to_dict() or {}
+                    canonical_event_id = str(raw_key.get("event_id", ""))
+                    if not canonical_event_id:
+                        raise ValueError("Firestore observation key is missing event_id")
+
+            event_ref = self._collection(self._events).document(canonical_event_id)
+            event_snapshot = event_ref.get(transaction=transaction)
+            if event_snapshot.exists:
+                canonical_event = ProjectEvent.model_validate(self._payload(event_snapshot))
+                if not self._same_observation(canonical_event, event):
+                    raise ValueError("source event id is already registered with different observation data")
+                if canonical_event.source_event_id is None and event.source_event_id is not None:
+                    canonical_event = canonical_event.model_copy(
+                        update={"source_event_id": event.source_event_id}
+                    )
+            else:
+                canonical_event = event.model_copy(update={"id": canonical_event_id})
+
+            processing_ref = self._collection(self._event_processing).document(canonical_event.id)
+            processing_snapshot = processing_ref.get(transaction=transaction)
+            processing = processing_snapshot.to_dict() or {} if processing_snapshot.exists else {}
+            state = str(processing.get("state", ""))
+            completed_run_id = ""
+            completed_run_snapshot = None
+            if state == "SUCCESS":
+                completed_run_id = str(processing.get("run_id", ""))
+                completed_run_snapshot = self._collection(self._agent_runs).document(completed_run_id).get(
+                    transaction=transaction
+                )
+
+            # Firestore transactions require all reads to happen before the first
+            # write. Queue every event/key/claim write only after project, key,
+            # canonical event, processing state, and any replay AgentRun are read.
+            if not event_snapshot.exists or (
+                ProjectEvent.model_validate(self._payload(event_snapshot)).source_event_id is None
+                and canonical_event.source_event_id is not None
+            ):
+                transaction.set(
+                    event_ref,
+                    {"project_id": event.project_id, "data": canonical_event.model_dump(mode="json")},
+                )
+            if key_ref is not None and key_snapshot is not None and not key_snapshot.exists:
+                transaction.set(
+                    key_ref,
+                    {"project_id": event.project_id, "event_id": canonical_event.id},
+                )
+
+            if state == "SUCCESS":
+                if completed_run_snapshot is None:
+                    raise RuntimeError("completed observation is missing its AgentRun")
+                result = AgentRunResult.model_validate(self._payload(completed_run_snapshot))
+                return ObservationClaim(
+                    state=ObservationClaimState.REPLAY,
+                    event=canonical_event,
+                    run_id=completed_run_id,
+                    existing_result=result,
+                )
+
+            if (
+                state == "PROCESSING"
+                and not self._claim_is_stale(str(processing.get("updated_at", "")))
+            ):
+                return ObservationClaim(
+                    state=ObservationClaimState.IN_PROGRESS,
+                    event=canonical_event,
+                    run_id=str(processing.get("run_id", "")),
+                )
+
+            transaction.set(
+                processing_ref,
+                {
+                    "project_id": canonical_event.project_id,
+                    "run_id": run_id,
+                    "state": "PROCESSING",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            return ObservationClaim(
+                state=ObservationClaimState.CLAIMED,
+                event=canonical_event,
+                run_id=run_id,
+            )
+
+        return self._transaction_runner(transaction, commit)
+
+    def _assert_processing_claim(self, transaction: Any, event_id: str, run_id: str) -> Any:
+        ref = self._collection(self._event_processing).document(event_id)
+        snapshot = ref.get(transaction=transaction)
+        raw = snapshot.to_dict() or {} if snapshot.exists else {}
+        if raw.get("state") != "PROCESSING" or raw.get("run_id") != run_id:
+            raise ValueError("observation processing claim changed before commit")
+        return ref
+
+    def commit_observation_result(
+        self,
+        *,
+        event: ProjectEvent,
+        run_id: str,
+        plan: ObservationMutationPlan,
+        result: AgentRunResult,
+    ) -> None:
+        if result.result != "SUCCESS" or result.agent_run_id != run_id or result.event_id != event.id:
+            raise ValueError("successful observation commit requires the claimed successful AgentRun")
+        write_count = (
+            2
+            + len(plan.tasks)
+            + len(plan.proposals)
+            + len(plan.notes)
+            + int(plan.project is not None)
+            + int(plan.architecture is not None)
         )
+        if write_count > 500:
+            raise ValueError(
+                f"observation commit requires {write_count} Firestore writes; maximum is 500"
+            )
+
+        transaction = self.client.transaction()
+
+        def commit(transaction: Any) -> None:
+            processing_ref = self._assert_processing_claim(transaction, event.id, run_id)
+
+            if plan.expected_project_updated_at is not None:
+                project_snapshot = self._collection(self._projects).document(event.project_id).get(
+                    transaction=transaction
+                )
+                if not project_snapshot.exists:
+                    raise KeyError(event.project_id)
+                current_project = Project.model_validate(self._payload(project_snapshot))
+                if current_project.updated_at.isoformat() != plan.expected_project_updated_at:
+                    raise ValueError("observation project state changed before commit")
+
+            if plan.expected_architecture_version is not None:
+                architecture_snapshot = self._collection(self._architectures).document(event.project_id).get(
+                    transaction=transaction
+                )
+                current_architecture = (
+                    Architecture.model_validate(self._payload(architecture_snapshot))
+                    if architecture_snapshot.exists
+                    else Architecture()
+                )
+                if current_architecture.version != plan.expected_architecture_version:
+                    raise ValueError("observation architecture state changed before commit")
+
+            for task_id, expected_updated_at in plan.expected_task_updated_at.items():
+                task_snapshot = self._collection(self._tasks).document(task_id).get(transaction=transaction)
+                raw_task = task_snapshot.to_dict() or {} if task_snapshot.exists else {}
+                if not task_snapshot.exists or raw_task.get("project_id") != event.project_id:
+                    raise ValueError("observation task state changed before commit")
+                current_task = Task.model_validate(self._payload(task_snapshot))
+                if current_task.updated_at.isoformat() != expected_updated_at:
+                    raise ValueError("observation task state changed before commit")
+
+            for proposal in plan.proposals:
+                if proposal.project_id != event.project_id:
+                    raise ValueError("proposal project_id mismatch during observation commit")
+                for evidence_event_id in proposal.evidence_event_ids:
+                    evidence_snapshot = self._collection(self._events).document(evidence_event_id).get(
+                        transaction=transaction
+                    )
+                    evidence = ProjectEvent.model_validate(self._payload(evidence_snapshot))
+                    if evidence.project_id != event.project_id:
+                        raise ValueError("proposal evidence must reference an event from the same project")
+
+            if plan.architecture is not None:
+                transaction.set(
+                    self._collection(self._architectures).document(event.project_id),
+                    {"project_id": event.project_id, "data": plan.architecture.model_dump(mode="json")},
+                )
+            if plan.project is not None:
+                if plan.project.id != event.project_id:
+                    raise ValueError("project mutation does not match observation project")
+                transaction.set(
+                    self._collection(self._projects).document(plan.project.id),
+                    {"data": plan.project.model_dump(mode="json")},
+                )
+            for task in plan.tasks:
+                transaction.set(
+                    self._collection(self._tasks).document(task.id),
+                    {"project_id": event.project_id, "data": task.model_dump(mode="json")},
+                )
+            for proposal in plan.proposals:
+                transaction.set(
+                    self._collection(self._proposals).document(proposal.id),
+                    {"project_id": proposal.project_id, "data": proposal.model_dump(mode="json")},
+                )
+            for index, note in enumerate(plan.notes):
+                note_id = sha256(f"{run_id}|{index}".encode("utf-8")).hexdigest()
+                transaction.set(
+                    self._collection(self._notes).document(note_id),
+                    {
+                        "project_id": event.project_id,
+                        "note": note,
+                        "created_at": result.completed_at.isoformat(),
+                    },
+                )
+
+            transaction.set(
+                self._collection(self._agent_runs).document(result.agent_run_id),
+                {
+                    "project_id": event.project_id,
+                    "event_id": event.id,
+                    "data": result.model_dump(mode="json"),
+                },
+            )
+            transaction.set(
+                processing_ref,
+                {
+                    "project_id": event.project_id,
+                    "run_id": run_id,
+                    "state": "SUCCESS",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+        self._transaction_runner(transaction, commit)
+
+    def fail_observation(
+        self,
+        *,
+        event: ProjectEvent,
+        run_id: str,
+        result: AgentRunResult,
+    ) -> None:
+        if result.result != "ERROR" or result.agent_run_id != run_id or result.event_id != event.id:
+            raise ValueError("failed observation commit requires the claimed failed AgentRun")
+        transaction = self.client.transaction()
+
+        def commit(transaction: Any) -> None:
+            processing_ref = self._assert_processing_claim(transaction, event.id, run_id)
+            transaction.set(
+                self._collection(self._agent_runs).document(result.agent_run_id),
+                {
+                    "project_id": event.project_id,
+                    "event_id": event.id,
+                    "data": result.model_dump(mode="json"),
+                },
+            )
+            transaction.set(
+                processing_ref,
+                {
+                    "project_id": event.project_id,
+                    "run_id": run_id,
+                    "state": "FAILED",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+        self._transaction_runner(transaction, commit)
 
     def commit_event_actions(
         self,

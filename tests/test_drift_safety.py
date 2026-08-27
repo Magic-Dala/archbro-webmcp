@@ -124,7 +124,7 @@ def _event_count(db_path: Path, project_id: str) -> int:
         ).fetchone()[0]
 
 
-def test_failed_drift_validation_does_not_persist_event_or_product_state():
+def test_failed_drift_validation_preserves_observation_and_run_without_product_mutation():
     repo, project, db_path = _repo_with_backend()
     before = repo.snapshot(project.id)
 
@@ -140,7 +140,13 @@ def test_failed_drift_validation_does_not_persist_event_or_product_state():
 
     assert result.result == "ERROR"
     assert repo.snapshot(project.id) == before
-    assert _event_count(db_path, project.id) == 0
+    assert _event_count(db_path, project.id) == 1
+    events = repo.list_events(project.id)
+    assert len(events) == 1
+    runs = repo.list_agent_runs(project.id)
+    assert len(runs) == 1
+    assert runs[0].event_id == events[0].id
+    assert runs[0].result == "ERROR"
     assert repo.list_proposals(project.id) == []
 
 
@@ -289,6 +295,9 @@ def test_event_and_actions_roll_back_together_when_later_write_fails():
     assert result.result == "ERROR"
     assert "forced proposal failure" in (result.error or "")
     assert repo.snapshot(project.id) == before
-    assert _event_count(db_path, project.id) == 0
+    # PR3 intentionally retains the claimed event and failed AgentRun as audit history;
+    # the derived project mutation still rolls back atomically.
+    assert _event_count(db_path, project.id) == 1
+    assert [run.result for run in repo.list_agent_runs(project.id)] == ["ERROR"]
     assert repo.get_task(task.id).status.value == "TODO"
     assert repo.list_proposals(project.id) == []

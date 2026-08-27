@@ -94,3 +94,7 @@ Goal
 -> Update / Proposal
 -> Human Review when architecture changes
 ```
+
+### Trusted event provenance
+
+Provider provenance is not caller-controlled authentication metadata. A public API caller cannot label an event as `GITHUB` or `SYSTEM`. The GitHub integration verifies the provider webhook first, normalizes it to `GitHubChangePayload`, and only server-side code constructs the trusted `ProjectEvent(source=GITHUB, type=GITHUB_CHANGE)` passed to the backend orchestrator.

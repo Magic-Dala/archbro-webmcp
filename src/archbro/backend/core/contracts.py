@@ -57,6 +57,50 @@ class ProjectEventSource(StrEnum):
     SYSTEM = "SYSTEM"
 
 
+class GitHubChangeKind(StrEnum):
+    PUSH = "PUSH"
+    PULL_REQUEST_MERGED = "PULL_REQUEST_MERGED"
+
+
+class GitHubChangePayload(BaseModel):
+    repository: str
+    event_kind: GitHubChangeKind
+    summary: str
+    ref: str | None = None
+    commit_sha: str | None = None
+    pull_request_number: int | None = Field(default=None, ge=1)
+    actor: str | None = None
+    title: str | None = None
+    changed_files: list[str] = Field(default_factory=list, max_length=200)
+    commits: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_github_change(self) -> "GitHubChangePayload":
+        self.repository = self.repository.strip()
+        self.summary = self.summary.strip()
+        self.ref = self.ref.strip() if self.ref else None
+        self.commit_sha = self.commit_sha.strip() if self.commit_sha else None
+        self.actor = self.actor.strip() if self.actor else None
+        self.title = self.title.strip() if self.title else None
+        self.changed_files = list(dict.fromkeys(path.strip() for path in self.changed_files if path.strip()))
+        self.commits = list(dict.fromkeys(sha.strip() for sha in self.commits if sha.strip()))
+        if not self.repository:
+            raise ValueError("GitHub change repository must not be empty")
+        if not self.summary:
+            raise ValueError("GitHub change summary must not be empty")
+        if self.event_kind == GitHubChangeKind.PUSH:
+            if not self.ref:
+                raise ValueError("GitHub PUSH requires ref")
+            if not self.commit_sha:
+                raise ValueError("GitHub PUSH requires commit_sha")
+        if self.event_kind == GitHubChangeKind.PULL_REQUEST_MERGED:
+            if self.pull_request_number is None:
+                raise ValueError("GitHub PULL_REQUEST_MERGED requires pull_request_number")
+            if not self.commit_sha:
+                raise ValueError("GitHub PULL_REQUEST_MERGED requires commit_sha")
+        return self
+
+
 class ArchitectureNodeKind(StrEnum):
     SYSTEM = "SYSTEM"
     UI = "UI"
@@ -199,8 +243,20 @@ class ProjectEvent(BaseModel):
     project_id: str
     type: ProjectEventType
     source: ProjectEventSource = ProjectEventSource.HUMAN
+    source_event_id: str | None = Field(default=None, max_length=512)
     timestamp: datetime = Field(default_factory=utcnow)
+    occurred_at: datetime | None = None
+    received_at: datetime = Field(default_factory=utcnow)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_observation_metadata(self) -> "ProjectEvent":
+        if self.source_event_id is not None:
+            normalized = self.source_event_id.strip()
+            self.source_event_id = normalized or None
+        if self.occurred_at is None:
+            self.occurred_at = self.timestamp
+        return self
 
 
 class ArchitectureChangeProposal(BaseModel):
@@ -209,6 +265,7 @@ class ArchitectureChangeProposal(BaseModel):
     base_architecture_version: int | None = Field(default=None, ge=0)
     reason: str
     evidence: list[str]
+    evidence_event_ids: list[str] = Field(default_factory=list, max_length=8)
     observed_change: str
     affected_components: list[str] = Field(default_factory=list)
     proposed_changes: list[dict[str, Any]] = Field(default_factory=list)
@@ -279,6 +336,27 @@ class AgentRunResult(BaseModel):
     model: str
     result: Literal["SUCCESS", "ERROR"]
     error: str | None = None
+    started_at: datetime = Field(default_factory=utcnow)
+    completed_at: datetime = Field(default_factory=utcnow)
+    replayed: bool = False
+
+
+class ObservationClaimState(StrEnum):
+    CLAIMED = "CLAIMED"
+    REPLAY = "REPLAY"
+    IN_PROGRESS = "IN_PROGRESS"
+
+
+class ObservationClaim(BaseModel):
+    state: ObservationClaimState
+    event: ProjectEvent
+    run_id: str
+    existing_result: AgentRunResult | None = None
+
+
+class ProjectActivity(BaseModel):
+    events: list[ProjectEvent] = Field(default_factory=list)
+    agent_runs: list[AgentRunResult] = Field(default_factory=list)
 
 
 class ProjectContext(BaseModel):

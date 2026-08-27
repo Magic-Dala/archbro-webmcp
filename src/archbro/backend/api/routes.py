@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -10,12 +11,15 @@ from archbro.backend.agent.orchestration import AgentOrchestrator
 from archbro.backend.core.action_executor import ActionExecutor
 from archbro.backend.core.contracts import (
     Architecture,
+    GitHubChangePayload,
     Project,
+    ProjectActivity,
     ProjectEvent,
     ProjectEventSource,
     ProjectEventType,
     utcnow,
 )
+from archbro.backend.core.observation import ObservationInProgressError
 from archbro.backend.core.repository import ProjectRepositoryPort
 from archbro.backend.llm.provider import GoalConversationMessage, GoalDraft, ModelProvider
 
@@ -72,7 +76,23 @@ class GoalDraftRequest(BaseModel):
 class EventRequest(BaseModel):
     type: ProjectEventType
     source: ProjectEventSource = ProjectEventSource.HUMAN
+    source_event_id: str | None = None
+    occurred_at: datetime | None = None
     payload: dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_provider_contract(self) -> "EventRequest":
+        if self.source_event_id is not None:
+            self.source_event_id = self.source_event_id.strip() or None
+        if self.source in {ProjectEventSource.GITHUB, ProjectEventSource.SYSTEM}:
+            raise ValueError(
+                "trusted event sources must be supplied by a verified server-side integration"
+            )
+        if self.type == ProjectEventType.GITHUB_CHANGE:
+            raise ValueError(
+                "GITHUB_CHANGE must enter through the verified GitHub integration boundary"
+            )
+        return self
 
 
 def build_router(
@@ -156,11 +176,47 @@ def build_router(
 
     @router.post("/projects/{project_id}/events")
     async def post_event(project_id: str, request: EventRequest):
-        event = ProjectEvent(project_id=project_id, type=request.type, source=request.source, payload=request.payload)
+        event = ProjectEvent(
+            project_id=project_id,
+            type=request.type,
+            source=request.source,
+            source_event_id=request.source_event_id,
+            occurred_at=request.occurred_at,
+            payload=request.payload,
+        )
         try:
             return await orchestrator.observe_event(event)
         except KeyError:
             raise HTTPException(status_code=404, detail="project not found")
+        except ObservationInProgressError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @router.get("/projects/{project_id}/events")
+    async def list_events(project_id: str):
+        try:
+            repository.get_project(project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="project not found")
+        return repository.list_events(project_id)
+
+    @router.get("/projects/{project_id}/agent-runs")
+    async def list_agent_runs(project_id: str):
+        try:
+            repository.get_project(project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="project not found")
+        return repository.list_agent_runs(project_id)
+
+    @router.get("/projects/{project_id}/activity", response_model=ProjectActivity)
+    async def get_activity(project_id: str) -> ProjectActivity:
+        try:
+            repository.get_project(project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="project not found")
+        return ProjectActivity(
+            events=repository.list_events(project_id),
+            agent_runs=repository.list_agent_runs(project_id),
+        )
 
     @router.get("/projects/{project_id}/tasks")
     async def list_tasks(project_id: str):

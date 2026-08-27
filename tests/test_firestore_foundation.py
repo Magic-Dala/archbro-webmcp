@@ -6,7 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from archbro.backend.core.contracts import (
+    AgentRunResult,
     Architecture,
+    ObservationClaimState,
     ArchitectureChangeProposal,
     ArchitectureOption,
     Component,
@@ -18,6 +20,7 @@ from archbro.backend.core.contracts import (
     TaskStatus,
 )
 from archbro.backend.core.action_executor import ActionExecutor
+from archbro.backend.core.observation import ObservationMutationPlan
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.platform.persistence.firestore import FirestoreProjectRepository
 from archbro.platform.runtime.app import create_app
@@ -49,6 +52,8 @@ class _DocumentRef:
     def get(self, transaction=None) -> _Snapshot:
         if transaction is not None and not transaction.in_progress:
             raise ValueError("Transaction not in progress, cannot be used in API requests.")
+        if transaction is not None and hasattr(transaction, "record_read"):
+            transaction.record_read()
         return _Snapshot(self._collection, self.id)
 
     def delete(self) -> None:
@@ -60,19 +65,52 @@ class _Query:
         self._collection = collection
         self._field = field
         self._value = value
+        self._order_field: str | None = None
+        self._descending = False
+        self._limit: int | None = None
+
+    @staticmethod
+    def _field_value(payload: dict, field_path: str):
+        value = payload
+        for part in field_path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(part)
+        return value
+
+    def order_by(self, field: str, direction=None):
+        self._order_field = field
+        self._descending = str(direction).upper().endswith("DESCENDING")
+        return self
+
+    def limit(self, value: int):
+        self._limit = value
+        self._collection.last_query_limit = value
+        return self
 
     def stream(self):
-        return [
+        snapshots = [
             _Snapshot(self._collection, doc_id)
             for doc_id, payload in self._collection.docs.items()
             if payload.get(self._field) == self._value
         ]
+        if self._order_field is not None:
+            snapshots.sort(
+                key=lambda snapshot: self._field_value(
+                    self._collection.docs[snapshot.id], self._order_field
+                ),
+                reverse=self._descending,
+            )
+        if self._limit is not None:
+            snapshots = snapshots[: self._limit]
+        return snapshots
 
 
 class _Collection:
     def __init__(self) -> None:
         self.docs: dict[str, dict] = {}
         self._counter = 0
+        self.last_query_limit: int | None = None
 
     def document(self, doc_id: str) -> _DocumentRef:
         return _DocumentRef(self, doc_id)
@@ -102,6 +140,10 @@ class _Transaction:
         self.client = client
         self.operations: list[tuple[_DocumentRef, dict]] = []
         self.in_progress = False
+
+    def record_read(self) -> None:
+        if self.operations:
+            raise RuntimeError("Firestore transaction read after write")
 
     def set(self, ref: _DocumentRef, value: dict) -> None:
         self.operations.append((ref, deepcopy(value)))
@@ -138,7 +180,6 @@ def _fake_transaction_runner(transaction: _Transaction, operation):
         return result
     finally:
         transaction.in_progress = False
-
 
 def _repo(client: _FakeFirestoreClient, *, collection_prefix: str) -> FirestoreProjectRepository:
     return FirestoreProjectRepository(
@@ -541,3 +582,282 @@ def test_firestore_acceptance_rejects_concurrent_task_update(monkeypatch):
     assert FirestoreProjectRepository.get_task(repo, task.id).status == TaskStatus.DONE
     assert FirestoreProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.PENDING
     assert FirestoreProjectRepository.get_architecture(repo, project.id).version == 1
+
+
+def test_firestore_observation_source_key_replays_one_durable_run():
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="trace")
+    project = Project(name="Trace", goal="Trace observations", architecture_version=1)
+    repo.save_project(project)
+    repo.save_architecture(project.id, Architecture(version=1))
+    event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.GITHUB_CHANGE,
+        source="GITHUB",
+        source_event_id="delivery-42",
+        payload={"message": "internal refactor"},
+    )
+
+    claim = repo.claim_observation(event, run_id="run_trace")
+    assert claim.state == ObservationClaimState.CLAIMED
+    result = AgentRunResult(
+        project_id=project.id,
+        event_id=claim.event.id,
+        agent_run_id=claim.run_id,
+        summary="aligned",
+        actions=[],
+        architecture_review_required=False,
+        provider="fake",
+        model="fake",
+        result="SUCCESS",
+    )
+    repo.commit_observation_result(
+        event=claim.event,
+        run_id=claim.run_id,
+        plan=ObservationMutationPlan(),
+        result=result,
+    )
+
+    replay = repo.claim_observation(
+        event.model_copy(update={"id": "event_second_delivery"}),
+        run_id="run_should_not_execute",
+    )
+    assert replay.state == ObservationClaimState.REPLAY
+    assert replay.event.id == claim.event.id
+    assert replay.existing_result is not None
+    assert replay.existing_result.agent_run_id == "run_trace"
+    assert len(repo.list_events(project.id)) == 1
+    assert len(repo.list_agent_runs(project.id)) == 1
+
+
+def test_firestore_failed_observation_can_be_reclaimed_without_duplicate_event():
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="retry")
+    project = Project(name="Retry", goal="Retry observations", architecture_version=1)
+    repo.save_project(project)
+    repo.save_architecture(project.id, Architecture(version=1))
+    event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.GITHUB_CHANGE,
+        source="GITHUB",
+        source_event_id="delivery-retry",
+        payload={"message": "retry me"},
+    )
+    claim = repo.claim_observation(event, run_id="run_failed")
+    failed = AgentRunResult(
+        project_id=project.id,
+        event_id=claim.event.id,
+        agent_run_id=claim.run_id,
+        summary="failed",
+        actions=[],
+        architecture_review_required=False,
+        provider="fake",
+        model="fake",
+        result="ERROR",
+        error="transient",
+    )
+    repo.fail_observation(event=claim.event, run_id=claim.run_id, result=failed)
+
+    retry = repo.claim_observation(
+        event.model_copy(update={"id": "event_retry_request"}),
+        run_id="run_retry",
+    )
+    assert retry.state == ObservationClaimState.CLAIMED
+    assert retry.event.id == claim.event.id
+    assert retry.run_id == "run_retry"
+    assert len(repo.list_events(project.id)) == 1
+    assert [run.result for run in repo.list_agent_runs(project.id)] == ["ERROR"]
+
+
+def test_firestore_observation_transaction_failure_leaves_effect_unapplied():
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="tracefail")
+    project = Project(name="Trace Fail", goal="Atomic observations", architecture_version=1)
+    repo.save_project(project)
+    repo.save_architecture(
+        project.id,
+        Architecture(
+            version=1,
+            components=[
+                Component(
+                    id="database",
+                    name="PostgreSQL",
+                    type="database",
+                    responsibility="Persist state",
+                )
+            ],
+        ),
+    )
+    event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.GITHUB_CHANGE,
+        source="GITHUB",
+        source_event_id="delivery-atomic",
+        payload={"message": "database changed"},
+    )
+    claim = repo.claim_observation(event, run_id="run_atomic")
+    proposal = ArchitectureChangeProposal(
+        project_id=project.id,
+        base_architecture_version=1,
+        reason="database changed",
+        evidence=["observed change"],
+        evidence_event_ids=[claim.event.id],
+        observed_change="PostgreSQL to Firestore",
+        affected_components=["database"],
+        proposed_changes=[
+            {
+                "operation": "replace_component",
+                "component_id": "database",
+                "new_name": "Firestore",
+            }
+        ],
+        impact="persistence work",
+        recommended_option=ArchitectureOption.ACCEPT_PROPOSED_CHANGE,
+    )
+    result = AgentRunResult(
+        project_id=project.id,
+        event_id=claim.event.id,
+        agent_run_id=claim.run_id,
+        summary="proposal",
+        actions=[],
+        architecture_review_required=True,
+        proposal_ids=[proposal.id],
+        provider="fake",
+        model="fake",
+        result="SUCCESS",
+    )
+    client.fail_next_transaction = True
+
+    with pytest.raises(RuntimeError, match="injected Firestore transaction failure"):
+        repo.commit_observation_result(
+            event=claim.event,
+            run_id=claim.run_id,
+            plan=ObservationMutationPlan(proposals=[proposal]),
+            result=result,
+        )
+
+    assert repo.list_proposals(project.id) == []
+    assert repo.list_agent_runs(project.id) == []
+    assert repo.get_architecture(project.id).version == 1
+
+    failed = result.model_copy(
+        update={
+            "result": "ERROR",
+            "summary": "transaction failed",
+            "proposal_ids": [],
+            "error": "injected Firestore transaction failure",
+        }
+    )
+    repo.fail_observation(event=claim.event, run_id=claim.run_id, result=failed)
+    retry = repo.claim_observation(
+        event.model_copy(update={"id": "event_atomic_retry"}),
+        run_id="run_after_failure",
+    )
+    assert retry.state == ObservationClaimState.CLAIMED
+    assert retry.event.id == claim.event.id
+
+
+def test_firestore_activity_history_queries_are_bounded_before_streaming():
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="bounded")
+    project = Project(name="Bounded", goal="Bound activity history", architecture_version=1)
+    repo.save_project(project)
+    repo.save_architecture(project.id, Architecture(version=1))
+
+    for index in range(25):
+        event = ProjectEvent(
+            project_id=project.id,
+            type=ProjectEventType.GITHUB_CHANGE,
+            source="GITHUB",
+            source_event_id=f"delivery-{index}",
+            payload={"message": f"change-{index}"},
+        )
+        repo.save_event(event)
+        run = AgentRunResult(
+            project_id=project.id,
+            event_id=event.id,
+            agent_run_id=f"run_{index}",
+            summary=f"run-{index}",
+            actions=[],
+            architecture_review_required=False,
+            provider="fake",
+            model="fake",
+            result="SUCCESS",
+        )
+        repo._collection(repo._agent_runs).document(run.agent_run_id).set(
+            {
+                "project_id": project.id,
+                "event_id": event.id,
+                "data": run.model_dump(mode="json"),
+            }
+        )
+
+    events = repo.list_events(project.id, limit=5)
+    assert len(events) == 5
+    assert client.collection(repo._events).last_query_limit == 5
+
+    runs = repo.list_agent_runs(project.id, limit=4)
+    assert len(runs) == 4
+    assert client.collection(repo._agent_runs).last_query_limit == 4
+
+
+def test_firestore_observation_commit_rejects_stale_task_plan():
+    from datetime import timedelta
+
+    client = _FakeFirestoreClient()
+    repo = _repo(client, collection_prefix="observationrace")
+    project = Project(name="Observation Race", goal="Protect task state", architecture_version=1)
+    repo.save_project(project)
+    repo.save_architecture(project.id, Architecture(version=1))
+    task = Task(title="Human task", status=TaskStatus.TODO)
+    repo.save_task(project.id, task)
+    event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.USER_MESSAGE,
+        source="HUMAN",
+        source_event_id="firestore-stale-observation",
+        payload={"message": "Update the task."},
+    )
+    claim = repo.claim_observation(event, run_id="run_firestore_stale")
+    stale_task = task.model_copy(
+        update={
+            "status": TaskStatus.IN_PROGRESS,
+            "updated_at": task.updated_at + timedelta(milliseconds=1),
+        }
+    )
+    plan = ObservationMutationPlan(
+        tasks=[stale_task],
+        expected_task_updated_at={task.id: task.updated_at.isoformat()},
+    )
+    current = repo.get_task(task.id)
+    repo.save_task(
+        project.id,
+        current.model_copy(
+            update={
+                "status": TaskStatus.DONE,
+                "updated_at": current.updated_at + timedelta(seconds=1),
+            }
+        ),
+    )
+    result = AgentRunResult(
+        project_id=project.id,
+        event_id=claim.event.id,
+        agent_run_id=claim.run_id,
+        summary="stale task plan",
+        actions=[],
+        architecture_review_required=False,
+        provider="test",
+        model="test",
+        result="SUCCESS",
+    )
+
+    with pytest.raises(ValueError, match="observation task state changed before commit"):
+        repo.commit_observation_result(
+            event=claim.event,
+            run_id=claim.run_id,
+            plan=plan,
+            result=result,
+        )
+
+    assert repo.get_task(task.id).status == TaskStatus.DONE
+    assert repo.list_agent_runs(project.id) == []

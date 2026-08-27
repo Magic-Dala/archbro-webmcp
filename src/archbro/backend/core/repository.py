@@ -3,14 +3,17 @@ from __future__ import annotations
 from typing import Protocol
 
 from archbro.backend.core.contracts import (
+    AgentRunResult,
     Architecture,
     ArchitectureChangeProposal,
+    ObservationClaim,
     Project,
     ProjectContext,
     ProjectEvent,
     ProposalStatus,
     Task,
 )
+from archbro.backend.core.observation import ObservationMutationPlan
 
 
 class ProjectRepositoryPort(Protocol):
@@ -62,17 +65,33 @@ class ProjectRepositoryPort(Protocol):
         ...
 
     def save_event(self, event: ProjectEvent) -> None: ...
-    def commit_event_actions(
+    def get_event(self, event_id: str) -> ProjectEvent: ...
+    def list_events(self, project_id: str, limit: int = 100) -> list[ProjectEvent]: ...
+    def list_agent_runs(self, project_id: str, limit: int = 100) -> list[AgentRunResult]: ...
+
+    def claim_observation(self, event: ProjectEvent, *, run_id: str) -> ObservationClaim:
+        """Atomically register/dedupe an observation and claim it for evaluation."""
+        ...
+
+    def commit_observation_result(
         self,
         *,
         event: ProjectEvent,
-        project: Project | None,
-        architecture: Architecture | None,
-        tasks: list[Task],
-        proposals: list[ArchitectureChangeProposal],
-        notes: list[str],
+        run_id: str,
+        plan: ObservationMutationPlan,
+        result: AgentRunResult,
     ) -> None:
-        """Persist one accepted event and its derived mutations atomically."""
+        """Atomically persist a successful AgentRun and its materialized state effect."""
+        ...
+
+    def fail_observation(
+        self,
+        *,
+        event: ProjectEvent,
+        run_id: str,
+        result: AgentRunResult,
+    ) -> None:
+        """Persist a failed AgentRun without mutating accepted project state."""
         ...
 
     def add_note(self, project_id: str, note: str) -> None: ...

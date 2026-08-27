@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from archbro.backend.core.contracts import (
@@ -9,27 +8,14 @@ from archbro.backend.core.contracts import (
     AgentActionType,
     Architecture,
     ArchitectureChangeProposal,
-    Project,
     ProjectStatus,
     ProposalStatus,
     Task,
     TaskProposal,
 )
+from archbro.backend.core.observation import ObservationMutationPlan
 from archbro.backend.core.reconciliation import ArchitectureAcceptanceReconciler
 from archbro.backend.core.repository import ProjectRepositoryPort
-
-
-@dataclass(slots=True)
-class ActionMutationPlan:
-    project: Project | None = None
-    architecture: Architecture | None = None
-    tasks: list[Task] = field(default_factory=list)
-    proposals: list[ArchitectureChangeProposal] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)
-
-    @property
-    def proposal_ids(self) -> list[str]:
-        return [proposal.id for proposal in self.proposals]
 
 
 class ActionExecutor:
@@ -62,19 +48,15 @@ class ActionExecutor:
         candidate["updated_at"] = datetime.now(timezone.utc)
         return Task.model_validate(candidate)
 
-    def _validated_task_update(self, project_id: str, action: AgentAction) -> Task:
-        task_id = str(action.payload["task_id"])
-        if task_id not in {task.id for task in self.repository.list_tasks(project_id)}:
-            raise ValueError("task does not belong to project")
-        return self._task_update_from(
-            self.repository.get_task(task_id),
-            dict(action.payload["changes"]),
-        )
-
     def validate_all(self, project_id: str, actions: list[AgentAction]) -> None:
+        project_tasks = {task.id: task for task in self.repository.list_tasks(project_id)}
         for action in actions:
             if action.type == AgentActionType.UPDATE_TASK:
-                self._validated_task_update(project_id, action)
+                task_id = str(action.payload["task_id"])
+                task = project_tasks.get(task_id)
+                if task is None:
+                    raise ValueError("task does not belong to project")
+                self._task_update_from(task, dict(action.payload["changes"]))
             elif action.type == AgentActionType.CREATE_TASK:
                 TaskProposal.model_validate(action.payload["task"])
             elif action.type == AgentActionType.UPDATE_PROJECT_STATUS:
@@ -86,14 +68,24 @@ class ActionExecutor:
                 if not proposal.evidence:
                     raise ValueError("architecture change proposal requires evidence")
 
-    def build_plan(self, project_id: str, actions: list[AgentAction]) -> ActionMutationPlan:
+    def build_plan(
+        self,
+        project_id: str,
+        actions: list[AgentAction],
+        *,
+        evidence_event_id: str | None = None,
+    ) -> ObservationMutationPlan:
+        """Materialize validated actions and the state preconditions they depend on."""
+
         self.validate_all(project_id, actions)
         current_architecture = self.repository.get_architecture(project_id)
-        working_project = self.repository.get_project(project_id)
+        current_project = self.repository.get_project(project_id)
+        working_project = current_project
         project_changed = False
         architecture: Architecture | None = None
         task_state = {task.id: task for task in self.repository.list_tasks(project_id)}
         changed_task_ids: list[str] = []
+        expected_task_updated_at: dict[str, str] = {}
         proposals: list[ArchitectureChangeProposal] = []
         notes: list[str] = []
 
@@ -105,10 +97,12 @@ class ActionExecutor:
                 changed_task_ids.append(task.id)
             elif action.type == AgentActionType.UPDATE_TASK:
                 task_id = str(action.payload["task_id"])
-                if task_id not in task_state:
+                task = task_state.get(task_id)
+                if task is None:
                     raise ValueError("task does not belong to project")
+                expected_task_updated_at.setdefault(task_id, task.updated_at.isoformat())
                 task_state[task_id] = self._task_update_from(
-                    task_state[task_id],
+                    task,
                     dict(action.payload["changes"]),
                 )
                 if task_id not in changed_task_ids:
@@ -143,6 +137,7 @@ class ActionExecutor:
                     base_architecture_version=current_architecture.version,
                     reason=candidate.reason,
                     evidence=list(candidate.evidence),
+                    evidence_event_ids=[evidence_event_id] if evidence_event_id else [],
                     observed_change=candidate.observed_change,
                     affected_components=list(candidate.affected_components),
                     proposed_changes=[dict(change) for change in candidate.proposed_changes],
@@ -154,12 +149,19 @@ class ActionExecutor:
             elif action.type == AgentActionType.NO_ACTION:
                 continue
 
-        return ActionMutationPlan(
+        return ObservationMutationPlan(
             project=working_project if project_changed else None,
             architecture=architecture,
             tasks=[task_state[task_id] for task_id in changed_task_ids],
             proposals=proposals,
             notes=notes,
+            expected_project_updated_at=(
+                current_project.updated_at.isoformat() if project_changed else None
+            ),
+            expected_architecture_version=(
+                current_architecture.version if architecture is not None or proposals else None
+            ),
+            expected_task_updated_at=expected_task_updated_at,
         )
 
     def apply(self, project_id: str, actions: list[AgentAction]) -> list[str]:
@@ -207,8 +209,8 @@ class ActionExecutor:
             }
         )
         accepted_proposal = proposal.model_copy(update={"status": ProposalStatus.ACCEPTED})
-
         updated_task_ids = {task.id for task in plan.updated_tasks}
+
         self.repository.save_acceptance_state(
             project_id=project_id,
             expected_architecture_version=architecture.version,
