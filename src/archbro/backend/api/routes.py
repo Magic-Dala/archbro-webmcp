@@ -4,14 +4,23 @@ import asyncio
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator, model_validator
 
 from archbro.backend.agent.orchestration import AgentOrchestrator
 from archbro.backend.core.action_executor import ActionExecutor
+from archbro.backend.core.authorization import (
+    AuthenticationError,
+    IdentityProviderUnavailableError,
+    InvalidCredentialsError,
+    PrincipalProvider,
+    ProjectAuthorizationError,
+    ProjectAuthorizer,
+    ProjectPermission,
+    local_development_principal,
+)
 from archbro.backend.core.contracts import (
     Architecture,
-    GitHubChangePayload,
     Project,
     ProjectActivity,
     ProjectEvent,
@@ -28,6 +37,7 @@ class CreateProjectRequest(BaseModel):
     name: str
     goal: str
     description: str = ""
+    team_id: str | None = None
 
     @field_validator("name", "goal")
     @classmethod
@@ -36,6 +46,14 @@ class CreateProjectRequest(BaseModel):
         if not value:
             raise ValueError("must not be empty")
         return value
+
+    @field_validator("team_id")
+    @classmethod
+    def normalize_team_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
 
 class UpdateProjectRequest(BaseModel):
@@ -100,6 +118,7 @@ def build_router(
     provider: ModelProvider,
     *,
     goal_request_timeout_seconds: float = 30.0,
+    principal_provider: PrincipalProvider | None = None,
 ) -> APIRouter:
     """Build Jim-owned product/API routes against injected platform dependencies."""
 
@@ -108,7 +127,50 @@ def build_router(
 
     orchestrator = AgentOrchestrator(repository, provider)
     executor = ActionExecutor(repository)
+    authorizer = ProjectAuthorizer()
     router = APIRouter()
+
+    def authentication_error(detail: str) -> HTTPException:
+        return HTTPException(
+            status_code=401,
+            detail=detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    async def principal_for(http_request: Request):
+        if principal_provider is None:
+            return local_development_principal()
+
+        authorization = http_request.headers.get("Authorization", "")
+        scheme, separator, credentials = authorization.partition(" ")
+        token = credentials.strip()
+        if not separator or scheme.lower() != "bearer" or not token:
+            raise authentication_error("missing or invalid bearer token")
+
+        try:
+            return await principal_provider(token)
+        except IdentityProviderUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc) or "identity provider unavailable")
+        except InvalidCredentialsError as exc:
+            raise authentication_error(str(exc) or "invalid bearer token")
+        except AuthenticationError as exc:
+            raise authentication_error(str(exc) or "authentication failed")
+
+    async def authorized_project(
+        http_request: Request,
+        project_id: str,
+        permission: ProjectPermission,
+    ) -> Project:
+        principal = await principal_for(http_request)
+        try:
+            project = repository.get_project(project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="project not found")
+        try:
+            authorizer.require(principal, project, permission)
+        except ProjectAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        return project
 
     @router.post("/onboarding/goal", response_model=GoalDraft)
     async def draft_goal(request: GoalDraftRequest) -> GoalDraft:
@@ -131,29 +193,33 @@ def build_router(
             raise HTTPException(status_code=503, detail=f"{type(exc).__name__}: {exc}")
 
     @router.post("/projects", response_model=Project)
-    async def create_project(request: CreateProjectRequest) -> Project:
-        project = Project(name=request.name, goal=request.goal, description=request.description.strip())
+    async def create_project(request: CreateProjectRequest, http_request: Request) -> Project:
+        principal = await principal_for(http_request)
+        if request.team_id and request.team_id not in principal.team_ids and not principal.local_development:
+            raise HTTPException(status_code=403, detail="cannot create a project for an untrusted team")
+        project = Project(
+            name=request.name,
+            goal=request.goal,
+            description=request.description.strip(),
+            owner_user_id=principal.user_id,
+            team_id=request.team_id,
+        )
         repository.save_project(project)
         repository.save_architecture(project.id, Architecture())
         return project
 
     @router.get("/projects", response_model=list[Project])
-    async def list_projects() -> list[Project]:
-        return repository.list_projects()
+    async def list_projects(http_request: Request) -> list[Project]:
+        principal = await principal_for(http_request)
+        return [project for project in repository.list_projects() if authorizer.can_read(principal, project)]
 
     @router.get("/projects/{project_id}", response_model=Project)
-    async def get_project(project_id: str) -> Project:
-        try:
-            return repository.get_project(project_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="project not found")
+    async def get_project(project_id: str, http_request: Request) -> Project:
+        return await authorized_project(http_request, project_id, ProjectPermission.READ)
 
     @router.patch("/projects/{project_id}", response_model=Project)
-    async def update_project(project_id: str, request: UpdateProjectRequest) -> Project:
-        try:
-            project = repository.get_project(project_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="project not found")
+    async def update_project(project_id: str, request: UpdateProjectRequest, http_request: Request) -> Project:
+        project = await authorized_project(http_request, project_id, ProjectPermission.WRITE)
 
         architecture = repository.get_architecture(project_id)
         if request.goal is not None and request.goal != project.goal and architecture.version > 0:
@@ -169,13 +235,15 @@ def build_router(
         return updated
 
     @router.delete("/projects/{project_id}", status_code=204)
-    async def delete_project(project_id: str):
+    async def delete_project(project_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.MANAGE)
         if not repository.delete_project(project_id):
             raise HTTPException(status_code=404, detail="project not found")
         return None
 
     @router.post("/projects/{project_id}/events")
-    async def post_event(project_id: str, request: EventRequest):
+    async def post_event(project_id: str, request: EventRequest, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.WRITE)
         event = ProjectEvent(
             project_id=project_id,
             type=request.type,
@@ -192,53 +260,49 @@ def build_router(
             raise HTTPException(status_code=409, detail=str(exc))
 
     @router.get("/projects/{project_id}/events")
-    async def list_events(project_id: str):
-        try:
-            repository.get_project(project_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="project not found")
+    async def list_events(project_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.READ)
         return repository.list_events(project_id)
 
     @router.get("/projects/{project_id}/agent-runs")
-    async def list_agent_runs(project_id: str):
-        try:
-            repository.get_project(project_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="project not found")
+    async def list_agent_runs(project_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.READ)
         return repository.list_agent_runs(project_id)
 
     @router.get("/projects/{project_id}/activity", response_model=ProjectActivity)
-    async def get_activity(project_id: str) -> ProjectActivity:
-        try:
-            repository.get_project(project_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="project not found")
+    async def get_activity(project_id: str, http_request: Request) -> ProjectActivity:
+        await authorized_project(http_request, project_id, ProjectPermission.READ)
         return ProjectActivity(
             events=repository.list_events(project_id),
             agent_runs=repository.list_agent_runs(project_id),
         )
 
     @router.get("/projects/{project_id}/tasks")
-    async def list_tasks(project_id: str):
+    async def list_tasks(project_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.READ)
         return repository.list_tasks(project_id)
 
     @router.get("/projects/{project_id}/architecture")
-    async def get_architecture(project_id: str):
+    async def get_architecture(project_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.READ)
         return repository.get_architecture(project_id)
 
     @router.get("/projects/{project_id}/architecture/proposals")
-    async def list_proposals(project_id: str):
+    async def list_proposals(project_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.READ)
         return repository.list_proposals(project_id)
 
     @router.post("/projects/{project_id}/architecture/proposals/{proposal_id}/accept")
-    async def accept_proposal(project_id: str, proposal_id: str):
+    async def accept_proposal(project_id: str, proposal_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.REVIEW)
         try:
             return executor.accept_proposal(project_id, proposal_id)
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
     @router.post("/projects/{project_id}/architecture/proposals/{proposal_id}/reject")
-    async def reject_proposal(project_id: str, proposal_id: str):
+    async def reject_proposal(project_id: str, proposal_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.REVIEW)
         try:
             return executor.reject_proposal(project_id, proposal_id)
         except (KeyError, ValueError) as exc:

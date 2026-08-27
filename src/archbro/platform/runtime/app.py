@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from archbro.backend.api.routes import build_router
+from archbro.backend.core.authorization import PrincipalProvider
 from archbro.backend.core.repository import ProjectRepositoryPort
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.backend.llm.gemini import GeminiProvider
@@ -27,6 +28,7 @@ def create_app(
     provider: ModelProvider | None = None,
     *,
     web_dir: str | Path | None = None,
+    principal_provider: PrincipalProvider | None = None,
 ) -> FastAPI:
     """Max-owned runtime composition root.
 
@@ -92,6 +94,7 @@ def create_app(
             selected_repository,
             selected_provider,
             goal_request_timeout_seconds=goal_timeout,
+            principal_provider=principal_provider,
         )
     )
 

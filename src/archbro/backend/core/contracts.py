@@ -234,6 +234,9 @@ class Project(BaseModel):
     description: str = ""
     status: ProjectStatus = ProjectStatus.ACTIVE
     architecture_version: int = 0
+    owner_user_id: str | None = None
+    team_id: str | None = None
+    member_user_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
