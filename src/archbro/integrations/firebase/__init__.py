@@ -10,11 +10,13 @@ from archbro.integrations.firebase.auth import (
     firebase_principal_provider,
     verify_firebase_id_token,
 )
+from archbro.integrations.firebase.principal import FirebasePrincipalProvider
 
 __all__ = [
     "AuthenticatedUser",
     "AuthenticationServiceUnavailable",
     "FirebaseAdminUnavailable",
+    "FirebasePrincipalProvider",
     "InvalidAuthenticationToken",
     "firebase_principal_provider",
     "get_firebase_admin_app",
