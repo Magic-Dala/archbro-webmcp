@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator, model_validator
 
 from archbro.backend.agent.orchestration import AgentOrchestrator
+from archbro.backend.api.agent_surface import build_agent_surface_router
 from archbro.backend.core.action_executor import ActionExecutor
 from archbro.backend.core.authorization import (
     AuthenticationError,
@@ -519,4 +520,5 @@ def build_router(
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
+    router.include_router(build_agent_surface_router(repository, authorized_project))
     return router

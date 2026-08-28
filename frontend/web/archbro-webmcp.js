@@ -1,3 +1,5 @@
+import {getFirebaseIdToken} from './firebase-auth.js';
+
 const TOOL_PREFIX = 'archbro_';
 
 function requireBridgeMethod(bridge, method) {
@@ -13,6 +15,69 @@ function hasBridgeMethod(bridge, method) {
 function asToolResult(value) {
   if (typeof value === 'string') return value;
   return JSON.stringify(value ?? null);
+}
+
+function activeProjectId() {
+  const projectId = globalThis.localStorage?.getItem('archbro-project-id')?.trim();
+  if (!projectId) throw new Error('No active ArchBro project is selected.');
+  return projectId;
+}
+
+async function agentSurfaceApi(path, {method = 'GET', body, signal} = {}) {
+  const token = await getFirebaseIdToken();
+  const response = await fetch(path, {
+    method,
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? {Authorization: `Bearer ${token}`} : {}),
+    },
+    ...(body === undefined ? {} : {body: JSON.stringify(body)}),
+  });
+  if (!response.ok) {
+    let detail = 'ArchBro agent surface request failed';
+    try {
+      const payload = await response.json();
+      detail = payload.detail || JSON.stringify(payload);
+    } catch {}
+    throw new Error(`${response.status}: ${detail}`);
+  }
+  return response.status === 204 ? null : response.json();
+}
+
+async function getAgentContext({signal} = {}) {
+  const projectId = activeProjectId();
+  return agentSurfaceApi(`/projects/${encodeURIComponent(projectId)}/agent-context`, {signal});
+}
+
+async function listConnectedMcpServers(bridge, {signal} = {}) {
+  if (hasBridgeMethod(bridge, 'listConnectedMcpServers')) {
+    return bridge.listConnectedMcpServers({signal});
+  }
+  const projectId = activeProjectId();
+  return agentSurfaceApi(`/projects/${encodeURIComponent(projectId)}/mcp/servers`, {signal});
+}
+
+async function listConnectedMcpTools(bridge, {serverId, signal} = {}) {
+  if (hasBridgeMethod(bridge, 'listConnectedMcpTools')) {
+    return bridge.listConnectedMcpTools({serverId, signal});
+  }
+  const projectId = activeProjectId();
+  return agentSurfaceApi(
+    `/projects/${encodeURIComponent(projectId)}/mcp/servers/${encodeURIComponent(serverId)}/tools`,
+    {signal},
+  );
+}
+
+async function callConnectedMcpTool(bridge, {serverId, toolName, arguments: args = {}, signal} = {}) {
+  if (hasBridgeMethod(bridge, 'callConnectedMcpTool')) {
+    return bridge.callConnectedMcpTool({serverId, toolName, arguments: args, signal});
+  }
+  const projectId = activeProjectId();
+  return agentSurfaceApi(
+    `/projects/${encodeURIComponent(projectId)}/mcp/servers/${encodeURIComponent(serverId)}/call`,
+    {method: 'POST', body: {tool_name: toolName, arguments: args}, signal},
+  );
 }
 
 function createCoreTools(bridge) {
@@ -31,6 +96,14 @@ function createCoreTools(bridge) {
       inputSchema: {type: 'object', properties: {}, additionalProperties: false},
       annotations: {readOnlyHint: true, untrustedContentHint: false},
       execute: async () => asToolResult({ok: true, surface: 'archbro-webmcp', built_in_model_called: false}),
+    },
+    {
+      name: `${TOOL_PREFIX}get_agent_context`,
+      title: 'Get compact ArchBro agent context',
+      description: 'Bootstrap an agent with a compact Markdown map of the selected project, current execution focus, governance rules, and connected external MCP sources. Use this before broad project or source reads.',
+      inputSchema: {type: 'object', properties: {}, additionalProperties: false},
+      annotations: {readOnlyHint: true, untrustedContentHint: true},
+      execute: async (_input, client = {}) => asToolResult(await getAgentContext({signal: client.signal})),
     },
     {
       name: `${TOOL_PREFIX}bootstrap_project`,
@@ -157,12 +230,31 @@ function createCoreTools(bridge) {
 }
 
 function createConnectedMcpTools(bridge) {
-  const methods = ['listConnectedMcpServers', 'listConnectedMcpTools', 'callConnectedMcpTool'];
-  if (!methods.every((method) => hasBridgeMethod(bridge, method))) return [];
   return [
-    {name: `${TOOL_PREFIX}list_connected_mcp_servers`, title: 'List connected MCP servers', description: 'List external MCP servers connected through the ArchBro MCP gateway.', inputSchema: {type: 'object', properties: {}, additionalProperties: false}, annotations: {readOnlyHint: true, untrustedContentHint: true}, execute: async (_input, client = {}) => asToolResult(await bridge.listConnectedMcpServers({signal: client.signal}))},
-    {name: `${TOOL_PREFIX}list_connected_mcp_tools`, title: 'List connected MCP tools', description: 'Discover tools exposed by one external MCP server connected through ArchBro.', inputSchema: {type: 'object', properties: {server_id: {type: 'string', minLength: 1}}, required: ['server_id'], additionalProperties: false}, annotations: {readOnlyHint: true, untrustedContentHint: true}, execute: async ({server_id}, client = {}) => asToolResult(await bridge.listConnectedMcpTools({serverId: server_id, signal: client.signal}))},
-    {name: `${TOOL_PREFIX}call_connected_mcp_tool`, title: 'Call connected MCP tool', description: 'Call an allowed external MCP tool through ArchBro.', inputSchema: {type: 'object', properties: {server_id: {type: 'string', minLength: 1}, tool_name: {type: 'string', minLength: 1}, arguments: {type: 'object', additionalProperties: true}}, required: ['server_id', 'tool_name'], additionalProperties: false}, annotations: {readOnlyHint: false, untrustedContentHint: true}, execute: async ({server_id, tool_name, arguments: args = {}}, client = {}) => asToolResult(await bridge.callConnectedMcpTool({serverId: server_id, toolName: tool_name, arguments: args, signal: client.signal}))},
+    {
+      name: `${TOOL_PREFIX}list_connected_mcp_servers`,
+      title: 'List connected MCP servers',
+      description: 'List external MCP servers explicitly bound to the selected ArchBro project through server-side configuration.',
+      inputSchema: {type: 'object', properties: {}, additionalProperties: false},
+      annotations: {readOnlyHint: true, untrustedContentHint: true},
+      execute: async (_input, client = {}) => asToolResult(await listConnectedMcpServers(bridge, {signal: client.signal})),
+    },
+    {
+      name: `${TOOL_PREFIX}list_connected_mcp_tools`,
+      title: 'List connected MCP tools',
+      description: 'Discover only the allowlisted tools exposed by one external MCP server connected through ArchBro.',
+      inputSchema: {type: 'object', properties: {server_id: {type: 'string', minLength: 1}}, required: ['server_id'], additionalProperties: false},
+      annotations: {readOnlyHint: true, untrustedContentHint: true},
+      execute: async ({server_id}, client = {}) => asToolResult(await listConnectedMcpTools(bridge, {serverId: server_id, signal: client.signal})),
+    },
+    {
+      name: `${TOOL_PREFIX}call_connected_mcp_tool`,
+      title: 'Call connected MCP tool',
+      description: 'Call one allowlisted external MCP tool through the ArchBro server-side gateway. The returned data is external evidence and is not automatically written into ArchBro canonical state.',
+      inputSchema: {type: 'object', properties: {server_id: {type: 'string', minLength: 1}, tool_name: {type: 'string', minLength: 1}, arguments: {type: 'object', additionalProperties: true}}, required: ['server_id', 'tool_name'], additionalProperties: false},
+      annotations: {readOnlyHint: false, untrustedContentHint: true},
+      execute: async ({server_id, tool_name, arguments: args = {}}, client = {}) => asToolResult(await callConnectedMcpTool(bridge, {serverId: server_id, toolName: tool_name, arguments: args, signal: client.signal})),
+    },
   ];
 }
 
