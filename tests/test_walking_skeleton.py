@@ -186,6 +186,97 @@ def test_hierarchical_architecture_contract_and_recursive_replacement():
     assert accepted.root_component_id_for("primary_db") == "data"
 
 
+def test_accepts_rich_webmcp_architecture_change_operations():
+    repo, project = make_repo()
+    architecture = Architecture(
+        version=1,
+        summary="Issue tracking v1",
+        components=[
+            Component(id="react-web-client", name="React", type="frontend", responsibility="UI"),
+            Component(id="fastapi-application", name="FastAPI", type="backend", responsibility="API"),
+            Component(id="postgresql-database", name="PostgreSQL Database", type="database", responsibility="Persistence"),
+            Component(id="realtime-collaboration-channel", name="WebSocket", type="realtime", responsibility="Realtime"),
+        ],
+        relationships=[
+            {"source": "react-web-client", "target": "fastapi-application", "relationship_type": "REST"},
+            {"source": "fastapi-application", "target": "postgresql-database", "relationship_type": "SQL"},
+            {"source": "react-web-client", "target": "realtime-collaboration-channel", "relationship_type": "WebSocket"},
+        ],
+    )
+    repo.save_architecture(project.id, architecture)
+    repo.save_project(project.model_copy(update={"architecture_version": 1}))
+    database_task = Task(title="Define PostgreSQL schema", related_component="postgresql-database")
+    realtime_task = Task(title="Add realtime updates", related_component="realtime-collaboration-channel")
+    repo.save_task(project.id, database_task)
+    repo.save_task(project.id, realtime_task)
+    proposal = ArchitectureChangeProposal(
+        project_id=project.id,
+        base_architecture_version=1,
+        reason="Move to the approved Firebase release architecture.",
+        evidence=["Offline-first Firebase is now required."],
+        observed_change="Persistence and realtime requirements changed.",
+        affected_components=["postgresql-database", "realtime-collaboration-channel", "react-web-client", "fastapi-application"],
+        proposed_changes=[
+            {
+                "component_id": "postgresql-database",
+                "operation": "replace_component",
+                "replacement": {
+                    "id": "firebase-managed-data-platform",
+                    "name": "Firebase Managed Data Platform",
+                    "responsibility": "Managed identity, Firestore persistence, offline sync, and realtime delivery.",
+                    "type": "Cloud Firestore and Firebase Auth",
+                },
+            },
+            {
+                "component_id": "realtime-collaboration-channel",
+                "operation": "remove_component",
+            },
+            {
+                "component_id": "react-web-client",
+                "operation": "update_component",
+                "changes": {"responsibility": "Use Firebase SDK offline persistence and snapshot listeners."},
+            },
+            {
+                "component_id": "fastapi-application",
+                "operation": "update_component",
+                "changes": {"responsibility": "Retain privileged operations through Firebase Admin SDK."},
+            },
+            {
+                "operation": "replace_relationships",
+                "changes": [
+                    {"source": "react-web-client", "target": "firebase-managed-data-platform", "type": "Firebase SDK"},
+                    {"source": "react-web-client", "target": "fastapi-application", "type": "HTTPS JSON REST"},
+                    {"source": "fastapi-application", "target": "firebase-managed-data-platform", "type": "Firebase Admin SDK"},
+                ],
+            },
+        ],
+        impact="Persistence, realtime, frontend data flow, and privileged backend operations change.",
+        recommended_option=ArchitectureOption.ACCEPT_PROPOSED_CHANGE,
+    )
+    repo.save_proposal(proposal)
+
+    ActionExecutor(repo).accept_proposal(project.id, proposal.id)
+    accepted = repo.get_architecture(project.id)
+
+    assert accepted.version == 2
+    assert accepted.find_component("postgresql-database") is None
+    assert accepted.find_component("firebase-managed-data-platform").name == "Firebase Managed Data Platform"
+    assert accepted.find_component("realtime-collaboration-channel") is None
+    assert "Firebase SDK" in accepted.find_component("react-web-client").responsibility
+    assert "Firebase Admin SDK" in accepted.find_component("fastapi-application").responsibility
+    assert {relationship.relationship_type for relationship in accepted.relationships} == {
+        "Firebase SDK", "HTTPS JSON REST", "Firebase Admin SDK",
+    }
+    saved_database_task = repo.get_task(database_task.id)
+    saved_realtime_task = repo.get_task(realtime_task.id)
+    assert saved_database_task.related_component == "firebase-managed-data-platform"
+    assert saved_database_task.status == TaskStatus.TODO
+    assert saved_database_task.title == "Define Firebase Managed Data Platform schema"
+    assert "Re-scoped" in saved_database_task.description
+    assert saved_realtime_task.related_component is None
+    assert saved_realtime_task.status == TaskStatus.BLOCKED
+
+
 def test_architecture_rejects_duplicate_ids_and_depth_over_three():
     with pytest.raises(ValidationError, match="duplicate architecture node id"):
         Architecture(

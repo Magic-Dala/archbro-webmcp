@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hmac
+import json
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from archbro.backend.api.routes import build_router
@@ -67,6 +69,63 @@ def create_app(
         else:
             raise ValueError("ARCHBRO_PERSISTENCE must be 'sqlite' or 'firestore'")
 
+    environment = os.getenv("ARCHBRO_ENV", "local").strip().lower()
+    if environment not in {"local", "test", "production"}:
+        raise ValueError("ARCHBRO_ENV must be 'local', 'test', or 'production'")
+
+    edge_guard_mode = os.getenv("ARCHBRO_EDGE_GUARD", "off").strip().lower()
+    if edge_guard_mode not in {"off", "required"}:
+        raise ValueError("ARCHBRO_EDGE_GUARD must be 'off' or 'required'")
+    edge_token = os.getenv("ARCHBRO_EDGE_TOKEN", "").strip()
+    if edge_guard_mode == "required" and not edge_token:
+        raise ValueError("ARCHBRO_EDGE_TOKEN is required when ARCHBRO_EDGE_GUARD=required")
+
+    auth_mode = os.getenv("ARCHBRO_AUTH_MODE", "local").strip().lower()
+    if auth_mode not in {"local", "firebase"}:
+        raise ValueError("ARCHBRO_AUTH_MODE must be 'local' or 'firebase'")
+
+    selected_principal_provider = principal_provider
+    firebase_project_id = (
+        os.getenv("FIREBASE_PROJECT_ID")
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        or ""
+    ).strip()
+    if selected_principal_provider is None:
+        if auth_mode == "firebase":
+            if not firebase_project_id:
+                raise ValueError(
+                    "FIREBASE_PROJECT_ID or GOOGLE_CLOUD_PROJECT is required when "
+                    "ARCHBRO_AUTH_MODE=firebase"
+                )
+            from archbro.integrations.firebase.auth import firebase_principal_provider
+
+            selected_principal_provider = firebase_principal_provider(firebase_project_id)
+        elif environment == "production":
+            raise ValueError(
+                "Production Archbro must use ARCHBRO_AUTH_MODE=firebase; "
+                "the local development principal is disabled in production."
+            )
+
+    public_firebase_config: dict[str, str] | None = None
+    if auth_mode == "firebase":
+        public_firebase_config = {
+            "apiKey": os.getenv("ARCHBRO_FIREBASE_API_KEY", "").strip(),
+            "authDomain": os.getenv("ARCHBRO_FIREBASE_AUTH_DOMAIN", "").strip(),
+            "projectId": firebase_project_id,
+            "appId": os.getenv("ARCHBRO_FIREBASE_APP_ID", "").strip(),
+        }
+        # Anonymous Firebase/Identity Platform auth only requires the project API
+        # key and project id. authDomain/appId are optional until redirect-based
+        # providers are enabled; keeping them optional avoids coupling production
+        # auth to Firebase Hosting or a Firebase Management WebApp resource.
+        required_public_keys = ("apiKey", "projectId")
+        missing = [key for key in required_public_keys if not public_firebase_config[key]]
+        if missing and environment == "production":
+            raise ValueError(
+                "Production Firebase browser configuration is incomplete: "
+                + ", ".join(missing)
+            )
+
     selected_provider = provider
     if selected_provider is None:
         provider_name = (os.getenv("ARCHBRO_PROVIDER") or os.getenv("HUMAN_AGENT_PROVIDER") or "gemini").lower()
@@ -94,13 +153,50 @@ def create_app(
             selected_repository,
             selected_provider,
             goal_request_timeout_seconds=goal_timeout,
-            principal_provider=principal_provider,
+            principal_provider=selected_principal_provider,
         )
     )
+
+    @app.middleware("http")
+    async def edge_origin_guard(request, call_next):
+        if edge_guard_mode == "required":
+            presented = request.headers.get("X-ArchBro-Edge-Token", "")
+            if not presented or not hmac.compare_digest(presented, edge_token):
+                return JSONResponse(status_code=403, content={"detail": "direct origin access is forbidden"})
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def security_headers(request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' https://www.gstatic.com; "
+            "style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self' https://identitytoolkit.googleapis.com "
+            "https://securetoken.googleapis.com https://www.googleapis.com; "
+            "frame-src https://*.firebaseapp.com; object-src 'none'; "
+            "base-uri 'self'; frame-ancestors 'none'"
+        )
+        if environment == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=86400"
+        return response
 
     @app.get("/", include_in_schema=False)
     async def web_app():
         return FileResponse(frontend_dir / "index.html")
+
+    @app.get("/runtime-config.js", include_in_schema=False)
+    async def runtime_config():
+        payload = {"auth_mode": auth_mode, "firebase": public_firebase_config}
+        return Response(
+            content="window.__ARCHBRO_RUNTIME_CONFIG__ = " + json.dumps(payload) + ";\n",
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon():

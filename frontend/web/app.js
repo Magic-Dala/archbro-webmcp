@@ -1,4 +1,7 @@
+import {getFirebaseIdToken} from './firebase-auth.js';
+
 const storedProjectId = localStorage.getItem('archbro-project-id');
+const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp';
 const state = {
   projectId: storedProjectId,
   projects: [],
@@ -6,6 +9,7 @@ const state = {
   tasks: [],
   architecture: null,
   proposals: [],
+  activity: [],
   lastRun: null,
   selectedNode: null,
   drillNodeId: null,
@@ -37,8 +41,13 @@ async function api(path, options = {}) {
   const controller = timeoutMs ? new AbortController() : null;
   const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
+    const token = await getFirebaseIdToken();
     const res = await fetch(path, {
-      headers: {'Content-Type': 'application/json', ...headers},
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? {Authorization: `Bearer ${token}`} : {}),
+        ...headers,
+      },
       ...fetchOptions,
       ...(controller ? {signal: controller.signal} : {}),
     });
@@ -122,13 +131,14 @@ async function refresh() {
     return;
   }
   try {
-    const [project, tasks, architecture, proposals] = await Promise.all([
+    const [project, tasks, architecture, proposals, activity] = await Promise.all([
       api(`/projects/${state.projectId}`),
       api(`/projects/${state.projectId}/tasks`),
       api(`/projects/${state.projectId}/architecture`),
       api(`/projects/${state.projectId}/architecture/proposals`),
+      api(`/projects/${state.projectId}/events?limit=12`),
     ]);
-    Object.assign(state, {project, tasks, architecture, proposals});
+    Object.assign(state, {project, tasks, architecture, proposals, activity});
     render();
   } catch (err) {
     if (String(err.message).startsWith('404:')) {
@@ -168,9 +178,23 @@ function renderOnboarding() {
   $('emptyState').classList.remove('hidden');
   $('workspace').classList.add('hidden');
   renderProjectControls();
+  document.querySelectorAll('.nav-item').forEach((n) => n.classList.remove('active'));
+
+  const onboardingGrid = document.querySelector('.onboarding-grid');
+  const agentModePanel = $('webmcpAgentModePanel');
+  if (WEBMCP_AGENT_MODE) {
+    $('pageTitle').textContent = 'WebMCP Agent Mode';
+    $('pageSubtitle').textContent = 'Project mutations in this session must use the registered Site Tools.';
+    onboardingGrid?.classList.add('hidden');
+    agentModePanel?.classList.remove('hidden');
+    $('onboardingBackBtn').classList.add('hidden');
+    return;
+  }
+
   $('pageTitle').textContent = 'New Project';
   $('pageSubtitle').textContent = 'Write the Goal directly or use Ask to refine it. Both update the same project brief.';
-  document.querySelectorAll('.nav-item').forEach((n) => n.classList.remove('active'));
+  onboardingGrid?.classList.remove('hidden');
+  agentModePanel?.classList.add('hidden');
   $('onboardingBackBtn').classList.toggle('hidden', !state.projectId);
   renderOnboardingConversation();
   renderGoalDraft();
@@ -307,6 +331,10 @@ async function requestOnboardingGoalDraft() {
 }
 
 async function submitOnboardingAsk() {
+  if (WEBMCP_AGENT_MODE) {
+    toast('Built-in Agent onboarding is disabled in WebMCP Agent Mode.', true);
+    return;
+  }
   if (state.onboarding.working) return;
   const input = $('onboardingAsk');
   const content = input.value.trim();
@@ -326,6 +354,10 @@ async function retryOnboardingAsk() {
 }
 
 async function confirmGoalAndGenerate() {
+  if (WEBMCP_AGENT_MODE) {
+    toast('Built-in architecture generation is disabled in WebMCP Agent Mode.', true);
+    return;
+  }
   const name = $('goalProjectName').value.trim();
   const goal = $('goalDraftText').value.trim();
   if (!name || !goal || state.onboarding.working) return;
@@ -472,6 +504,7 @@ function render() {
   renderTasks();
   renderProposals();
   renderGraph();
+  renderRecentActivity();
   renderLastRun();
   renderGlobalAgentReply();
   updateInstructionContext();
@@ -495,7 +528,7 @@ function renderTasks() {
 function taskRow(t, selectable = false) {
   const selected = selectable && state.selectedTaskId === t.id;
   const updating = state.taskUpdating.has(t.id);
-  const action = t.status === 'TODO'
+  const action = WEBMCP_AGENT_MODE ? '' : t.status === 'TODO'
     ? `<button data-task-action="start" data-task-id="${escapeHtml(t.id)}" ${updating ? 'disabled' : ''}>${updating ? 'Starting…' : 'Start task'}</button>`
     : t.status === 'IN_PROGRESS'
       ? `<button data-task-action="done" data-task-id="${escapeHtml(t.id)}" ${updating ? 'disabled' : ''}>${updating ? 'Saving…' : 'Mark done'}</button>`
@@ -886,6 +919,21 @@ function renderLists() {
   $('riskList').innerHTML = list([...(state.architecture.risks || []), ...(state.architecture.assumptions || []).map((x) => `Assumption: ${x}`)], 'No recorded risks or assumptions.');
 }
 
+function renderRecentActivity() {
+  const el = $('recentActivity');
+  if (!el) return;
+  const events = [...(state.activity || [])].reverse().slice(0, 6);
+  if (!events.length) {
+    el.innerHTML = '<p class="muted">No observed project activity yet.</p>';
+    return;
+  }
+  el.innerHTML = events.map((event) => {
+    const source = event.payload?.external_source || event.source || 'SYSTEM';
+    const summary = event.payload?.summary || event.payload?.message || event.payload?.note || event.type;
+    return `<div class="activity-row"><span class="status-pill">${escapeHtml(source)}</span><div><strong>${escapeHtml(event.type)}</strong><p>${escapeHtml(summary)}</p></div></div>`;
+  }).join('');
+}
+
 function renderLastRun() {
   if (!state.lastRun) {
     $('lastRun').innerHTML = '<p class="muted">No event processed in this browser session.</p>';
@@ -1016,6 +1064,10 @@ function setArchitectureProgress(working, startedAt = 0) {
 }
 
 async function generateInitialArchitecture() {
+  if (WEBMCP_AGENT_MODE) {
+    toast('Built-in architecture generation is disabled in WebMCP Agent Mode.', true);
+    return null;
+  }
   if (!state.projectId || state.architecture?.version > 0) return;
   const startedAt = Date.now();
   setArchitectureProgress(true, startedAt);
@@ -1079,6 +1131,476 @@ function wireGoButtons() {
   });
 }
 
+function webMcpRequireProject() {
+  if (!state.projectId || !state.project || !state.architecture) {
+    throw new Error('No active ArchBro project is loaded.');
+  }
+}
+
+function webMcpContext() {
+  if (!state.projectId || !state.project || !state.architecture) {
+    return {
+      project: null,
+      view: 'onboarding',
+      project_count: state.projects.length,
+      can_create_project: true,
+    };
+  }
+  const selectedTask = state.tasks.find((item) => item.id === state.selectedTaskId) || null;
+  const selectedNode = findArchitectureNode(state.selectedNode || state.drillNodeId);
+  const pending = state.proposals.filter((proposal) => proposal.status === 'PENDING');
+  const selectedProposal = state.proposals.find((proposal) => proposal.id === state.selectedProposalId) || pending[0] || null;
+  return {
+    project: state.project,
+    view: state.currentView,
+    architecture_version: state.architecture.version,
+    selected_task: selectedTask,
+    selected_architecture_node: selectedNode,
+    selected_proposal: selectedProposal,
+    pending_proposal_count: pending.length,
+  };
+}
+
+window.ArchBroWebBridge = {
+  async bootstrapProject({name, goal, architectureSummary, components = [], relationships = [], tasks = [], reasoning} = {}) {
+    await ensureAppInitialized();
+    const projectName = String(name || '').trim();
+    const projectGoal = String(goal || '').trim();
+    const summary = String(architectureSummary || '').trim();
+    const bootstrapReasoning = String(reasoning || '').trim();
+    if (!projectName) throw new Error('Project name is required.');
+    if (!projectGoal) throw new Error('Project goal is required.');
+    if (!summary) throw new Error('Architecture summary is required.');
+    if (!Array.isArray(components) || !components.length) throw new Error('At least one architecture component is required.');
+    if (!Array.isArray(tasks) || !tasks.length) throw new Error('At least one initial task is required.');
+    if (!bootstrapReasoning) throw new Error('Architecture reasoning is required.');
+
+    const componentIds = new Map();
+    const usedIds = new Set();
+    const normalizedComponents = components.map((component, index) => {
+      const componentName = String(component?.name || '').trim();
+      const componentType = String(component?.type || '').trim();
+      const responsibility = String(component?.responsibility || '').trim();
+      if (!componentName || !componentType || !responsibility) throw new Error('Every component requires name, type, and responsibility.');
+      const baseId = componentName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || `component-${index + 1}`;
+      let id = baseId;
+      let suffix = 2;
+      while (usedIds.has(id)) id = `${baseId}-${suffix++}`;
+      usedIds.add(id);
+      componentIds.set(componentName.toLowerCase(), id);
+      return {id, name: componentName, type: componentType, responsibility, children: []};
+    });
+    const resolveComponent = (value) => componentIds.get(String(value || '').trim().toLowerCase()) || String(value || '').trim();
+    const architecture = {
+      version: 1,
+      summary,
+      components: normalizedComponents,
+      relationships: (relationships || []).map((relationship) => ({
+        source: resolveComponent(relationship?.source),
+        target: resolveComponent(relationship?.target),
+        relationship_type: String(relationship?.type || 'DEPENDS_ON').trim(),
+        description: String(relationship?.description || '').trim(),
+      })),
+      decisions: [],
+      assumptions: [],
+      risks: [],
+    };
+    const normalizedTasks = tasks.map((task) => ({
+      title: String(task?.title || '').trim(),
+      description: String(task?.description || '').trim(),
+      related_component: task?.component ? resolveComponent(task.component) : null,
+      source: 'AGENT',
+      acceptance_criteria: [],
+      dependencies: [],
+    }));
+    if (normalizedTasks.some((task) => !task.title)) throw new Error('Every initial task requires a title.');
+
+    const previousProjectId = state.projectId;
+    const project = await api('/projects', {
+      method: 'POST',
+      body: JSON.stringify({name: projectName, goal: projectGoal, description: ''}),
+    });
+
+    try {
+      state.projectId = project.id;
+      localStorage.setItem('archbro-project-id', project.id);
+      state.project = project;
+      state.lastRun = null;
+      state.onboarding.active = false;
+      const result = await api(`/projects/${project.id}/interactive-initial-architecture`, {
+        method: 'POST',
+        body: JSON.stringify({architecture, tasks: normalizedTasks, reasoning: bootstrapReasoning}),
+      });
+      await loadProjects();
+      await refresh();
+      return {
+        project: state.project,
+        ...result,
+        built_in_model_called: false,
+        context: webMcpContext(),
+      };
+    } catch (error) {
+      try {
+        await api(`/projects/${project.id}`, {method: 'DELETE'});
+      } catch (_cleanupError) {
+        // Preserve the original bootstrap failure; cleanup is best-effort.
+      }
+      state.projectId = previousProjectId || null;
+      if (previousProjectId) localStorage.setItem('archbro-project-id', previousProjectId);
+      else localStorage.removeItem('archbro-project-id');
+      await loadProjects();
+      await refresh();
+      throw error;
+    }
+  },
+
+  async createProject({name, goal, description = ''} = {}) {
+    const projectName = String(name || '').trim();
+    const projectGoal = String(goal || '').trim();
+    const projectDescription = String(description || '').trim();
+    if (!projectName) throw new Error('Project name is required.');
+    if (!projectGoal) throw new Error('Project goal is required.');
+
+    const project = await api('/projects', {
+      method: 'POST',
+      body: JSON.stringify({name: projectName, goal: projectGoal, description: projectDescription}),
+    });
+    state.projectId = project.id;
+    localStorage.setItem('archbro-project-id', project.id);
+    state.project = project;
+    state.lastRun = null;
+    state.onboarding.active = false;
+    await loadProjects();
+    await refresh();
+    return {
+      project: state.project,
+      bootstrap_required: true,
+      bootstrap_provider: 'webmcp-agent',
+      built_in_model_called: false,
+      bootstrap_context: {
+        goal: projectGoal,
+        description: projectDescription,
+        architecture_version_required: 1,
+        task_status_default: 'TODO',
+        rules: [
+          'Generate Architecture v1 from the stored Goal/Brief using the current WebMCP host model.',
+          'Use stable component ids that tasks can reference.',
+          'Create at least one actionable initial task.',
+          'Submit the result with archbro_submit_initial_architecture.',
+        ],
+      },
+      recommended_next_tool: 'archbro_submit_initial_architecture',
+    };
+  },
+
+  async submitInitialArchitecture({architecture, tasks = [], reasoning} = {}) {
+    webMcpRequireProject();
+    if (!architecture || typeof architecture !== 'object') throw new Error('Architecture v1 is required.');
+    if (!Array.isArray(tasks) || !tasks.length) throw new Error('At least one initial task is required.');
+    const result = await api(`/projects/${state.projectId}/interactive-initial-architecture`, {
+      method: 'POST',
+      body: JSON.stringify({architecture, tasks, reasoning: String(reasoning || '').trim()}),
+    });
+    await refresh();
+    return {
+      ...result,
+      built_in_model_called: false,
+      context: webMcpContext(),
+    };
+  },
+
+  async getContext() {
+    return webMcpContext();
+  },
+
+  async getProjectBrief() {
+    await ensureAppInitialized();
+    webMcpRequireProject();
+    await refresh();
+    const summarizeTask = (task) => ({
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      owner: task.owner,
+      related_component: task.related_component,
+    });
+    const done = state.tasks.filter((task) => task.status === 'DONE');
+    const inProgress = state.tasks.filter((task) => task.status === 'IN_PROGRESS');
+    const blocked = state.tasks.filter((task) => task.status === 'BLOCKED');
+    const ready = state.tasks.filter((task) => task.status === 'TODO');
+    const pending = state.proposals.filter((proposal) => proposal.status === 'PENDING');
+    const recentActivity = [...(state.activity || [])].reverse().slice(0, 6).map((event) => ({
+      source: event.payload?.external_source || event.source || 'SYSTEM',
+      type: event.type,
+      summary: event.payload?.summary || event.payload?.message || event.payload?.note || event.type,
+    }));
+    const architectureStatus = pending.length
+      ? 'REVIEW_REQUIRED'
+      : blocked.length
+        ? 'BLOCKED'
+        : inProgress.length
+          ? 'ACTIVE'
+          : 'ALIGNED';
+    const recommendedFocus = pending.length
+      ? {kind: 'proposal', id: pending[0].id}
+      : blocked.length
+        ? {kind: 'task', id: blocked[0].id}
+        : null;
+    return {
+      project: {
+        id: state.project.id,
+        name: state.project.name,
+        status: state.project.status,
+        goal: state.project.goal,
+      },
+      architecture: {
+        version: state.architecture.version,
+        summary: state.architecture.summary,
+        status: architectureStatus,
+      },
+      execution: {
+        counts: {done: done.length, in_progress: inProgress.length, blocked: blocked.length, ready: ready.length},
+        done: done.map(summarizeTask),
+        in_progress: inProgress.map(summarizeTask),
+        blocked: blocked.map(summarizeTask),
+        ready: ready.map(summarizeTask),
+      },
+      recent_activity: recentActivity,
+      attention: {
+        required: pending.length > 0 || blocked.length > 0,
+        pending_reviews: pending.map((proposal) => ({
+          id: proposal.id,
+          reason: proposal.reason,
+          observed_change: proposal.observed_change,
+          affected_components: proposal.affected_components || [],
+          impact: proposal.impact,
+        })),
+        blockers: blocked.map(summarizeTask),
+        recommended_next_tool: pending.length
+          ? 'archbro_focus_pending_review'
+          : blocked.length
+            ? 'archbro_focus_workspace_item'
+            : null,
+        recommended_focus: recommendedFocus,
+      },
+      latest_agent_result: state.lastRun,
+    };
+  },
+
+  async getDecisionContext() {
+    await ensureAppInitialized();
+    webMcpRequireProject();
+    const brief = await window.ArchBroWebBridge.getProjectBrief();
+    const componentIds = [];
+    const collectIds = (nodes) => {
+      for (const node of nodes || []) {
+        componentIds.push(node.id);
+        collectIds(node.children || []);
+      }
+    };
+    collectIds(state.architecture.components);
+    return {
+      project_brief: brief,
+      architecture: state.architecture,
+      tasks: state.tasks,
+      recent_activity: [...(state.activity || [])].reverse().slice(0, 10),
+      pending_reviews: state.proposals.filter((proposal) => proposal.status === 'PENDING'),
+      decision_contract: {
+        provider: 'webmcp-agent',
+        mode: 'interactive',
+        allowed_recommendations: ['KEEP_CURRENT', 'ACCEPT_PROPOSED_CHANGE'],
+        existing_component_ids: componentIds,
+        rules: [
+          'Base the recommendation on the provided project evidence and accepted architecture.',
+          'Use KEEP_CURRENT when the issue can be resolved without changing an accepted architecture boundary.',
+          'Use ACCEPT_PROPOSED_CHANGE only when evidence justifies a reviewable architecture change.',
+          'Submitting a recommendation never approves the architecture change; the human review boundary remains authoritative.',
+        ],
+      },
+    };
+  },
+
+  async submitAgentRecommendation({
+    recommendation,
+    reasoning,
+    evidence = [],
+    observedChange,
+    affectedComponents = [],
+    proposedChanges = [],
+    impact = '',
+  } = {}) {
+    await ensureAppInitialized();
+    webMcpRequireProject();
+    const result = await api(`/projects/${state.projectId}/agent-recommendations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        recommendation,
+        reasoning,
+        evidence,
+        observed_change: observedChange,
+        affected_components: affectedComponents,
+        proposed_changes: proposedChanges,
+        impact,
+      }),
+    });
+    await refresh();
+    if (result?.proposal?.id) {
+      state.selectedProposalId = result.proposal.id;
+    }
+    return {
+      ...result,
+      context: webMcpContext(),
+    };
+  },
+
+  async inspectProjectStatus() {
+    webMcpRequireProject();
+    const blockers = state.tasks.filter((task) => task.status === 'BLOCKED');
+    const inProgress = state.tasks.filter((task) => task.status === 'IN_PROGRESS');
+    const ready = state.tasks.filter((task) => task.status === 'TODO');
+    const pending = state.proposals.filter((proposal) => proposal.status === 'PENDING');
+    return {
+      project: state.project,
+      architecture: state.architecture,
+      tasks: state.tasks,
+      blockers,
+      in_progress: inProgress,
+      ready_tasks: ready,
+      pending_reviews: pending,
+      latest_agent_result: state.lastRun,
+    };
+  },
+
+  async getRecentActivity({limit = 10} = {}) {
+    webMcpRequireProject();
+    const boundedLimit = Math.min(50, Math.max(1, Number(limit) || 10));
+    const events = await api(`/projects/${state.projectId}/events?limit=${boundedLimit}`);
+    state.activity = events;
+    renderRecentActivity();
+    return {project_id: state.projectId, events, latest_agent_result: state.lastRun};
+  },
+
+  async focusPendingReview() {
+    await ensureAppInitialized();
+    webMcpRequireProject();
+    const proposal = state.proposals.find((item) => item.status === 'PENDING') || null;
+    if (!proposal) {
+      return {focused: false, reason: 'no-pending-review', context: webMcpContext()};
+    }
+    state.selectedProposalId = proposal.id;
+    switchView('attention');
+    renderProposals();
+    updateInstructionContext();
+    return {focused: true, proposal, context: webMcpContext()};
+  },
+
+  async inspectArchitecture({componentId = null} = {}) {
+    webMcpRequireProject();
+    const pending = state.proposals.filter((proposal) => proposal.status === 'PENDING');
+    if (!componentId) {
+      return {
+        project_id: state.projectId,
+        architecture: state.architecture,
+        tasks: state.tasks,
+        pending_proposals: pending,
+      };
+    }
+
+    const node = findArchitectureNode(componentId);
+    if (!node) throw new Error(`Architecture component not found: ${componentId}`);
+    const ids = new Set(descendantArchitectureIds(node));
+    return {
+      project_id: state.projectId,
+      architecture_version: state.architecture.version,
+      node,
+      health: architectureHealth(node),
+      tasks: state.tasks.filter((task) => task.related_component && ids.has(task.related_component)),
+      pending_proposals: pending.filter((proposal) => {
+        const affected = proposal.affected_components || [];
+        const changed = (proposal.proposed_changes || []).map((change) => change.component_id).filter(Boolean);
+        return [...affected, ...changed].some((id) => ids.has(id));
+      }),
+    };
+  },
+
+  async focusItem({kind, id = null} = {}) {
+    webMcpRequireProject();
+    if (kind === 'project') {
+      if (id && id !== state.projectId) await selectProject(id);
+      switchView('overview');
+    } else if (kind === 'task') {
+      const task = state.tasks.find((item) => item.id === id);
+      if (!task) throw new Error(`Task not found: ${id}`);
+      state.selectedTaskId = task.id;
+      switchView('tasks');
+      renderTasks();
+    } else if (kind === 'architecture') {
+      const node = findArchitectureNode(id);
+      if (!node) throw new Error(`Architecture component not found: ${id}`);
+      state.selectedNode = node.id;
+      state.drillNodeId = null;
+      switchView('architecture');
+      renderGraph();
+    } else if (kind === 'proposal') {
+      const proposal = state.proposals.find((item) => item.id === id);
+      if (!proposal) throw new Error(`Architecture proposal not found: ${id}`);
+      state.selectedProposalId = proposal.id;
+      switchView('attention');
+      renderProposals();
+    } else {
+      throw new Error(`Unsupported ArchBro focus kind: ${kind}`);
+    }
+    updateInstructionContext();
+    return webMcpContext();
+  },
+
+  async reportChange({summary, evidence = [], relatedComponent = null} = {}) {
+    webMcpRequireProject();
+    const message = String(summary || '').trim();
+    if (!message) throw new Error('Project change summary is required.');
+    if (state.architecture.version === 0) throw new Error('Architecture v1 must exist before reporting project changes.');
+    const normalizedEvidence = evidence.map((item) => String(item).trim()).filter(Boolean);
+    const uiContext = {
+      ...currentInstructionContext().payload,
+      ...(relatedComponent ? {related_component: relatedComponent} : {}),
+    };
+    return sendEvent(
+      'USER_MESSAGE',
+      {message, evidence: normalizedEvidence, ui_context: uiContext},
+      'Evaluating WebMCP project change…',
+    );
+  },
+
+  async updateTaskStatus({taskId, status} = {}) {
+    await ensureAppInitialized();
+    webMcpRequireProject();
+    const task = state.tasks.find((item) => item.id === taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (status === 'IN_PROGRESS' && task.status !== 'TODO') {
+      throw new Error(`Task ${taskId} must be TODO before starting.`);
+    }
+    if (status === 'DONE' && task.status !== 'IN_PROGRESS') {
+      throw new Error(`Task ${taskId} must be IN_PROGRESS before completion.`);
+    }
+    if (!['IN_PROGRESS', 'DONE'].includes(status)) throw new Error(`Unsupported task status: ${status}`);
+    await updateTask(taskId, status === 'DONE' ? 'done' : 'start');
+    return {
+      task: state.tasks.find((item) => item.id === taskId) || null,
+      agent_run: state.lastRun,
+    };
+  },
+
+  async decideProposal({proposalId, decision} = {}) {
+    webMcpRequireProject();
+    const proposal = state.proposals.find((item) => item.id === proposalId);
+    if (!proposal) throw new Error(`Architecture proposal not found: ${proposalId}`);
+    if (proposal.status !== 'PENDING') throw new Error(`Architecture proposal ${proposalId} is not pending.`);
+    if (!['accept', 'reject'].includes(decision)) throw new Error(`Unsupported proposal decision: ${decision}`);
+    await decideProposal(proposalId, decision);
+    return state.proposals.find((item) => item.id === proposalId) || null;
+  },
+};
+
 $('nav').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-view]');
   if (btn) switchView(btn.dataset.view);
@@ -1086,6 +1608,10 @@ $('nav').addEventListener('click', (e) => {
 
 $('instructionForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (WEBMCP_AGENT_MODE) {
+    toast('Built-in Agent messaging is disabled in WebMCP Agent Mode.', true);
+    return;
+  }
   if (state.architecture?.version === 0) {
     toast('Architecture v1 must finish before normal project updates.', true);
     return;
@@ -1119,7 +1645,15 @@ $('editProjectDialog').addEventListener('click', closeDialogOnBackdrop);
 $('deleteProjectDialog').addEventListener('click', closeDialogOnBackdrop);
 
 wireGoButtons();
+let appInitializationPromise = null;
 async function initialize() {
+  document.body.dataset.webmcpAgentMode = WEBMCP_AGENT_MODE ? 'true' : 'false';
+  if (WEBMCP_AGENT_MODE) {
+    ['newProjectBtn', 'editProjectBtn', 'deleteProjectBtn', 'globalAgentDock'].forEach((id) => {
+      const element = $(id);
+      if (element) element.style.display = 'none';
+    });
+  }
   try {
     await loadProjects();
     if (state.projectId && !state.projects.some((project) => project.id === state.projectId)) {
@@ -1142,4 +1676,8 @@ async function initialize() {
   }
 }
 
-initialize();
+appInitializationPromise = initialize();
+
+async function ensureAppInitialized() {
+  if (appInitializationPromise) await appInitializationPromise;
+}

@@ -1,0 +1,26 @@
+# Keep Cloud Build upload minimal and credential-free.
+.git
+.gitignore
+.gcloudignore
+.env
+.env.*
+.archbro-firebase-public.json
+.archbro-edge-secret
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+node_modules/
+dist/
+build/
+qa/
+tests/
+playwright-report/
+test-results/

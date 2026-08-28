@@ -47,6 +47,11 @@
           <h2>What are you trying to build?</h2>
           <p>Write the Goal directly, talk to the Agent, or use both. Ask always merges with the current Goal instead of replacing it.</p>
         </div>
+        <article id="webmcpAgentModePanel" class="panel hidden" style="margin-top:24px">
+          <span class="eyebrow">WEBMCP AGENT SESSION</span>
+          <h3 style="margin-top:8px">This browser session is controlled through Site Tools</h3>
+          <p>Manual project creation and built-in model actions are disabled in this mode. The connected agent must create projects, submit plans, and update task state through ArchBro's imperative WebMCP tools. Human architecture approval remains available in Needs You.</p>
+        </article>
         <div class="onboarding-grid">
           <article class="panel onboarding-chat">
             <div class="panel-head"><div><h3>Ask the Agent</h3><p>Use Ask to add, refine, or correct the Goal. The existing Goal remains the baseline unless you explicitly change part of it.</p></div><span class="version-pill">No project yet</span></div>
@@ -111,6 +116,7 @@
               <div id="overviewAttention" class="attention-content"><p>No pending architecture decision.</p></div>
             </article>
             <article class="panel next-tasks"><div class="panel-head"><h3>Next tasks</h3><button class="link-btn" data-go="tasks">View all →</button></div><div id="overviewTasks" class="task-list compact"></div></article>
+            <article class="panel"><div class="panel-head"><div><h3>Recent activity</h3><p>Observed human, GitHub, Slack, and system signals.</p></div></div><div id="recentActivity" class="activity-list"><p class="muted">No observed project activity yet.</p></div></article>
             <article class="panel last-run"><h3>Latest agent result</h3><div id="lastRun"><p class="muted">No event processed in this browser session.</p></div></article>
           </div>
         </div>
@@ -169,6 +175,8 @@
   </dialog>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20260826-2"></script>
+  <script src="/runtime-config.js"></script>
+  <script type="module" src="/static/app.js?v=20260828-firebase-webmcp"></script>
+  <script type="module" src="/static/archbro-webmcp.js?v=competition-20260828-authz-atomic"></script>
 </body>
 </html>

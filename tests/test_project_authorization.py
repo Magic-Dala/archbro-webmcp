@@ -238,3 +238,96 @@ def test_authentication_precedes_project_lookup_for_missing_project():
 
     valid = _client(repo, TrustedPrincipal(user_id="alice"))
     assert valid.get("/projects/project_missing").status_code == 404
+
+
+def test_goal_drafting_requires_trusted_identity_before_provider_call():
+    repo = _repo()
+    calls = 0
+
+    class CountingProvider(FakeModelProvider):
+        async def draft_goal(self, *, messages, current_goal):
+            nonlocal calls
+            calls += 1
+            return await super().draft_goal(messages=messages, current_goal=current_goal)
+
+    async def principal_provider(_: str) -> TrustedPrincipal:
+        return TrustedPrincipal(user_id="alice")
+
+    client = TestClient(build_app(repo, CountingProvider(), principal_provider=principal_provider))
+    payload = {
+        "messages": [{"role": "user", "content": "Build a project workspace."}],
+        "current_goal": "",
+    }
+
+    missing = client.post("/onboarding/goal", json=payload)
+    assert missing.status_code == 401
+    assert calls == 0
+
+    authenticated = client.post(
+        "/onboarding/goal",
+        headers={"Authorization": "Bearer valid-token"},
+        json=payload,
+    )
+    assert authenticated.status_code == 200
+    assert calls == 1
+
+
+def test_production_runtime_rejects_local_development_identity(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ARCHBRO_ENV", "production")
+    monkeypatch.setenv("ARCHBRO_AUTH_MODE", "local")
+    with pytest.raises(ValueError, match="must use ARCHBRO_AUTH_MODE=firebase"):
+        build_app(_repo(), FakeModelProvider())
+
+
+def test_runtime_config_is_no_store_and_security_headers_are_present():
+    client = TestClient(build_app(_repo(), FakeModelProvider()))
+    response = client.get("/runtime-config.js")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "default-src 'self'" in response.headers["content-security-policy"]
+    assert '"auth_mode": "local"' in response.text
+
+
+def test_required_edge_guard_blocks_direct_origin_requests(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ARCHBRO_ENV", "production")
+    monkeypatch.setenv("ARCHBRO_AUTH_MODE", "firebase")
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "test-project")
+    monkeypatch.setenv("ARCHBRO_FIREBASE_API_KEY", "test-browser-key")
+    monkeypatch.setenv("ARCHBRO_EDGE_GUARD", "required")
+    monkeypatch.setenv("ARCHBRO_EDGE_TOKEN", "test-edge-token")
+
+    async def principal_provider(_: str) -> TrustedPrincipal:
+        return TrustedPrincipal(user_id="alice")
+
+    client = TestClient(
+        build_app(
+            _repo(),
+            FakeModelProvider(),
+            principal_provider=principal_provider,
+        )
+    )
+
+    denied = client.get("/runtime-config.js")
+    wrong = client.get(
+        "/runtime-config.js",
+        headers={"X-ArchBro-Edge-Token": "wrong-token"},
+    )
+    allowed = client.get(
+        "/runtime-config.js",
+        headers={"X-ArchBro-Edge-Token": "test-edge-token"},
+    )
+
+    assert denied.status_code == 403
+    assert wrong.status_code == 403
+    assert denied.headers["x-content-type-options"] == "nosniff"
+    assert allowed.status_code == 200
+    assert allowed.headers["strict-transport-security"] == "max-age=86400"
+
+
+def test_required_edge_guard_fails_closed_without_token(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ARCHBRO_EDGE_GUARD", "required")
+    monkeypatch.delenv("ARCHBRO_EDGE_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="ARCHBRO_EDGE_TOKEN is required"):
+        build_app(_repo(), FakeModelProvider())

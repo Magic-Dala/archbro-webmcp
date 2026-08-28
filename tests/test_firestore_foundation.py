@@ -207,7 +207,8 @@ def test_firestore_repository_implements_archbro_project_state_contract():
         recommended_option=ArchitectureOption.KEEP_CURRENT,
     )
     repo.save_proposal(proposal)
-    repo.save_event(ProjectEvent(project_id=project.id, type=ProjectEventType.USER_MESSAGE))
+    event = ProjectEvent(project_id=project.id, type=ProjectEventType.USER_MESSAGE)
+    repo.save_event(event)
     repo.add_note(project.id, "first note")
 
     assert repo.get_project(project.id).name == "Firestore QA"
@@ -215,6 +216,7 @@ def test_firestore_repository_implements_archbro_project_state_contract():
     assert repo.get_architecture(project.id).version == 1
     assert repo.list_tasks(project.id)[0].id == task.id
     assert repo.get_proposal(proposal.id).id == proposal.id
+    assert [item.id for item in repo.list_events(project.id)] == [event.id]
     context = repo.load_context(project.id)
     assert context.project.id == project.id
     assert context.recent_notes == ["first note"]

@@ -67,6 +67,14 @@ class ActionExecutor:
                     raise ValueError("proposal project_id mismatch")
                 if not proposal.evidence:
                     raise ValueError("architecture change proposal requires evidence")
+                # Validate the exact deterministic acceptance semantics before a
+                # proposal is persisted. A human must never be shown a review item
+                # that cannot be applied atomically if they accept it.
+                ArchitectureAcceptanceReconciler().build_plan(
+                    architecture=self.repository.get_architecture(project_id),
+                    proposal=proposal,
+                    tasks=list(project_tasks.values()),
+                )
 
     def build_plan(
         self,

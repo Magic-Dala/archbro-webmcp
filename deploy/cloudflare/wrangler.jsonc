@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "archbro-edge",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-28",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "archbro.hoson.xyz",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "ARCHBRO_ORIGIN": "https://archbro-webmcp-23051378248.us-west1.run.app"
+  }
+}

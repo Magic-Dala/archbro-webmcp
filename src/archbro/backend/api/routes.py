@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator, model_validator
 
 from archbro.backend.agent.orchestration import AgentOrchestrator
@@ -20,12 +20,17 @@ from archbro.backend.core.authorization import (
     local_development_principal,
 )
 from archbro.backend.core.contracts import (
+    AgentAction,
+    AgentActionType,
     Architecture,
+    ArchitectureChangeProposal,
+    ArchitectureOption,
     Project,
     ProjectActivity,
     ProjectEvent,
     ProjectEventSource,
     ProjectEventType,
+    TaskProposal,
     utcnow,
 )
 from archbro.backend.core.observation import ObservationInProgressError
@@ -113,6 +118,68 @@ class EventRequest(BaseModel):
         return self
 
 
+class InteractiveInitialArchitectureRequest(BaseModel):
+    architecture: Architecture
+    tasks: list[TaskProposal]
+    reasoning: str
+
+    @field_validator("reasoning")
+    @classmethod
+    def require_bootstrap_reasoning(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def validate_initial_architecture(self) -> "InteractiveInitialArchitectureRequest":
+        if self.architecture.version != 1:
+            raise ValueError("interactive initial architecture must be version 1")
+        if not self.tasks:
+            raise ValueError("at least one initial task is required")
+        component_ids = self.architecture.component_ids()
+        unknown_task_components = sorted({
+            task.related_component
+            for task in self.tasks
+            if task.related_component and task.related_component not in component_ids
+        })
+        if unknown_task_components:
+            raise ValueError(f"initial tasks reference unknown architecture component ids: {unknown_task_components}")
+        return self
+
+
+class AgentRecommendationRequest(BaseModel):
+    recommendation: ArchitectureOption
+    reasoning: str
+    evidence: list[str]
+    observed_change: str
+    affected_components: list[str] = []
+    proposed_changes: list[dict[str, Any]] = []
+    impact: str = ""
+
+    @field_validator("reasoning", "observed_change")
+    @classmethod
+    def require_recommendation_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def validate_recommendation_payload(self) -> "AgentRecommendationRequest":
+        self.evidence = [item.strip() for item in self.evidence if item.strip()]
+        self.affected_components = [item.strip() for item in self.affected_components if item.strip()]
+        self.impact = self.impact.strip()
+        if not self.evidence:
+            raise ValueError("at least one evidence item is required")
+        if self.recommendation == ArchitectureOption.ACCEPT_PROPOSED_CHANGE:
+            if not self.proposed_changes:
+                raise ValueError("proposed_changes are required when recommending an architecture change")
+            if not self.impact:
+                raise ValueError("impact is required when recommending an architecture change")
+        return self
+
+
 def build_router(
     repository: ProjectRepositoryPort,
     provider: ModelProvider,
@@ -173,7 +240,10 @@ def build_router(
         return project
 
     @router.post("/onboarding/goal", response_model=GoalDraft)
-    async def draft_goal(request: GoalDraftRequest) -> GoalDraft:
+    async def draft_goal(request: GoalDraftRequest, http_request: Request) -> GoalDraft:
+        # Goal drafting can invoke the configured model provider, so production
+        # authentication must precede any provider call just like project APIs.
+        await principal_for(http_request)
         try:
             return await asyncio.wait_for(
                 provider.draft_goal(messages=request.messages, current_goal=request.current_goal),
@@ -259,10 +329,14 @@ def build_router(
         except ObservationInProgressError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
-    @router.get("/projects/{project_id}/events")
-    async def list_events(project_id: str, http_request: Request):
+    @router.get("/projects/{project_id}/events", response_model=list[ProjectEvent])
+    async def list_events(
+        project_id: str,
+        http_request: Request,
+        limit: int = Query(default=20, ge=1, le=50),
+    ) -> list[ProjectEvent]:
         await authorized_project(http_request, project_id, ProjectPermission.READ)
-        return repository.list_events(project_id)
+        return repository.list_events(project_id, limit=limit)
 
     @router.get("/projects/{project_id}/agent-runs")
     async def list_agent_runs(project_id: str, http_request: Request):
@@ -291,6 +365,143 @@ def build_router(
     async def list_proposals(project_id: str, http_request: Request):
         await authorized_project(http_request, project_id, ProjectPermission.READ)
         return repository.list_proposals(project_id)
+
+    @router.post("/projects/{project_id}/interactive-initial-architecture")
+    async def submit_interactive_initial_architecture(
+        project_id: str,
+        request: InteractiveInitialArchitectureRequest,
+        http_request: Request,
+    ):
+        project = await authorized_project(http_request, project_id, ProjectPermission.WRITE)
+        try:
+            current = repository.get_architecture(project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="project not found")
+        if current.version != 0 or project.architecture_version != 0:
+            raise HTTPException(status_code=409, detail="initial architecture already exists")
+
+        event = ProjectEvent(
+            project_id=project_id,
+            type=ProjectEventType.MANUAL_NOTE,
+            source=ProjectEventSource.SYSTEM,
+            payload={
+                "external_source": "WEBMCP_AGENT",
+                "intent": "INITIAL_ARCHITECTURE",
+                "summary": request.reasoning,
+                "provider": "webmcp-agent",
+            },
+        )
+        actions = [
+            AgentAction(
+                type=AgentActionType.ADD_PROJECT_NOTE,
+                payload={"note": "INITIAL_ARCHITECTURE:" + request.architecture.model_dump_json()},
+            ),
+            *[
+                AgentAction(
+                    type=AgentActionType.CREATE_TASK,
+                    payload={"task": task.model_dump(mode="json")},
+                )
+                for task in request.tasks
+            ],
+        ]
+        try:
+            executor.validate_all(project_id, actions)
+            repository.save_event(event)
+            executor.apply(project_id, actions)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return {
+            "provider": "webmcp-agent",
+            "model": "external-interactive",
+            "event_id": event.id,
+            "architecture": repository.get_architecture(project_id),
+            "tasks": repository.list_tasks(project_id),
+            "summary": request.reasoning,
+        }
+
+    @router.post("/projects/{project_id}/agent-recommendations")
+    async def submit_agent_recommendation(
+        project_id: str,
+        request: AgentRecommendationRequest,
+        http_request: Request,
+    ):
+        await authorized_project(http_request, project_id, ProjectPermission.WRITE)
+        try:
+            architecture = repository.get_architecture(project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="project not found")
+        if architecture.version == 0:
+            raise HTTPException(status_code=409, detail="initial architecture must exist before submitting an agent recommendation")
+
+        component_ids: set[str] = set()
+
+        def collect_component_ids(nodes) -> None:
+            for node in nodes:
+                component_ids.add(node.id)
+                collect_component_ids(node.children)
+
+        collect_component_ids(architecture.components)
+        referenced_ids = set(request.affected_components)
+        for change in request.proposed_changes:
+            component_id = str(change.get("component_id", "")).strip()
+            if component_id:
+                referenced_ids.add(component_id)
+        unknown_ids = sorted(referenced_ids.difference(component_ids))
+        if unknown_ids:
+            raise HTTPException(status_code=422, detail=f"unknown architecture component ids: {unknown_ids}")
+
+        event = ProjectEvent(
+            project_id=project_id,
+            type=ProjectEventType.MANUAL_NOTE,
+            source=ProjectEventSource.SYSTEM,
+            payload={
+                "external_source": "WEBMCP_AGENT",
+                "summary": request.reasoning,
+                "recommendation": request.recommendation.value,
+                "evidence": request.evidence,
+            },
+        )
+
+        if request.recommendation == ArchitectureOption.KEEP_CURRENT:
+            repository.save_event(event)
+            return {
+                "provider": "webmcp-agent",
+                "model": "external-interactive",
+                "event_id": event.id,
+                "architecture_review_required": False,
+                "proposal": None,
+                "summary": request.reasoning,
+            }
+
+        proposal = ArchitectureChangeProposal(
+            project_id=project_id,
+            reason=request.reasoning,
+            evidence=request.evidence,
+            observed_change=request.observed_change,
+            affected_components=request.affected_components,
+            proposed_changes=request.proposed_changes,
+            impact=request.impact,
+            recommended_option=request.recommendation,
+        )
+        action = AgentAction(
+            type=AgentActionType.PROPOSE_ARCHITECTURE_CHANGE,
+            payload={"proposal": proposal.model_dump(mode="json")},
+        )
+        try:
+            executor.validate_all(project_id, [action])
+            repository.save_event(event)
+            proposal_ids = executor.apply(project_id, [action])
+            persisted_proposal = repository.get_proposal(proposal_ids[0])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return {
+            "provider": "webmcp-agent",
+            "model": "external-interactive",
+            "event_id": event.id,
+            "architecture_review_required": True,
+            "proposal": persisted_proposal,
+            "summary": request.reasoning,
+        }
 
     @router.post("/projects/{project_id}/architecture/proposals/{proposal_id}/accept")
     async def accept_proposal(project_id: str, proposal_id: str, http_request: Request):

@@ -1,96 +1,187 @@
-# Archbro
+# ArchBro
 
-Archbro is a human-guided agentic project workspace that turns a Goal into a living architecture, actionable tasks, project health, and reviewable architecture changes.
+ArchBro is a human-guided agentic project workspace where humans and AI agents share one living architecture, execution state, and review boundary.
+
+**Live WebMCP demo:** https://archbro.hoson.xyz/?mode=webmcp
+
+Instead of letting an agent guess the UI or maintain a separate plan, ArchBro exposes semantic browser-native WebMCP Site Tools. The host agent can read current project reality, reason about architecture drift, submit a reviewable recommendation, and continue execution after a human decision.
 
 ## Product loop
 
 ```text
 Goal
--> Architecture
+-> Living Architecture
 -> Tasks
--> Human Execution
--> Project Signals
+-> Human / Agent Execution
+-> Project Signals & Evidence
 -> Agent Evaluation
--> Update / Proposal
--> Human Review
+-> Update or Architecture Proposal
+-> Human Review for Consequential Changes
+-> Reconciled Execution
 ```
 
-## Team-oriented layout
+## WebMCP Challenge extension
+
+The WebMCP integration was developed during the challenge period and uses the imperative browser API:
+
+```js
+document.modelContext.registerTool(...)
+```
+
+The production WebMCP implementation now lives directly in this repository. The earlier standalone `archbro-webmcp` repository is retained only as challenge-period history and is not a runtime or build dependency.
+
+Core Site Tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `archbro_ping` | Verify the native WebMCP connection without mutation or model invocation |
+| `archbro_bootstrap_project` | Save a project, Architecture v1, and initial tasks designed by the host agent |
+| `archbro_get_project_brief` | Read fresh project health, tasks, blockers, activity, and human attention |
+| `archbro_get_decision_context` | Read accepted architecture, evidence, execution state, and governance rules |
+| `archbro_submit_agent_recommendation` | Submit host-agent reasoning; architecture changes become `PENDING` human review |
+| `archbro_update_task_status` | Start or complete an existing task through the deterministic task boundary |
+| `archbro_focus_pending_review` | Navigate the visible UI to the pending architecture review |
+
+The calling host agent owns reasoning. ArchBro owns validation, state, governance, and execution. A WebMCP agent can recommend an architecture change but cannot approve it.
+
+See [`docs/WEBMCP.md`](docs/WEBMCP.md) for the complete contract and governance invariants.
+
+## Why WebMCP matters here
 
 ```text
-frontend/                       # Shaun — Frontend / Product
-src/archbro/backend/            # Jim — Core Backend / Agent
-src/archbro/integrations/       # Ayushi — Firebase Auth / GitHub
-src/archbro/platform/           # Max — Firestore / Platform / Infra
-tests/                          # contract/regression tests
-qa/                             # demo and browser acceptance harnesses
-docs/OWNERSHIP.md               # ownership + dependency rules
+External host agent
+      |
+      v
+ArchBro Site Tools
+      |
+      +--> reads current project + evidence
+      +--> reasons about architecture drift
+      +--> submits reviewable recommendation
+      |
+      v
+Human Accept / Reject
+      |
+      v
+Architecture version + tasks reconciled
+      |
+      v
+Agent continues execution
 ```
 
-See `docs/OWNERSHIP.md` before adding a new module.
+The agent does not need DOM automation, and ArchBro does not expose an unsafe direct architecture-mutation tool.
+
+## Competition-safe acceptance mode
+
+Open:
+
+```text
+/?mode=webmcp
+```
+
+This mode disables the human New Project flow, built-in architecture generation, built-in agent messaging, and manual task Start/Done controls so a WebMCP acceptance run cannot silently fall back to browser automation. Human architecture Accept/Reject remains enabled.
+
+## Project layout
+
+```text
+frontend/                       # Web UI + WebMCP browser integration
+src/archbro/backend/            # Core backend, agent, API, governance
+src/archbro/integrations/       # Firebase Auth / external integrations
+src/archbro/platform/           # Firestore / SQLite / runtime composition
+tests/                          # contract + regression + golden WebMCP flow
+qa/                             # browser and competition acceptance harnesses
+docs/OWNERSHIP.md               # ownership + dependency rules
+docs/WEBMCP.md                  # WebMCP contract and governance
+docs/DEMO.md                    # <3 minute competition demo script
+docs/SUBMISSION.md              # submission copy and final checklist
+```
 
 ## Run locally
 
-Use a project-local virtual environment. Do not install Archbro into a shared/global Python environment because Strands and other local MCP projects may require different MCP package versions.
+Use a project-local virtual environment:
 
 ```powershell
 cd archbro
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
 .\.venv\Scripts\python.exe -m uvicorn archbro.main:app --host 127.0.0.1 --port 8011
 ```
 
-Open `http://127.0.0.1:8011/`.
-
-For the current local deterministic demo harness, `qa.manual_demo_app:app` can be launched with the same virtual environment.
+Open `http://127.0.0.1:8011/` or `http://127.0.0.1:8011/?mode=webmcp` for the competition-safe WebMCP mode.
 
 ## Environment
 
-`.env` is loaded automatically. Archbro uses product-specific `ARCHBRO_*` settings and keeps the old `HUMAN_AGENT_*` names only as a compatibility fallback during migration.
+`.env` is loaded automatically.
 
 ```env
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-3.7-flash
 ARCHBRO_PROVIDER=gemini
+ARCHBRO_ENV=local
+ARCHBRO_AUTH_MODE=local
 ARCHBRO_PERSISTENCE=sqlite
 ARCHBRO_DB=archbro.db
 FIREBASE_PROJECT_ID=
 FIRESTORE_PROJECT_ID=
 FIRESTORE_DATABASE_ID=(default)
 ARCHBRO_FIRESTORE_PREFIX=archbro
+ARCHBRO_FIREBASE_API_KEY=
+ARCHBRO_FIREBASE_AUTH_DOMAIN=
+ARCHBRO_FIREBASE_APP_ID=
 ARCHBRO_GOAL_REQUEST_TIMEOUT_SECONDS=30
 ```
 
-Gemini routing continues to use the existing `GEMINI_*` model/fallback settings.
+For deterministic WebMCP acceptance without built-in model calls:
 
-### Reusing Keys by Friday
+```env
+ARCHBRO_PROVIDER=fake
+ARCHBRO_PERSISTENCE=sqlite
+```
 
-Archbro deliberately reuses KBF's Firebase Admin / Firebase ID-token / Firestore repository pattern instead of adding an AWS identity or database path. Local development stays on SQLite; cloud deployment can switch to Firestore with `ARCHBRO_PERSISTENCE=firestore`.
+For cloud persistence:
 
-Firebase Auth is Ayushi-owned identity integration. Firestore Project/Architecture/Task persistence is Max-owned platform infrastructure.
+```env
+ARCHBRO_PERSISTENCE=firestore
+FIRESTORE_PROJECT_ID=<project-id>
+FIRESTORE_DATABASE_ID=(default)
+ARCHBRO_FIRESTORE_PREFIX=archbro
+```
+
+Cloud deployment must set `ARCHBRO_ENV=production` and `ARCHBRO_AUTH_MODE=firebase`.
+Production startup fails closed if Firebase identity or its public browser config is
+missing; the local-development principal cannot be activated in production.
+
+`qa/setup_archbro_identity_platform.ps1` provisions the anonymous browser identity
+boundary directly through Google Cloud Identity Platform. Its browser API key is
+restricted to Identity Toolkit/Secure Token and the ArchBro public/run hostnames;
+the generated local config file is gitignored. This keeps auth independent from
+Firebase Hosting while remaining compatible with Firebase Admin ID-token verification.
+
+The competition Firestore database is the named database `archbro-challenge`.
+Committed Firebase rules deny every direct browser/mobile Firestore read/write;
+privileged project state remains behind FastAPI + Firebase Admin SDK + project
+authorization. Deploy `firebase.json` before a production revision so the cloud
+rules and required activity-history indexes match the repository contract.
 
 ## Runtime composition
 
 ```text
-Shaun frontend
-    -> Jim backend API
-        -> Jim core / agent / LLM contracts
-            -> backend-owned ProjectRepositoryPort
-                -> Max persistence implementation
+Frontend / WebMCP
+    -> backend API
+        -> core / agent / governance contracts
+            -> ProjectRepositoryPort
+                -> SQLite or Firestore
 
-Ayushi Firebase Auth / GitHub
-    -> trusted identity + normalized events
-        -> Jim API / Max event pipeline
-            -> Jim agent evaluation
-
-Max platform/runtime
-    -> Firestore or SQLite persistence
-    -> composes persistence + provider + backend API + frontend
+Firebase Auth / integrations
+    -> trusted identity + normalized evidence
+        -> backend / event pipeline
+            -> agent evaluation
 ```
 
 ## Architecture approval boundary
 
-The Agent may update normal project/task state when justified. It cannot silently replace accepted architecture. Material architecture drift creates a pending proposal; only explicit human acceptance increments the architecture version.
+Normal execution state can advance deterministically. Material architecture drift creates a pending proposal. Only explicit human acceptance increments the architecture version.
+
+When a component is replaced, unfinished work is re-scoped to the accepted replacement and becomes ready again. Work tied to a removed component remains blocked until it is redefined.
 
 ## Tests
 
@@ -99,3 +190,17 @@ The Agent may update normal project/task state when justified. It cannot silentl
 ```
 
 The real Gemini smoke test runs when a Gemini API key is available. Deterministic tests do not require a model call.
+
+The golden WebMCP governance loop is covered by `tests/test_webmcp_golden_flow.py`.
+
+Browser-native local probes live under `qa/`, including `qa/probe_webmcp_live.py`.
+
+## Container deployment
+
+A production-oriented `Dockerfile` is included. The container listens on `$PORT` (default `8080`). Configure Firestore/Firebase environment variables in the deployment platform rather than baking credentials into the image.
+
+The challenge deployment runs behind `https://archbro.hoson.xyz` on a Cloudflare Worker, with Cloud Run in `us-west1` as the protected origin and a dedicated Firestore Native database (`archbro-challenge`) using the `archbro` collection prefix. Production uses a dedicated runtime service account, Firebase ID-token verification, project authorization before domain mutations, and an edge credential stored in Cloudflare Secrets and Google Secret Manager. Direct requests to the Cloud Run origin are rejected; the public WebMCP path goes through the Cloudflare custom domain.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

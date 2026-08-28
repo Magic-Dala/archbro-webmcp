@@ -7,6 +7,7 @@ from archbro.integrations.firebase.auth import (
     AuthenticatedUser,
     AuthenticationServiceUnavailable,
     InvalidAuthenticationToken,
+    firebase_principal_provider,
     verify_firebase_id_token,
 )
 
@@ -15,6 +16,7 @@ __all__ = [
     "AuthenticationServiceUnavailable",
     "FirebaseAdminUnavailable",
     "InvalidAuthenticationToken",
+    "firebase_principal_provider",
     "get_firebase_admin_app",
     "get_firestore_client",
     "verify_firebase_id_token",

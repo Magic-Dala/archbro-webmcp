@@ -1,0 +1,21 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "archbro_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "project_id", "order": "ASCENDING"},
+        {"fieldPath": "data.received_at", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "archbro_agent_runs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "project_id", "order": "ASCENDING"},
+        {"fieldPath": "data.completed_at", "order": "DESCENDING"}
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
