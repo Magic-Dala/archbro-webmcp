@@ -95,7 +95,61 @@ docs/DEMO.md                    # <3 minute competition demo script
 docs/SUBMISSION.md              # submission copy and final checklist
 ```
 
-## Run locally
+## Run the stack with Docker Compose
+
+The recommended way to get a working environment. One command, and no Google
+Cloud credentials or Gemini API key are needed:
+
+```bash
+docker compose up -d --wait
+```
+
+Requires Docker Compose v2.24 or newer, which is when `env_file:` gained the
+long form that lets a missing `.env` be non-fatal.
+
+That builds the app image, starts PostgreSQL, blocks until both containers
+report healthy, and serves the app on `http://localhost:8080/`.
+
+| Command | What it does |
+| --- | --- |
+| `docker compose up -d --wait` | Start everything, block until healthy |
+| `docker compose run --rm app python -m pytest` | Run the test suite in the container |
+| `docker compose logs -f app` | Follow application logs |
+| `docker compose down` | Stop the stack, keeping data |
+| `docker compose down -v` | Stop and delete the database and SQLite volumes |
+
+`src/`, `tests/`, and `frontend/` are bind-mounted and the app runs with
+`--reload`, so edits take effect without a rebuild. Rebuild only when
+dependencies change: `docker compose build app`.
+
+The defaults are chosen so a new team member needs no secrets: authentication
+uses the local development principal (`ARCHBRO_AUTH_MODE=local`) and the model
+provider is the deterministic fake (`ARCHBRO_PROVIDER=fake`). To exercise real
+model calls, put `GEMINI_API_KEY` and `ARCHBRO_PROVIDER=gemini` in `.env`; the
+app container reads that file when it exists.
+
+`/healthz` is the container liveness probe. It reports only that the process is
+serving and deliberately does not touch persistence, so a transient database
+outage cannot trigger a restart storm.
+
+The `db` service runs PostgreSQL 17, reachable inside the Compose network at
+`postgresql://archbro:archbro@db:5432/archbro`. **The application does not use
+it yet** -- it still persists to SQLite (`ARCHBRO_PERSISTENCE=sqlite`) on a
+named volume. The database is provisioned ahead of the PostgreSQL repository so
+that repository's tests have a real server to run against.
+
+Both published ports bind to `127.0.0.1`, so the development database -- whose
+password really is `archbro` -- is not reachable from the rest of the network.
+
+`docker-compose.yml` is for development only and must never be deployed. Its
+`environment:` block outranks `env_file:`, pinning `ARCHBRO_ENV` and
+`ARCHBRO_AUTH_MODE` to `local`; a `.env` on a server cannot override them. A
+deployment using this file would serve real traffic on the local development
+principal, and the production guard in `create_app()` would stay silent because
+it only fires when `ARCHBRO_ENV` says `production`. Production gets its own
+compose file.
+
+## Run locally without Docker
 
 Use a project-local virtual environment:
 

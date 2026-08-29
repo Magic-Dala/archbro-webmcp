@@ -170,7 +170,11 @@ def test_webmcp_exposes_agent_context_and_connected_mcp_tools():
     client = make_client()
     module = client.get("/static/archbro-webmcp.js")
     assert module.status_code == 200
-    assert "archbro_get_agent_context" in module.text
+    # The module builds every tool name from TOOL_PREFIX, so the literal
+    # "archbro_get_agent_context" never appears in the source. Assert the prefix
+    # and the suffix separately, which is what the original assertion meant.
+    assert "TOOL_PREFIX = 'archbro_'" in module.text
+    assert "${TOOL_PREFIX}get_agent_context" in module.text
     assert "list_connected_mcp_servers" in module.text
     assert "list_connected_mcp_tools" in module.text
     assert "call_connected_mcp_tool" in module.text

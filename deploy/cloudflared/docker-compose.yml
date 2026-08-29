@@ -1,0 +1,29 @@
+# Cloudflare Tunnel for the dev environment.
+#
+# The connector dials out to Cloudflare, so dev needs no inbound port at all:
+# it is not reachable through the VM's public IP, only through Cloudflare, and
+# only after Cloudflare Access has authenticated the visitor. That also removes
+# the certificate problem -- Cloudflare terminates TLS, so nothing here has to
+# renew anything.
+#
+# Routing lives in Cloudflare (the tunnel was created with config_src=cloudflare),
+# not in a local config file, so it is changed through the API or the dashboard.
+#
+# TUNNEL_TOKEN is a credential. It sits in .env on the VM, mode 600, root-owned,
+# and is never committed.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in deploy/cloudflared/.env}
+    networks:
+      # Same network as the app containers, so it can reach archbro-dev-app
+      # by name without publishing anything.
+      - edge
+    restart: unless-stopped
+
+networks:
+  edge:
+    external: true
+    name: archbro-edge

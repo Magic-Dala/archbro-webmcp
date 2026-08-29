@@ -1,0 +1,118 @@
+# Builds an image and deploys it to one of two isolated stacks on the same VM.
+#
+# main -> archbro-main -> /opt/archbro/main -> archbro.magicdala.com
+# dev  -> archbro-dev  -> /opt/archbro/dev  -> archbro-dev.magicdala.com
+#
+# The stacks share nothing: separate Compose projects, containers, networks,
+# and database volumes. Deploying dev cannot touch production data.
+#
+# Authentication uses Workload Identity Federation, so no long-lived Google
+# credential is stored in GitHub. The VM holds no registry credential either;
+# each deploy hands it a short-lived access token over stdin.
+#
+# .env files are placed on the VM by hand and are never written by this
+# workflow. A deploy fails if the target .env is missing.
+name: Deploy
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  # Never let two deploys of the same environment interleave.
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: magic-dala
+  GCE_INSTANCE: magicdala
+  GCE_ZONE: us-central1-a
+  REGISTRY: us-central1-docker.pkg.dev
+  IMAGE_REPO: us-central1-docker.pkg.dev/magic-dala/archbro/archbro
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the target environment
+        id: target
+        run: |
+          case "${{ github.ref_name }}" in
+            main) echo "stack=archbro-main" >> "$GITHUB_OUTPUT"
+                  echo "dir=/opt/archbro/main" >> "$GITHUB_OUTPUT"
+                  echo "host=archbro.magicdala.com" >> "$GITHUB_OUTPUT" ;;
+            dev)  echo "stack=archbro-dev" >> "$GITHUB_OUTPUT"
+                  echo "dir=/opt/archbro/dev" >> "$GITHUB_OUTPUT"
+                  echo "host=archbro-dev.magicdala.com" >> "$GITHUB_OUTPUT" ;;
+            *)    echo "::error::refusing to deploy branch ${{ github.ref_name }}"
+                  exit 1 ;;
+          esac
+
+      - uses: google-github-actions/auth@v2
+        id: auth
+        with:
+          workload_identity_provider: projects/382990620621/locations/global/workloadIdentityPools/github/providers/github
+          service_account: archbro-deployer@magic-dala.iam.gserviceaccount.com
+          token_format: access_token
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push
+        run: |
+          gcloud auth configure-docker "$REGISTRY" --quiet
+          # Pinned rather than inferred: the VM is x86_64, and a runner that
+          # happened to be arm64 would produce an image it cannot execute.
+          docker build --platform linux/amd64 \
+            -t "$IMAGE_REPO:${{ github.ref_name }}" \
+            -t "$IMAGE_REPO:${{ github.ref_name }}-${{ github.sha }}" .
+          docker push "$IMAGE_REPO:${{ github.ref_name }}"
+          docker push "$IMAGE_REPO:${{ github.ref_name }}-${{ github.sha }}"
+
+      - name: Upload the compose file and the deploy script
+        run: |
+          gcloud compute scp \
+            deploy/stack/docker-compose.prod.yml \
+            "${GCE_INSTANCE}:/tmp/archbro-${{ steps.target.outputs.stack }}.yml" \
+            --zone="$GCE_ZONE" --project="$GCP_PROJECT" --quiet
+          gcloud compute scp deploy/deploy-stack.sh \
+            "${GCE_INSTANCE}:/tmp/deploy-stack.sh" \
+            --zone="$GCE_ZONE" --project="$GCP_PROJECT" --quiet
+
+      - name: Deploy
+        env:
+          # Short-lived, roughly an hour. Piped over stdin so it never lands in
+          # the VM's process list, and the script logs out when it is done.
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          STACK: ${{ steps.target.outputs.stack }}
+          DIR: ${{ steps.target.outputs.dir }}
+          IMAGE: ${{ env.IMAGE_REPO }}:${{ github.ref_name }}-${{ github.sha }}
+        run: |
+          printf '%s' "$ACCESS_TOKEN" | gcloud compute ssh "$GCE_INSTANCE" \
+            --zone="$GCE_ZONE" --project="$GCP_PROJECT" --quiet \
+            --command="bash /tmp/deploy-stack.sh '$STACK' '$DIR' '$IMAGE' '$REGISTRY' 'oauth2accesstoken'"
+
+      - name: Verify the deployed stack answers
+        env:
+          STACK: ${{ steps.target.outputs.stack }}
+        run: |
+          gcloud compute ssh "$GCE_INSTANCE" \
+            --zone="$GCE_ZONE" --project="$GCP_PROJECT" --quiet \
+            --command="sudo docker run --rm --network archbro-edge curlimages/curl:latest \
+              --retry 30 --retry-delay 2 --retry-all-errors --fail --silent \
+              http://${STACK}-app:8080/healthz"
+
+      - name: Report
+        run: |
+          {
+            echo "### Deployed"
+            echo "- environment: \`${{ steps.target.outputs.stack }}\`"
+            echo "- host: https://${{ steps.target.outputs.host }}"
+            echo "- image: \`${{ env.IMAGE_REPO }}:${{ github.ref_name }}-${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

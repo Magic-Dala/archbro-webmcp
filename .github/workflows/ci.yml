@@ -1,0 +1,85 @@
+# Runs the test suite and proves the deployment image still builds.
+#
+# The suite talks to a real PostgreSQL: tests/test_postgres_foundation.py skips
+# itself when DATABASE_URL is absent, so without the service below the
+# PostgreSQL repository would go untested and CI would still be green.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: archbro
+          POSTGRES_PASSWORD: archbro
+          POSTGRES_DB: archbro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://archbro:archbro@localhost:5432/archbro
+      # Matches the Compose defaults, so CI exercises the same configuration
+      # the team runs locally. No API key and no Google credentials required.
+      ARCHBRO_PROVIDER: fake
+      ARCHBRO_ENV: local
+      ARCHBRO_AUTH_MODE: local
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python -m pip install ".[test]"
+
+      - name: Test
+        run: python -m pytest
+
+      - name: Fail if the PostgreSQL suite silently skipped
+        # A missing or unreachable DATABASE_URL turns the PostgreSQL tests into
+        # skips rather than failures, which would let a broken repository ship
+        # behind a green check. Assert they actually ran.
+        run: |
+          python -m pytest tests/test_postgres_foundation.py -q --collect-only > /dev/null
+          python -m pytest tests/test_postgres_foundation.py -q 2>&1 | tee result.txt
+          if grep -qE '[0-9]+ skipped' result.txt; then
+            echo "::error::PostgreSQL tests skipped - DATABASE_URL is not reaching them"
+            exit 1
+          fi
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the deployment image
+        run: docker build -t archbro:ci .
+
+      - name: Boot it and check the liveness probe
+        run: |
+          docker run -d --name archbro-ci \
+            -e PORT=8080 -e ARCHBRO_PROVIDER=fake -p 8080:8080 archbro:ci
+          curl --retry 40 --retry-delay 1 --retry-all-errors --max-time 90 \
+            --fail -s http://localhost:8080/healthz
+          docker rm -f archbro-ci

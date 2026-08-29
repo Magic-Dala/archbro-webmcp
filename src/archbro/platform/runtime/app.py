@@ -45,6 +45,15 @@ def create_app(
         if persistence_mode == "sqlite":
             db_path = os.getenv("ARCHBRO_DB") or os.getenv("HUMAN_AGENT_DB") or "archbro.db"
             selected_repository = ProjectRepository(db_path)
+        elif persistence_mode == "postgres":
+            from archbro.platform.persistence.postgres import PostgresProjectRepository
+
+            database_url = (os.getenv("DATABASE_URL") or "").strip()
+            if not database_url:
+                raise ValueError(
+                    "DATABASE_URL is required when ARCHBRO_PERSISTENCE=postgres"
+                )
+            selected_repository = PostgresProjectRepository(database_url)
         elif persistence_mode == "firestore":
             from archbro.integrations.firebase.admin import get_firestore_client
             from archbro.platform.persistence.firestore import FirestoreProjectRepository
@@ -67,7 +76,7 @@ def create_app(
                 collection_prefix=prefix,
             )
         else:
-            raise ValueError("ARCHBRO_PERSISTENCE must be 'sqlite' or 'firestore'")
+            raise ValueError("ARCHBRO_PERSISTENCE must be 'sqlite', 'postgres', or 'firestore'")
 
     environment = os.getenv("ARCHBRO_ENV", "local").strip().lower()
     if environment not in {"local", "test", "production"}:
@@ -159,7 +168,12 @@ def create_app(
 
     @app.middleware("http")
     async def edge_origin_guard(request, call_next):
-        if edge_guard_mode == "required":
+        # The container liveness probe runs inside the container and therefore
+        # cannot present the edge token. Exempting it is safe because /healthz
+        # discloses nothing beyond "this process is serving"; without the
+        # exemption the probe gets 403, the container never reports healthy, and
+        # a rolling deploy stalls.
+        if edge_guard_mode == "required" and request.url.path != "/healthz":
             presented = request.headers.get("X-ArchBro-Edge-Token", "")
             if not presented or not hmac.compare_digest(presented, edge_token):
                 return JSONResponse(status_code=403, content={"detail": "direct origin access is forbidden"})
@@ -184,6 +198,14 @@ def create_app(
         if environment == "production":
             response.headers["Strict-Transport-Security"] = "max-age=86400"
         return response
+
+    # Container liveness probe. Deliberately does not touch persistence: a probe
+    # that fails during a transient database outage makes the orchestrator
+    # restart the app while the database is still recovering, turning a short
+    # outage into a restart storm. The database reports its own readiness.
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz():
+        return {"status": "ok"}
 
     @app.get("/", include_in_schema=False)
     async def web_app():

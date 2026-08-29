@@ -1,0 +1,71 @@
+# Deployed stack. One copy runs per environment on the same VM, isolated by
+# Compose project name: `docker compose -p archbro-main` and `-p archbro-dev`.
+# That keeps their containers, networks, and volumes separate, so a dev
+# database can never be the production database.
+#
+# Unlike the development docker-compose.yml at the repo root, this file pins
+# nothing about the environment: ARCHBRO_ENV and ARCHBRO_AUTH_MODE come from the
+# .env file placed on the host, so production really can be production.
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    # No published ports. The database is reachable only from this stack's
+    # network, never from the host or the internet.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  app:
+    image: ${ARCHBRO_IMAGE:?set ARCHBRO_IMAGE, normally injected by the deploy workflow}
+    env_file:
+      # Required here, unlike in development: a deployment with no .env would
+      # silently fall back to development defaults.
+      - path: .env
+        required: true
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PORT: "8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      default:
+      edge:
+        aliases:
+          # Caddy routes to this name, so it must stay in step with the
+          # Compose project name the deploy workflow passes to -p.
+          - ${ARCHBRO_STACK:?set ARCHBRO_STACK to archbro-main or archbro-dev}-app
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=3) as r:
+              sys.exit(0 if r.status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+networks:
+  # Shared with the Caddy stack, created once by the deploy workflow.
+  edge:
+    external: true
+    name: archbro-edge
+
+volumes:
+  db-data:

@@ -1,0 +1,88 @@
+# Local development stack. One command brings up the whole service:
+#
+#   docker compose up -d --wait
+#
+# DEVELOPMENT ONLY -- never deploy this file. The `environment:` block below
+# outranks `env_file:`, so ARCHBRO_ENV and ARCHBRO_AUTH_MODE are pinned to
+# "local" and a .env on a server cannot override them. Running this in
+# production would serve real traffic on the local development principal while
+# the production guard in create_app() stays silent, because that guard only
+# fires when ARCHBRO_ENV says "production". Production gets its own compose file.
+#
+# Requires Docker Compose v2.24 or newer, for the `env_file:` long form that
+# makes a missing .env non-fatal.
+#
+# The team needs no Google Cloud credentials and no Gemini API key to get a
+# working stack: authentication defaults to the local principal and the model
+# provider defaults to the deterministic fake. Put real values in .env to
+# override either one.
+name: archbro
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-archbro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-archbro}
+      POSTGRES_DB: ${POSTGRES_DB:-archbro}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-archbro} -d ${POSTGRES_DB:-archbro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  app:
+    build:
+      context: .
+      target: dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed for local development. Production overrides these on the host.
+      ARCHBRO_ENV: local
+      ARCHBRO_AUTH_MODE: local
+      ARCHBRO_PERSISTENCE: ${ARCHBRO_PERSISTENCE:-sqlite}
+      ARCHBRO_DB: /data/archbro.db
+      ARCHBRO_PROVIDER: ${ARCHBRO_PROVIDER:-fake}
+      # Consumed by the PostgreSQL repository once it exists. The database is
+      # already provisioned here so its tests have a real server to run against.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-archbro}:${POSTGRES_PASSWORD:-archbro}@db:5432/${POSTGRES_DB:-archbro}
+      PORT: "8080"
+    ports:
+      - "127.0.0.1:${ARCHBRO_PORT:-8080}:8080"
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./frontend:/app/frontend
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - app-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Liveness only, on purpose: it must not touch the database. A healthcheck
+      # that fails during a transient database outage makes Docker restart the
+      # app while the database is recovering, turning a short outage into a
+      # restart storm. Database availability is the db service's own concern.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=3) as r:
+              sys.exit(0 if r.status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  db-data:
+  app-data:

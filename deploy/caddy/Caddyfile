@@ -1,0 +1,21 @@
+# Public entry point for the main environment only.
+#
+# dev is deliberately absent. It is reached exclusively through a Cloudflare
+# Tunnel, so Cloudflare Access authenticates every visitor before any request
+# reaches the container. Adding a dev route back here would reopen the bypass:
+# anyone hitting this VM's IP with `Host: archbro-dev.magicdala.com` would walk
+# straight past Access.
+#
+# archbro.magicdala.com resolves directly to this VM (grey-cloud, not proxied),
+# which is what lets Caddy complete the ACME HTTP-01 challenge itself. Turning
+# on Cloudflare's orange cloud for it would intercept that challenge and break
+# certificate renewal.
+{$ARCHBRO_MAIN_HOST} {
+	reverse_proxy archbro-main-app:8080
+}
+
+# Everything else arriving on this IP -- stale DNS, scanners probing for /.env,
+# or an attempt to reach dev by Host header -- gets nothing.
+:80 {
+	respond "no ArchBro stack is bound to this host" 404
+}
