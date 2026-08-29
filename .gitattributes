@@ -1,9 +1,30 @@
 * text=auto
+
+# Everything below must stay LF regardless of the platform it is checked out
+# on. Git for Windows defaults to core.autocrlf=true, which would otherwise
+# rewrite these to CRLF on clone and break them in ways that are hard to read:
+# a Dockerfile RUN line carrying a trailing \r, or a shell script whose first
+# error is `$'\r': command not found`.
 *.py text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
 *.json text eol=lf
+*.jsonc text eol=lf
 *.js text eol=lf
 *.css text eol=lf
 *.html text eol=lf
 *.txt text eol=lf
+
+# Container and deployment files. These are read by Linux tooling even when
+# they were edited on Windows.
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+.dockerignore text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+.env.example text eol=lf
+Caddyfile text eol=lf
+
+# PowerShell is the exception: it is only ever run on Windows.
+*.ps1 text eol=crlf
