@@ -4,12 +4,6 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-from archbro.backend.core.authorization import (
-    IdentityProviderUnavailableError,
-    InvalidCredentialsError,
-    PrincipalProvider,
-    TrustedPrincipal,
-)
 from archbro.integrations.firebase.admin import (
     FirebaseAdminUnavailable,
     get_firebase_admin_app,
@@ -107,22 +101,3 @@ async def verify_firebase_id_token(token: str, project_id: str) -> Authenticated
         uid=uid,
         sign_in_provider=str(provider) if provider is not None else None,
     )
-
-
-def firebase_principal_provider(project_id: str) -> PrincipalProvider:
-    """Bind verified Firebase identity to Archbro's trusted-principal contract."""
-
-    normalized_project_id = project_id.strip()
-    if not normalized_project_id:
-        raise ValueError("Firebase project id is required for trusted authentication.")
-
-    async def provide(token: str) -> TrustedPrincipal:
-        try:
-            user = await verify_firebase_id_token(token, normalized_project_id)
-        except InvalidAuthenticationToken:
-            raise InvalidCredentialsError("firebase token is invalid") from None
-        except AuthenticationServiceUnavailable:
-            raise IdentityProviderUnavailableError("firebase authentication is unavailable") from None
-        return TrustedPrincipal(user_id=user.uid, team_ids=[])
-
-    return provide

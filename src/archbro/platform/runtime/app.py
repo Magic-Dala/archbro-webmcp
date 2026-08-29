@@ -97,9 +97,9 @@ def create_app(
                     "FIREBASE_PROJECT_ID or GOOGLE_CLOUD_PROJECT is required when "
                     "ARCHBRO_AUTH_MODE=firebase"
                 )
-            from archbro.integrations.firebase.auth import firebase_principal_provider
+            from archbro.integrations.firebase import FirebasePrincipalProvider
 
-            selected_principal_provider = firebase_principal_provider(firebase_project_id)
+            selected_principal_provider = FirebasePrincipalProvider(firebase_project_id)
         elif environment == "production":
             raise ValueError(
                 "Production Archbro must use ARCHBRO_AUTH_MODE=firebase; "
