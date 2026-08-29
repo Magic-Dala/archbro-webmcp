@@ -1,13 +1,21 @@
-# Cloudflare Tunnel for the dev environment.
+# Cloudflare Tunnel connector. One copy runs per environment, each with its own
+# tunnel and its own TUNNEL_TOKEN:
 #
-# The connector dials out to Cloudflare, so dev needs no inbound port at all:
-# it is not reachable through the VM's public IP, only through Cloudflare, and
-# only after Cloudflare Access has authenticated the visitor. That also removes
-# the certificate problem -- Cloudflare terminates TLS, so nothing here has to
-# renew anything.
+#   docker compose --project-directory /opt/archbro/cloudflared-main -p archbro-cloudflared-main up -d
+#   docker compose --project-directory /opt/archbro/cloudflared-dev  -p archbro-cloudflared-dev  up -d
 #
-# Routing lives in Cloudflare (the tunnel was created with config_src=cloudflare),
-# not in a local config file, so it is changed through the API or the dashboard.
+# Separate tunnels rather than one serving both, so a connector failure in dev
+# cannot take production down with it.
+#
+# The connector dials out, so the VM needs no inbound HTTP port at all -- ports
+# 80 and 443 are closed and the instance carries no http-server tag. Traffic
+# reaches these containers only through Cloudflare, and for dev only after
+# Access has authenticated the visitor. Cloudflare also terminates TLS, so
+# nothing here renews a certificate.
+#
+# Routing lives in Cloudflare (the tunnels were created with
+# config_src=cloudflare), not in a local config file, so it changes through the
+# API or the dashboard.
 #
 # TUNNEL_TOKEN is a credential. It sits in .env on the VM, mode 600, root-owned,
 # and is never committed.

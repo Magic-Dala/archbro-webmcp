@@ -254,7 +254,13 @@ Browser-native local probes live under `qa/`, including `qa/probe_webmcp_live.py
 
 ## Container deployment
 
-A production-oriented `Dockerfile` is included. The container listens on `$PORT` (default `8080`). Configure Firestore/Firebase environment variables in the deployment platform rather than baking credentials into the image.
+A production-oriented `Dockerfile` is included. The container listens on `$PORT` (default `8080`). Configure environment variables in the deployment platform rather than baking credentials into the image.
+
+Two deployments exist.
+
+**Current (`magicdala.com`).** `main` and `dev` run as two isolated Compose stacks on one GCE instance, each with its own PostgreSQL. GitHub Actions builds, pushes, and deploys on a push to either branch; see [`deploy/`](deploy/) and `.github/workflows/deploy.yml`. Both are reached only through Cloudflare Tunnels — the instance publishes no HTTP port at all — and `dev` additionally sits behind Cloudflare Access with an email allowlist. `.env` files are placed on the instance by hand and are never written by the workflow.
+
+**WebMCP challenge (`archbro.hoson.xyz`).** The original submission deployment, described below, still runs separately on Cloud Run with Firestore.
 
 The challenge deployment runs behind `https://archbro.hoson.xyz` on a Cloudflare Worker, with Cloud Run in `us-west1` as the protected origin and a dedicated Firestore Native database (`archbro-challenge`) using the `archbro` collection prefix. Production uses a dedicated runtime service account, Firebase ID-token verification, project authorization before domain mutations, and an edge credential stored in Cloudflare Secrets and Google Secret Manager. Direct requests to the Cloud Run origin are rejected; the public WebMCP path goes through the Cloudflare custom domain.
 

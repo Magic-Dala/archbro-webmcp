@@ -44,8 +44,9 @@ services:
       default:
       edge:
         aliases:
-          # Caddy routes to this name, so it must stay in step with the
-          # Compose project name the deploy workflow passes to -p.
+          # The Cloudflare Tunnel connector reaches the app by this name, so
+          # it must stay in step with the Compose project name the deploy
+          # workflow passes to -p.
           - ${ARCHBRO_STACK:?set ARCHBRO_STACK to archbro-main or archbro-dev}-app
     healthcheck:
       test:
@@ -62,7 +63,8 @@ services:
       start_period: 20s
 
 networks:
-  # Shared with the Caddy stack, created once by the deploy workflow.
+  # Shared with the tunnel connectors, which is how they reach these
+  # containers without anything being published on the host.
   edge:
     external: true
     name: archbro-edge
