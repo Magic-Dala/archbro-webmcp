@@ -258,7 +258,7 @@ A production-oriented `Dockerfile` is included. The container listens on `$PORT`
 
 Two deployments exist.
 
-**Current (`magicdala.com`).** `main` and `dev` run as two isolated Compose stacks on one GCE instance, each with its own PostgreSQL. GitHub Actions builds, pushes, and deploys on a push to either branch; see [`deploy/`](deploy/) and `.github/workflows/deploy.yml`. Both are reached only through Cloudflare Tunnels — the instance publishes no HTTP port at all — and `dev` additionally sits behind Cloudflare Access with an email allowlist. `.env` files are placed on the instance by hand and are never written by the workflow.
+**Current (`magicdala.com`).** `main` and `dev` run as two isolated Compose stacks on one GCE instance, each with its own PostgreSQL. GitHub Actions builds, pushes, and deploys on a push to either branch. [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md) records every resource, why it is set up that way, and how to rebuild it; see also [`deploy/`](deploy/) and `.github/workflows/deploy.yml`. Both are reached only through Cloudflare Tunnels — the instance publishes no HTTP port at all — and `dev` additionally sits behind Cloudflare Access with an email allowlist. `.env` files are placed on the instance by hand and are never written by the workflow.
 
 **WebMCP challenge (`archbro.hoson.xyz`).** The original submission deployment, described below, still runs separately on Cloud Run with Firestore.
 
