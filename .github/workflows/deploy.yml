@@ -77,12 +77,15 @@ jobs:
 
       - name: Upload the compose file and the deploy script
         run: |
+          # Home directory, not /tmp. /tmp has the sticky bit, so a file left
+          # by one OS Login account cannot be overwritten by another, and the
+          # deploy account differs from any human who has run this by hand.
           gcloud compute scp \
             deploy/stack/docker-compose.prod.yml \
-            "${GCE_INSTANCE}:/tmp/archbro-${{ steps.target.outputs.stack }}.yml" \
+            "${GCE_INSTANCE}:archbro-${{ steps.target.outputs.stack }}.yml" \
             --zone="$GCE_ZONE" --project="$GCP_PROJECT" --quiet
           gcloud compute scp deploy/deploy-stack.sh \
-            "${GCE_INSTANCE}:/tmp/deploy-stack.sh" \
+            "${GCE_INSTANCE}:deploy-stack.sh" \
             --zone="$GCE_ZONE" --project="$GCP_PROJECT" --quiet
 
       - name: Deploy
@@ -96,7 +99,7 @@ jobs:
         run: |
           printf '%s' "$ACCESS_TOKEN" | gcloud compute ssh "$GCE_INSTANCE" \
             --zone="$GCE_ZONE" --project="$GCP_PROJECT" --quiet \
-            --command="bash /tmp/deploy-stack.sh '$STACK' '$DIR' '$IMAGE' '$REGISTRY' 'oauth2accesstoken'"
+            --command="bash \$HOME/deploy-stack.sh '$STACK' '$DIR' '$IMAGE' '$REGISTRY' 'oauth2accesstoken'"
 
       - name: Verify the deployed stack answers
         env:

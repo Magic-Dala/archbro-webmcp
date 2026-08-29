@@ -33,7 +33,7 @@ if ! sudo grep -q '^ARCHBRO_ENV=production' "$DIR/.env"; then
     echo "::warning::$DIR/.env does not set ARCHBRO_ENV=production; Firebase authentication is not enforced"
 fi
 
-sudo mv "/tmp/archbro-$STACK.yml" "$DIR/docker-compose.yml"
+sudo mv "$HOME/archbro-$STACK.yml" "$DIR/docker-compose.yml"
 sudo chmod 640 "$DIR/docker-compose.yml"
 
 sudo docker login -u "$REGISTRY_USER" --password-stdin "$REGISTRY" > /dev/null

@@ -97,6 +97,9 @@ docs/SUBMISSION.md              # submission copy and final checklist
 
 ## Run the stack with Docker Compose
 
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development guide:
+URLs, database access, troubleshooting, and working agreements.
+
 The recommended way to get a working environment. One command, and no Google
 Cloud credentials or Gemini API key are needed:
 
