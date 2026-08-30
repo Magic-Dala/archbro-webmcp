@@ -58,8 +58,11 @@ pushes roughly 600KB rather than 155MB.
 ```
 
 `.env` files are placed **by hand** and are never written by the deploy workflow.
-A deploy fails if the target `.env` is missing, and warns if it does not set
-`ARCHBRO_ENV=production`.
+`archbro-main` fails closed unless it has the complete production/Firebase
+contract (`ARCHBRO_ENV=production`, `ARCHBRO_AUTH_MODE=firebase`, a Firebase
+project id, and `ARCHBRO_FIREBASE_API_KEY`). `archbro-dev` may remain explicit
+`local/local` staging until Firebase is provisioned; mixed or incomplete
+configurations are rejected before the app container is recreated.
 
 Each environment is a separate Compose project (`archbro-main`, `archbro-dev`),
 so containers, networks, and database volumes never overlap. The stacks join a

@@ -203,9 +203,11 @@ FIRESTORE_DATABASE_ID=(default)
 ARCHBRO_FIRESTORE_PREFIX=archbro
 ```
 
-Cloud deployment must set `ARCHBRO_ENV=production` and `ARCHBRO_AUTH_MODE=firebase`.
-Production startup fails closed if Firebase identity or its public browser config is
-missing; the local-development principal cannot be activated in production.
+Production deployment (the `archbro-main` stack) must set `ARCHBRO_ENV=production`
+and `ARCHBRO_AUTH_MODE=firebase`. Production startup fails closed if Firebase
+identity or its public browser config is missing; the local-development principal
+cannot be activated in production. The separate remote `archbro-dev` staging stack
+may remain explicit `local/local` until Firebase is provisioned for that environment.
 
 `qa/setup_archbro_identity_platform.ps1` provisions the anonymous browser identity
 boundary directly through Google Cloud Identity Platform. Its browser API key is

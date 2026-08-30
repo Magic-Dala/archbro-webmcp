@@ -14,8 +14,9 @@
 # that is destroyed on every exit path.
 #
 # .env files are placed on the VM by hand and are never written by this
-# workflow. A deploy fails if the target .env is missing or is not configured
-# for the production runtime/Firebase authentication boundary.
+# workflow. Main requires the complete production/Firebase contract. Dev may
+# remain explicit local/local staging until Firebase is actually provisioned;
+# mixed or incomplete runtime/auth configurations fail closed before recreation.
 name: Deploy
 
 on:
