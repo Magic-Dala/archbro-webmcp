@@ -19,7 +19,7 @@ def test_webmcp_asset_uses_current_imperative_document_model_context_surface():
     index = client.get("/")
     assert index.status_code == 200
     assert 'src="/runtime-config.js"' in index.text
-    assert 'type="module" src="/static/app.js?v=20260828-firebase-webmcp"' in index.text
+    assert 'type="module" src="/static/app.js?v=20260830-4"' in index.text
     assert 'type="module" src="/static/archbro-webmcp.js?v=competition-20260828-authz-atomic"' in index.text
 
     module = client.get("/static/archbro-webmcp.js")

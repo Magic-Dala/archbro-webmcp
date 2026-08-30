@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640">
+  <title>Archbro modular A logo</title>
+  <desc>A modular capital A with a four-point AI spark at the upper right.</desc>
+  <rect width="640" height="640" fill="#FFFFFF" />
+  <g aria-hidden="true">
+    <rect x="112" y="383" width="210" height="58" rx="29" fill="#8B5CF6" transform="rotate(-68 217 412)" />
+    <rect x="198" y="217" width="170" height="58" rx="29" fill="#FF7A66" transform="rotate(-68 283 246)" />
+    <rect x="272" y="217" width="170" height="58" rx="29" fill="#3B82F6" transform="rotate(68 357 246)" />
+    <rect x="318" y="383" width="210" height="58" rx="29" fill="#22B96B" transform="rotate(68 423 412)" />
+    <rect x="250" y="350" width="140" height="44" rx="22" fill="#5A49B8" />
+    <circle cx="320" cy="153" r="32" fill="#FF593D" />
+    <path id="ai-spark" fill="#5A49B8" transform="translate(470 145) scale(1.5) translate(-470 -145)" d="M470 116C470 132 483 145 499 145C483 145 470 158 470 174C470 158 457 145 441 145C457 145 470 132 470 116Z" />
+  </g>
+</svg>

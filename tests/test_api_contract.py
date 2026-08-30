@@ -286,16 +286,21 @@ def test_web_surface_is_served_from_same_app():
     assert "Archbro" in page.text
     assert "Living Graph" in page.text
     assert "Needs You" in page.text
-    assert "What are you trying to build?" in page.text
+    assert "Write a goal or describe your project." in page.text
     assert "Ask the Agent" in page.text
-    assert "LIVE GOAL DRAFT" in page.text
-    assert "Write the Goal directly" in page.text
-    assert "Ask merges with the current Goal" in page.text
-    assert "Use this goal & generate architecture" in page.text
+    assert "GOAL DRAFT" in page.text
+    assert "Nothing is persisted until you confirm." in page.text
+    assert "Ask updates the Goal Draft without replacing it." in page.text
+    assert "Use this goal &amp; generate architecture" in page.text
     assert "Human Start/Done clicks are authoritative task state" in page.text
-    assert 'id="projectSelect"' in page.text
-    assert 'id="editProjectBtn"' in page.text
-    assert 'id="deleteProjectBtn"' in page.text
+    # The signed-in shell exposes project navigation and approvals as
+    # direct, accessible destinations rather than a global project selector.
+    assert 'id="projectTree"' in page.text
+    assert 'id="notificationBtn"' in page.text
+    assert 'id="notificationMenu"' in page.text
+    assert 'id="proposalReviewDialog"' in page.text
+    assert 'id="editProjectBtn"' not in page.text
+    assert 'id="deleteProjectBtn"' not in page.text
     assert 'id="editProjectDialog"' in page.text
     assert 'id="deleteProjectDialog"' in page.text
 
@@ -310,6 +315,10 @@ def test_web_surface_is_served_from_same_app():
     assert "loadProjects" in js.text
     assert "selectProject" in js.text
     assert "saveProjectEdits" in js.text
+    assert "data-project-menu" in js.text
+    assert "Edit project" in js.text
+    assert "Rename project" in js.text
+    assert "Delete project" in js.text
     assert "data-go-card=\"architecture\"" in page.text
     assert "architecture-entry" in page.text
     assert "document.querySelectorAll('[data-go-card]')" in js.text

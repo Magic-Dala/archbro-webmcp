@@ -121,9 +121,48 @@ def api_json(page, path: str, method="GET", body=None):
     )
 
 
+def project_ids(page):
+    return set(page.locator("[data-project-id]").evaluate_all("nodes => nodes.map(node => node.dataset.projectId).filter(Boolean)"))
+
+
+def project_id_named(page, name: str):
+    return page.locator("[data-project-id]").evaluate_all(
+        "(nodes, target) => nodes.find(node => node.querySelector('[data-project-open]')?.textContent.trim() === target)?.dataset.projectId || null",
+        name,
+    )
+
+
+def open_project(page, project_id: str):
+    node = page.locator(f'[data-project-id="{project_id}"]')
+    node.locator("[data-project-open]").click()
+    page.wait_for_function("id => localStorage.getItem('archbro-project-id') === id", arg=project_id)
+
+
+def open_project_view(page, project_id: str, view: str):
+    node = page.locator(f'[data-project-id="{project_id}"]')
+    if node.locator(f'[data-project-view="{view}"]').count() == 0:
+        node.locator("[data-project-toggle]").click()
+    node.locator(f'[data-project-view="{view}"]').click()
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     context = browser.new_context(viewport={"width": 1440, "height": 1000})
+    context.add_init_script("""
+(() => {
+  const session = {id:'email:release@archbro.local', provider:'password', email:'release@archbro.local', name:'Release QA'};
+  const profiles = {
+    'email:release@archbro.local': {
+      ...session,
+      onboardingComplete:true,
+      defaultLens:'software',
+      notifications:{architectureApprovals:true, blockedTasks:true},
+    },
+  };
+  localStorage.setItem('archbro-demo-session', JSON.stringify(session));
+  localStorage.setItem('archbro-demo-profiles', JSON.stringify(profiles));
+})();
+""")
     page = context.new_page()
     page.on("console", lambda msg: report["console_errors"].append(msg.text) if msg.type == "error" else None)
     page.on("pageerror", lambda exc: report["page_errors"].append(str(exc)))
@@ -138,18 +177,21 @@ with sync_playwright() as p:
         t0 = time.perf_counter()
         page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
         report["timings"]["load_s"] = round(time.perf_counter() - t0, 2)
-        page.locator("#projectSelect").wait_for(state="visible", timeout=5000)
-        options = page.locator("#projectSelect option")
-        protected_ids = set(options.evaluate_all("opts => opts.map(o => o.value).filter(Boolean)"))
+        page.locator("#workspaceShell").wait_for(state="visible", timeout=5000)
+        page.locator("#projectTree").wait_for(state="visible", timeout=5000)
+        protected_ids = project_ids(page)
         report["protected_project_count"] = len(protected_ids)
-        if options.count() and page.locator("#projectSelect").input_value():
-            original_id = page.locator("#projectSelect").input_value()
+        original_id = page.evaluate("() => localStorage.getItem('archbro-project-id')")
+        if original_id in protected_ids:
             report["original_project"] = original_id
-        step("existing_app_loaded", original_project=original_id, project_count=options.count())
+        else:
+            original_id = None
+        step("existing_app_loaded", original_project=original_id, project_count=len(protected_ids))
 
-        # NEW PROJECT + GOAL/ASK merge.
-        page.locator("#newProjectBtn").click()
-        page.locator("#onboardingAsk").wait_for(state="visible", timeout=5000)
+        # NEW PROJECT + staged GOAL/ASK refinement.
+        if not page.locator("#newProjectNameDialog").is_visible():
+            page.locator("#newProjectBtn").click()
+        page.locator("#newProjectNameDialog").wait_for(state="visible", timeout=5000)
         baseline = (
             "Build a smart rental platform for renters. "
             "Use Google Cloud ADK for agent orchestration and Firestore for durable user and rental state. "
@@ -157,8 +199,11 @@ with sync_playwright() as p:
             "and save candidates to a shortlist. Use Google Maps location context. "
             "Keep frontend experience, agent orchestration, rental search/recommendation domain capabilities, and data/state as clear architecture boundaries."
         )
-        page.locator("#goalProjectName").fill(QA_NAME)
-        page.locator("#goalDraftText").fill(baseline)
+        page.locator("#newProjectName").fill(QA_NAME)
+        page.locator("#newProjectNameDialog button[type='submit']").click()
+        page.locator("#initialGoal").fill(baseline)
+        page.locator("#initialGoalForm button[type='submit']").click()
+        page.locator("#refineGoalStage").wait_for(state="visible", timeout=5000)
         shot(page, "01_goal_manual")
         t = time.perf_counter()
         send_goal_ask(
@@ -173,7 +218,6 @@ with sync_playwright() as p:
         assert "shortlist" in low_goal
         assert "verification" in low_goal or "verify" in low_goal
         assert len(merged_goal) >= len(baseline) * 0.75, "Ask appears to have replaced the existing Goal"
-        page.locator("#goalProjectName").fill(QA_NAME)
         assert page.locator("#useGoalBtn").is_enabled()
         shot(page, "02_goal_merged")
         step("goal_plus_ask_merge_pass", goal_chars=len(merged_goal), seconds=report["timings"]["goal_merge_s"])
@@ -182,14 +226,11 @@ with sync_playwright() as p:
         t = time.perf_counter()
         page.locator("#useGoalBtn").click()
         page.wait_for_function(
-            "({name, protected}) => [...document.querySelectorAll('#projectSelect option')].some(o => o.textContent === name && !protected.includes(o.value))",
+            "({name, protected}) => [...document.querySelectorAll('[data-project-id]')].some(node => node.querySelector('[data-project-open]')?.textContent.trim() === name && !protected.includes(node.dataset.projectId))",
             arg={"name": QA_NAME, "protected": list(protected_ids)},
             timeout=10000,
         )
-        qa_project_id = page.evaluate(
-            "name => [...document.querySelectorAll('#projectSelect option')].find(o => o.textContent === name)?.value || null",
-            QA_NAME,
-        )
+        qa_project_id = project_id_named(page, QA_NAME)
         assert qa_project_id and qa_project_id not in protected_ids, (qa_project_id, protected_ids)
         page.wait_for_function("id => localStorage.getItem('archbro-project-id') === id", arg=qa_project_id, timeout=5000)
         report["qa_project"] = qa_project_id
@@ -241,8 +282,14 @@ with sync_playwright() as p:
         step("architecture_contract_pass", **report["architecture"], tasks=len(tasks), seconds=report["timings"]["architecture_s"])
 
         # TASK start/done must stay deterministic and remain on Tasks view.
-        page.locator("button[data-view='tasks']").click()
+        open_project_view(page, qa_project_id, "tasks")
         page.locator("#taskList .task-row").first.wait_for(state="visible", timeout=5000)
+        task_context = page.locator("#taskList [data-task-select]").first
+        task_context.focus()
+        page.keyboard.press("Space")
+        assert task_context.get_attribute("aria-pressed") == "true"
+        page.wait_for_function("() => document.activeElement?.hasAttribute('data-task-select')")
+        assert "Task ·" in page.locator("#instructionContext").inner_text()
         start_btn = page.locator("#taskList button[data-task-action='start']").first
         assert start_btn.is_visible()
         t = time.perf_counter()
@@ -261,7 +308,7 @@ with sync_playwright() as p:
         step("task_transition_pass", start_seconds=report["timings"]["task_start_s"])
 
         # HEALTH MAP base + real hierarchy drilldown.
-        page.locator("button[data-view='architecture']").click()
+        open_project_view(page, qa_project_id, "architecture")
         page.locator("#graphCanvas .node-card").first.wait_for(state="visible", timeout=5000)
         node_count = page.locator("#graphCanvas .node-card").count()
         assert node_count == len(components), (node_count, len(components))
@@ -269,8 +316,17 @@ with sync_playwright() as p:
         assert not graph_layout["overflow"], graph_layout
         shot(page, "06_health_map_clean")
         root_with_children = next(c for c in components if c.get("children"))
-        page.locator(f"#graphCanvas [data-node='{root_with_children['id']}']").click()
+        graph_context = page.locator(f"#graphCanvas [data-graph-node='{root_with_children['id']}']")
+        graph_context.focus()
+        page.keyboard.press("Enter")
+        assert graph_context.get_attribute("aria-pressed") == "true"
+        page.wait_for_function("() => document.activeElement?.hasAttribute('data-graph-node')")
+        assert root_with_children["name"] in page.locator("#instructionContext").inner_text()
+        graph_drill = page.locator(f"#graphCanvas [data-graph-drill='{root_with_children['id']}']")
+        graph_drill.focus()
+        page.keyboard.press("Enter")
         page.locator(".graph-drilldown").wait_for(state="visible", timeout=3000)
+        page.wait_for_function("() => document.activeElement?.classList.contains('drill-back')")
         drill_text = page.locator(".graph-drilldown").inner_text()
         assert root_with_children["name"] in drill_text
         assert any(child["name"] in drill_text for child in root_with_children["children"])
@@ -293,7 +349,7 @@ with sync_playwright() as p:
         )
         assert block_result["ok"] and block_result["payload"]["result"] == "SUCCESS", block_result
         page.reload(wait_until="networkidle", timeout=15000)
-        page.locator("button[data-view='architecture']").click()
+        open_project_view(page, qa_project_id, "architecture")
         page.locator("#graphCanvas .node-card").first.wait_for(state="visible", timeout=5000)
         blocked_roots = page.locator("#graphCanvas .node-card.health-blocked.attention").count()
         assert blocked_roots >= 1, "Blocked child/task did not surface at top-level health map"
@@ -301,8 +357,17 @@ with sync_playwright() as p:
         shot(page, "08_health_map_blocked")
         step("health_aggregation_pass", blocked_roots=blocked_roots, blocked_task=block_task["title"])
 
+        page.locator("#notificationBtn").click()
+        blocked_notice = page.locator(f'[data-attention-kind="task"][data-attention-id="{block_task["id"]}"]')
+        assert blocked_notice.is_visible()
+        blocked_notice.click()
+        assert page.locator("#view-tasks").evaluate("el => el.classList.contains('active')")
+        assert page.locator(f'[data-task-select="{block_task["id"]}"]').get_attribute("aria-pressed") == "true"
+        page.wait_for_function("id => document.activeElement?.dataset.taskSelect === id", arg=block_task["id"])
+        step("blocked_notification_focus_pass", task=block_task["title"])
+
         # REAL architecture change -> pending proposal -> accept -> version increments.
-        page.locator("button[data-view='overview']").click()
+        open_project_view(page, qa_project_id, "overview")
         instruction = page.locator("#instruction")
         change_text = (
             "We decided to replace Firestore with Cloud SQL because relational querying is now required. "
@@ -322,8 +387,15 @@ with sync_playwright() as p:
         report["architecture"]["proposal_attempts"] = proposal_attempts
         proposal = pending[0]
         before_version = api_json(page, f"/projects/{qa_project_id}/architecture")["payload"]["version"]
-        page.locator("button[data-view='attention']").click()
+        page.locator("#notificationBtn").click()
+        page.locator('[data-attention-kind="proposal"]').first.click()
+        assert page.locator("#proposalReviewDialog").is_visible()
         page.locator("#proposalList .proposal-card").first.wait_for(state="visible", timeout=5000)
+        page.wait_for_function("id => document.activeElement?.dataset.proposalSelect === id", arg=proposal["id"])
+        proposal_context = page.locator("#proposalList [data-proposal-select]").first
+        proposal_context.focus()
+        page.keyboard.press("Space")
+        assert proposal_context.get_attribute("aria-pressed") == "true"
         shot(page, "09_needs_you")
         page.locator("#proposalList button[data-proposal='accept']").first.click()
         wait_ready(page, 10000)
@@ -332,20 +404,47 @@ with sync_playwright() as p:
         assert after_arch["version"] == before_version + 1, (before_version, after_arch["version"])
         pending_after = [p for p in api_json(page, f"/projects/{qa_project_id}/architecture/proposals")["payload"] if p["status"] == "PENDING"]
         assert not pending_after
-        page.locator("button[data-view='architecture']").click()
+        open_project_view(page, qa_project_id, "architecture")
         page.wait_for_timeout(300)
         shot(page, "10_graph_after_accept")
         step("proposal_accept_pass", before=before_version, after=after_arch["version"], attempts=proposal_attempts)
 
-        # PROJECT EDIT. Accepted architecture locks Goal, but name/description remain editable.
-        page.locator("#editProjectBtn").click()
+        # INLINE RENAME contract, followed by the larger settings dialog regression.
+        open_project_view(page, qa_project_id, "overview")
+        menu_trigger = page.locator(f'[data-project-id="{qa_project_id}"] [data-project-menu]')
+        menu_trigger.click()
+        page.locator(f'[data-project-id="{qa_project_id}"] [data-project-action="rename"]').click()
+        page.keyboard.press("Escape")
+        page.wait_for_function("id => document.activeElement?.closest('[data-project-id]')?.dataset.projectId === id && document.activeElement?.hasAttribute('data-project-menu')", arg=qa_project_id)
+        menu_trigger.click()
+        page.locator(f'[data-project-id="{qa_project_id}"] [data-project-action="rename"]').click()
+        page.locator("[data-project-rename-input]").fill("   ")
+        page.keyboard.press("Enter")
+        assert "Enter a project name" in page.locator("[data-project-rename-error]").inner_text()
+        edited_name = QA_NAME + " Edited"
+        page.locator("[data-project-rename-input]").fill(edited_name)
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            "({id, name}) => document.querySelector(`[data-project-id=\"${id}\"] [data-project-open]`)?.textContent.trim() === name",
+            arg={"id": qa_project_id, "name": edited_name},
+            timeout=8000,
+        )
+        assert edited_name in page.locator("#welcomeTitle").inner_text()
+        step("inline_rename_pass", escape=True, blank_validation=True, enter_save=True)
+
+        page.locator(f'[data-project-id="{qa_project_id}"] [data-project-menu]').click()
+        page.locator(f'[data-project-id="{qa_project_id}"] [data-project-action="edit"]').click()
         page.locator("#editProjectDialog").wait_for(state="visible", timeout=3000)
         assert page.locator("#editProjectGoal").is_disabled()
-        edited_name = QA_NAME + " Edited"
         page.locator("#editProjectName").fill(edited_name)
         page.locator("#editProjectDescription").fill("Release acceptance project edited through the UI.")
         page.locator("#editProjectForm button[type='submit']").click()
-        page.wait_for_function("name => document.querySelector('#projectSelect')?.selectedOptions[0]?.textContent === name", arg=edited_name, timeout=8000)
+        page.wait_for_function(
+            "({id, name}) => document.querySelector(`[data-project-id=\"${id}\"] [data-project-open]`)?.textContent.trim() === name",
+            arg={"id": qa_project_id, "name": edited_name},
+            timeout=8000,
+        )
+        assert project_id_named(page, edited_name) == qa_project_id
         assert edited_name in page.locator("#welcomeTitle").inner_text()
         shot(page, "11_project_edited")
         step("project_edit_pass", goal_locked=True)
@@ -359,31 +458,43 @@ with sync_playwright() as p:
         assert spare["ok"], spare
         spare_id = spare["payload"]["id"]
         page.reload(wait_until="networkidle", timeout=15000)
-        page.locator("#projectSelect").select_option(spare_id)
-        page.wait_for_function("id => localStorage.getItem('archbro-project-id') === id", arg=spare_id, timeout=5000)
-        assert SPARE_NAME in page.locator("#projectSelect").locator("option:checked").inner_text()
+        open_project(page, spare_id)
+        assert SPARE_NAME == page.locator(f'[data-project-id="{spare_id}"] [data-project-open]').inner_text().strip()
         assert page.locator("#archVersion").inner_text().strip() == "Version 0"
         step("project_select_pass", selected=SPARE_NAME)
-        page.locator("#deleteProjectBtn").click()
+        page.locator(f'[data-project-id="{spare_id}"] [data-project-menu]').click()
+        page.locator(f'[data-project-id="{spare_id}"] [data-project-action="delete"]').click()
         page.locator("#deleteProjectDialog").wait_for(state="visible", timeout=3000)
         page.locator("#deleteProjectForm button[type='submit']").click()
-        page.wait_for_function("id => ![...document.querySelectorAll('#projectSelect option')].some(o => o.value === id)", arg=spare_id, timeout=8000)
+        page.wait_for_function("id => !document.querySelector(`[data-project-id=\"${id}\"]`)", arg=spare_id, timeout=8000)
         projects_after_delete = api_json(page, "/projects")
         assert projects_after_delete["ok"]
         assert all(project["id"] != spare_id for project in projects_after_delete["payload"])
-        assert page.locator("#projectSelect").input_value() != spare_id
+        assert page.evaluate("() => localStorage.getItem('archbro-project-id')") != spare_id
         step("project_delete_autoswitch_pass")
         spare_id = None
 
         # Return to QA project and verify selector still works.
-        page.locator("#projectSelect").select_option(qa_project_id)
-        page.wait_for_function("id => localStorage.getItem('archbro-project-id') === id", arg=qa_project_id, timeout=5000)
-        assert edited_name in page.locator("#projectSelect").locator("option:checked").inner_text()
+        open_project(page, qa_project_id)
+        assert edited_name == page.locator(f'[data-project-id="{qa_project_id}"] [data-project-open]').inner_text().strip()
 
         # MOBILE acceptance on Overview / Tasks / Graph.
         page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_timeout(150)
+        assert page.locator("#workspaceSidebar").evaluate("node => node.inert")
+        assert page.locator("#workspaceSidebar").get_attribute("aria-hidden") == "true"
+        page.locator("#mobileSidebarBtn").focus()
+        page.keyboard.press("Enter")
+        page.wait_for_function("() => document.activeElement?.id === 'newProjectBtn'")
+        assert page.locator("#workspaceMain").evaluate("node => node.inert")
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => document.activeElement?.id === 'mobileSidebarBtn'")
         for view, suffix in [("overview", "12_mobile_overview"), ("tasks", "13_mobile_tasks"), ("architecture", "14_mobile_graph")]:
-            page.locator(f"button[data-view='{view}']").click()
+            page.locator("#mobileSidebarBtn").click()
+            for selector in ["#newProjectBtn", '[data-project-toggle]', '[data-project-menu]', f'[data-project-view="{view}"]']:
+                box = page.locator(selector).first.bounding_box()
+                assert box and box["width"] >= 44 and box["height"] >= 44, (selector, box)
+            open_project_view(page, qa_project_id, view)
             page.wait_for_timeout(250)
             data = layout(page, f"mobile_{view}")
             assert not data["overflow"], data

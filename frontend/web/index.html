@@ -4,79 +4,162 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Archbro</title>
-  <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="/static/styles.css?v=20260826-2" />
-  <link rel="stylesheet" href="/static/progress.css?v=20260826-2" />
+  <link rel="icon" href="/static/archbro-logo.svg?v=20260829-3" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260830-5" />
+  <link rel="stylesheet" href="/static/progress.css?v=20260829-3" />
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">A</span><span>Archbro</span></div>
-      <div class="project-manager">
-        <small>CURRENT PROJECT</small>
-        <select id="projectSelect" aria-label="Select project" disabled><option>No project</option></select>
-        <div class="project-actions">
-          <button id="editProjectBtn" type="button" disabled>Edit</button>
-          <button id="deleteProjectBtn" type="button" class="danger" disabled>Delete</button>
+  <section id="entryExperience" class="entry-experience">
+    <header class="entry-topbar">
+      <a class="entry-brand" href="#" aria-label="Archbro home">
+        <img src="/static/archbro-logo.svg?v=20260829-3" alt="" />
+        <span>Archbro</span>
+      </a>
+      <button id="landingLoginBtn" class="btn secondary" type="button">Log in</button>
+    </header>
+
+    <section id="landingView" class="entry-view landing-view">
+      <div class="landing-content">
+        <span class="eyebrow">HUMAN × AGENT PROJECT WORKSPACE</span>
+        <h1>What are we building together?</h1>
+        <p>Turn a goal into living architecture, human tasks, and reviewable changes as project reality evolves.</p>
+        <div class="landing-composer landing-auth-teaser-wrap">
+          <button id="landingAuthTeaser" class="landing-auth-teaser" type="button">
+            <span class="landing-teaser-prompt">Describe the project you want to build ...</span>
+          </button>
+          <div class="landing-composer-actions">
+            <small>Sign in to start a project.</small>
+            <button id="landingAuthSend" class="composer-send" type="button" aria-label="Sign in to start a project">↑</button>
+          </div>
         </div>
       </div>
-      <nav id="nav">
-        <button class="nav-item active" data-view="overview">Overview</button>
-        <button class="nav-item" data-view="tasks">Tasks</button>
-        <button class="nav-item" data-view="architecture">Living Graph</button>
-        <button class="nav-item" data-view="attention">Needs You <span id="attentionBadge" class="badge hidden">0</span></button>
-      </nav>
-      <div class="sidebar-footer">
-        <div class="avatar">JH</div>
-        <div><strong>Human</strong><small>Collaborative</small></div>
-      </div>
-    </aside>
+    </section>
 
-    <main>
+    <dialog id="authView" class="auth-dialog" aria-labelledby="authTitle" aria-modal="true">
+      <form id="authForm" class="auth-card" method="dialog" novalidate>
+        <div class="dialog-head auth-dialog-head">
+          <div><h1 id="authTitle">Welcome back</h1></div>
+          <button id="authCloseBtn" class="dialog-close" type="button" aria-label="Close Log in">×</button>
+        </div>
+        <p id="authSubtitle">Sign in to continue building with Archbro.</p>
+        <label id="authNameField" class="auth-field hidden">Name<input id="authName" autocomplete="name" /><span id="authNameError" class="field-error"></span></label>
+        <label class="auth-field">Email<input id="authEmail" type="email" autocomplete="email" /><span id="authEmailError" class="field-error"></span></label>
+        <label class="auth-field">Password<span class="password-field"><input id="authPassword" type="password" autocomplete="current-password" /><button type="button" data-password-target="authPassword" aria-label="Show password">Show</button></span><span id="authPasswordError" class="field-error"></span></label>
+        <label id="authConfirmField" class="auth-field hidden">Confirm password<span class="password-field"><input id="authConfirmPassword" type="password" autocomplete="new-password" /><button type="button" data-password-target="authConfirmPassword" aria-label="Show password">Show</button></span><span id="authConfirmPasswordError" class="field-error"></span></label>
+        <button id="authSubmitBtn" class="btn primary" type="submit">Continue with email</button>
+        <div class="auth-divider"><span>or</span></div>
+        <div class="auth-providers">
+          <button type="button" data-auth-provider="google">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path fill="#4285F4" d="M21.64 12.2c0-.64-.06-1.25-.16-1.84H12v3.48h5.41a4.63 4.63 0 0 1-2 3.04v2.52h3.24c1.9-1.76 2.99-4.35 2.99-7.2Z"></path>
+              <path fill="#34A853" d="M12 22c2.7 0 4.96-.9 6.61-2.44l-3.24-2.52c-.9.6-2.06.96-3.37.96-2.58 0-4.76-1.75-5.54-4.1H3.11v2.59A9.99 9.99 0 0 0 12 22Z"></path>
+              <path fill="#FBBC05" d="M6.46 13.9A5.98 5.98 0 0 1 6.15 12c0-.66.11-1.3.31-1.9V7.51H3.11a9.98 9.98 0 0 0 0 8.98l3.35-2.59Z"></path>
+              <path fill="#EA4335" d="M12 5.98c1.47 0 2.79.5 3.82 1.5l2.87-2.87C16.95 2.98 14.69 2 12 2a9.99 9.99 0 0 0-8.89 5.51l3.35 2.59c.78-2.35 2.96-4.12 5.54-4.12Z"></path>
+            </svg>
+            <span>Google</span>
+          </button>
+          <button type="button" data-auth-provider="github">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path fill="currentColor" d="M12 .5a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.42-4.04-1.42-.55-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.08 1.84 2.82 1.31 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.31-5.48-1.34-5.48-5.96 0-1.31.47-2.39 1.24-3.23-.12-.3-.54-1.56.12-3.24 0 0 1.01-.32 3.3 1.23a11.4 11.4 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.67 1.68.25 2.94.13 3.24.78.84 1.24 1.92 1.24 3.23 0 4.63-2.82 5.64-5.51 5.94.43.38.81 1.11.81 2.24v3.32c0 .32.22.7.83.58A12 12 0 0 0 12 .5Z"></path>
+            </svg>
+            <span>GitHub</span>
+          </button>
+        </div>
+        <button id="authModeToggle" class="auth-mode-toggle" type="button">New to Archbro? Create an account</button>
+        <button id="authBackBtn" class="auth-back" type="button">Back</button>
+      </form>
+    </dialog>
+
+    <section id="preferenceView" class="entry-view preference-view hidden">
+      <div class="preference-card">
+        <span class="eyebrow">ONE QUICK CHOICE</span>
+        <h1>What kind of project do you want to build?</h1>
+        <p>This becomes your default architecture lens. You can change it later in Preferences.</p>
+        <div class="preference-grid" role="radiogroup" aria-label="Default project lens">
+          <button type="button" role="radio" aria-checked="false" data-project-lens="software"><strong>Software</strong><span>Systems, applications, APIs, data, and delivery.</span></button>
+          <button type="button" role="radio" aria-checked="false" data-project-lens="design"><strong>Design</strong><span>Research, journeys, artifacts, critique, and handoff.</span></button>
+          <button type="button" role="radio" aria-checked="false" data-project-lens="engineering"><strong>Engineering</strong><span>Requirements, constraints, verification, and safety.</span></button>
+        </div>
+        <div class="preference-footer"><small>This changes emphasis, not available features.</small><button id="preferenceContinueBtn" class="btn primary" type="button" disabled>Continue to Archbro</button></div>
+      </div>
+    </section>
+  </section>
+
+  <div id="workspaceShell" class="shell hidden">
+    <aside id="workspaceSidebar" class="sidebar">
+      <div class="brand"><span class="brand-mark"><img class="brand-symbol" src="/static/archbro-logo.svg?v=20260829-3" alt="" /></span><span>Archbro</span></div>
+      <button id="workspaceSwitcherBtn" class="workspace-switcher" type="button" aria-label="Open Personal workspace"><span class="workspace-switcher-icon" aria-hidden="true">⌂</span><span>Personal workspace</span></button>
+      <button id="newProjectBtn" class="new-project-button" type="button"><span>＋ New Project</span><kbd>⌘N</kbd></button>
+      <div class="project-tree-heading">Projects</div>
+      <nav id="projectTree" class="project-tree" aria-label="Projects"></nav>
+    </aside>
+    <button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close project navigation"></button>
+
+    <main id="workspaceMain">
       <header class="topbar">
-        <div><h1 id="pageTitle">Overview</h1><p id="pageSubtitle">Keep project reality aligned with the accepted architecture.</p></div>
+        <button id="mobileSidebarBtn" class="mobile-sidebar-button" type="button" aria-label="Open project navigation" aria-expanded="false" aria-controls="workspaceSidebar">☰</button>
+        <div class="page-heading"><h1 id="pageTitle">Overview</h1><div class="page-subtitle-row"><p id="pageSubtitle">Keep project reality aligned with the accepted architecture.</p><span id="workspaceLens" class="workspace-lens"></span></div></div>
         <div class="top-actions">
           <span id="agentStatus" class="agent-status"><span class="pulse"></span>Agent ready</span>
-          <button class="btn secondary" id="newProjectBtn">New project</button>
+          <button id="notificationBtn" class="icon-button" type="button" aria-expanded="false" aria-controls="notificationMenu" aria-label="Notifications"><svg class="notification-icon" data-notification-icon viewBox="0 0 24 24" aria-hidden="true"><path d="M10.27 21a2 2 0 0 0 3.46 0"></path><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33Z"></path></svg><span id="notificationBadge" class="notification-badge hidden">0</span></button>
+          <button id="accountBtn" class="account-button" type="button" aria-expanded="false" aria-controls="accountMenu" aria-label="Account menu"><span id="accountInitials">HU</span></button>
         </div>
+      <div id="notificationMenu" class="top-menu notification-menu hidden" role="dialog" aria-modal="false" aria-label="Needs You" tabindex="-1"><div class="top-menu-head"><strong>Needs You</strong><span id="notificationCount">0 requests</span><button id="notificationCloseBtn" class="top-menu-close" type="button" aria-label="Close Needs You">×</button></div><div id="notificationList"><p class="notification-empty" role="status" tabindex="-1">Nothing needs your approval right now.</p></div></div>
+        <div id="accountMenu" class="top-menu account-menu hidden" role="menu"><button type="button" role="menuitem" data-account-section="profile">Profile</button><button type="button" role="menuitem" data-account-section="preferences">Preferences</button><button type="button" role="menuitem" data-account-section="settings">Settings</button><button id="logoutBtn" type="button" role="menuitem">Log out</button></div>
       </header>
 
       <section id="emptyState" class="onboarding-state hidden">
-        <div class="onboarding-head">
-          <span class="eyebrow">STEP 1 · GOAL + ASK</span>
-          <h2>What are you trying to build?</h2>
-          <p>Write the Goal directly, talk to the Agent, or use both. Ask always merges with the current Goal instead of replacing it.</p>
-        </div>
-        <article id="webmcpAgentModePanel" class="panel hidden" style="margin-top:24px">
+        <article id="webmcpAgentModePanel" class="panel webmcp-agent-panel hidden">
           <span class="eyebrow">WEBMCP AGENT SESSION</span>
-          <h3 style="margin-top:8px">This browser session is controlled through Site Tools</h3>
+          <h3 class="webmcp-agent-panel-title">This browser session is controlled through Site Tools</h3>
           <p>Manual project creation and built-in model actions are disabled in this mode. The connected agent must create projects, submit plans, and update task state through ArchBro's imperative WebMCP tools. Human architecture approval remains available in Needs You.</p>
         </article>
-        <div class="onboarding-grid">
-          <article class="panel onboarding-chat">
-            <div class="panel-head"><div><h3>Ask the Agent</h3><p>Use Ask to add, refine, or correct the Goal. The existing Goal remains the baseline unless you explicitly change part of it.</p></div><span class="version-pill">No project yet</span></div>
-            <div id="onboardingConversation" class="onboarding-conversation">
-              <div class="onboarding-empty">Describe the product, problem, or outcome you want. You can also write the Goal directly on the right.</div>
-            </div>
-            <form id="onboardingForm" class="onboarding-ask">
-              <textarea id="onboardingAsk" rows="4" autocomplete="off" placeholder="Example: I want to build a simple issue tracker for a small engineering team. Users should be able to create, view, and update issues. I prefer React, FastAPI, and PostgreSQL."></textarea>
-              <div class="onboarding-ask-actions"><small>Goal + Ask → merged Goal draft</small><button class="btn soft" type="submit">Send</button></div>
-            </form>
-          </article>
-
-          <aside class="panel goal-draft-panel">
-            <div class="panel-head"><div><span class="eyebrow">LIVE GOAL DRAFT</span><h3 id="goalDraftStatus">Write a Goal or start with Ask</h3></div><span id="goalReadyBadge" class="status-pill">DRAFT</span></div>
-            <label class="goal-field">Project name<input id="goalProjectName" placeholder="Name this project" /></label>
-            <label class="goal-field">Goal / Project Brief<textarea id="goalDraftText" rows="16" placeholder="Write the Goal directly, or leave it blank and start with Ask. Future Ask messages merge into whatever is currently written here."></textarea></label>
+        <section id="initialGoalStage" class="initial-goal-stage hidden" aria-labelledby="initialGoalTitle">
+          <div class="onboarding-head centered-onboarding-head"><span class="eyebrow">NEW PROJECT</span><h2 id="initialGoalTitle" tabindex="-1">Write a goal or describe your project.</h2><p>Start with the outcome you want. You can refine it with the Agent next.</p></div>
+          <form id="initialGoalForm" class="initial-goal-composer" novalidate>
+            <label class="sr-only" for="initialGoal">Project goal</label>
+            <textarea id="initialGoal" rows="9" autocomplete="off" placeholder="Example: Build a simple issue tracker for a small engineering team."></textarea>
+            <p id="initialGoalError" class="field-error" aria-live="polite"></p>
+            <div class="initial-goal-actions"><button id="initialGoalBackBtn" class="btn secondary" type="button">Back</button><button id="initialGoalContinueBtn" class="btn primary" type="submit">Continue</button></div>
+          </form>
+        </section>
+        <section id="refineGoalStage" class="refine-goal-stage hidden" aria-labelledby="refineGoalTitle">
+          <div class="onboarding-head"><span class="eyebrow">NEW PROJECT · REFINE</span><h2 id="refineGoalTitle" tabindex="-1">Refine your project goal.</h2><p><span id="onboardingProjectName"></span> <button id="editOnboardingProjectName" class="link-btn" type="button">Edit</button></p></div>
+          <article class="panel goal-draft-panel">
+            <div class="panel-head"><div><span class="eyebrow">GOAL DRAFT</span><h3 id="goalDraftStatus">Your project goal</h3></div><span id="goalReadyBadge" class="status-pill">DRAFT</span></div>
+            <label class="goal-field">Goal / Project Brief<textarea id="goalDraftText" rows="16" placeholder="Describe the project outcome, constraints, and success criteria."></textarea></label>
             <div id="missingInfoWrap" class="goal-missing hidden"><small class="eyebrow">STILL USEFUL TO KNOW</small><ul id="missingInfo"></ul></div>
-            <button id="useGoalBtn" class="btn primary goal-use" type="button" disabled>Use this goal & generate architecture</button>
+            <form id="onboardingForm" class="onboarding-ask">
+              <label class="sr-only" for="onboardingAsk">Ask the Agent</label>
+              <textarea id="onboardingAsk" rows="3" autocomplete="off" placeholder="Ask the Agent to refine this goal…"></textarea>
+              <div class="onboarding-ask-actions"><small>Ask updates the Goal Draft without replacing it.</small><button class="btn soft" type="submit">Send</button></div>
+            </form>
+            <div id="onboardingConversation" class="onboarding-conversation hidden" aria-live="polite"></div>
+            <button id="useGoalBtn" class="btn primary goal-use" type="button">Use this goal &amp; generate architecture</button>
             <button id="onboardingBackBtn" class="btn secondary goal-back hidden" type="button">Back to current project</button>
-            <p class="muted">Goal and Ask are two inputs to the same draft. Ask merges with the current Goal instead of replacing it. Nothing is persisted until you confirm.</p>
-          </aside>
-        </div>
+            <p class="muted">Nothing is persisted until you confirm. Ask builds on the current Goal Draft.</p>
+          </article>
+        </section>
       </section>
 
       <section id="workspace" class="workspace hidden">
+        <section id="workspaceHome" class="workspace-home hidden" aria-labelledby="workspaceHomeTitle">
+          <div class="workspace-home-head">
+            <div>
+              <span class="eyebrow">PERSONAL WORKSPACE</span>
+              <h2 id="workspaceHomeTitle">Your projects</h2>
+              <p id="workspaceHomeSubtitle">Keep projects, drafts, and living architecture snapshots together.</p>
+            </div>
+            <span id="workspaceHomeCount" class="workspace-home-count" aria-live="polite">0 projects</span>
+          </div>
+          <div id="workspaceHomeEmpty" class="workspace-home-empty hidden">
+            <div class="workspace-home-empty-mark" aria-hidden="true">✦</div>
+            <h3>No projects yet</h3>
+            <p>Your workspace is ready whenever you are. Start a project when you have a goal to explore with the Agent.</p>
+            <button id="workspaceHomeNewProjectBtn" class="btn primary" type="button">＋ New Project</button>
+          </div>
+          <div id="projectCards" class="project-cards" aria-label="Projects"></div>
+        </section>
         <div id="view-overview" class="view active">
           <div class="welcome"><div><h2 id="welcomeTitle">Project overview</h2><p id="overviewMessage">The system is aligned with the latest observed state.</p></div></div>
           <div class="metrics">
@@ -86,11 +169,11 @@
             <article class="metric amber"><small>WHAT NEEDS ME?</small><strong id="needsCount">0 reviews</strong><span>Only meaningful approval boundaries</span></article>
           </div>
 
-          <article id="bootstrapPanel" class="panel architecture-summary hidden" style="margin-top:24px">
+          <article id="bootstrapPanel" class="panel architecture-summary bootstrap-panel hidden">
             <div class="panel-head">
               <div>
                 <span class="eyebrow">ARCHITECTURE GENERATION PENDING</span>
-                <h3 style="margin-top:7px">The Goal is saved, but Architecture v1 has not been created yet</h3>
+                <h3 class="bootstrap-panel-title">The Goal is saved, but Architecture v1 has not been created yet</h3>
                 <p>This normally happens automatically after Goal confirmation. Retry uses the already saved Goal as the source of truth.</p>
               </div>
               <button id="generateArchitectureBtn" class="btn primary" type="button">Retry initial architecture</button>
@@ -101,7 +184,7 @@
             </div>
             <div class="divider"></div>
             <small class="eyebrow">GOAL / PROJECT BRIEF</small>
-            <p id="bootstrapGoal" style="white-space:pre-wrap;line-height:1.65;font-size:13px"></p>
+            <p id="bootstrapGoal" class="bootstrap-goal"></p>
           </article>
 
           <div class="overview-grid">
@@ -134,11 +217,6 @@
           </div>
         </div>
 
-        <div id="view-attention" class="view">
-          <div class="section-intro"><div><h2>Needs You</h2><p>Only architecture changes that cross the human approval boundary appear here.</p></div></div>
-          <div id="proposalList" class="proposal-list"></div>
-        </div>
-
         <div id="globalAgentDock" class="global-agent-dock hidden">
           <div id="globalAgentReply" class="global-agent-reply hidden"></div>
           <form id="instructionForm" class="instruction-box global-agent-composer">
@@ -146,7 +224,8 @@
             <div class="instruction-input">
               <div class="instruction-context-row"><span>ASK AGENT</span><span id="instructionContext" class="instruction-context-chip">Project context</span></div>
               <label id="instructionLabel" for="instruction">Ask about this project, add a task, or describe a change</label>
-              <input id="instruction" autocomplete="off" placeholder="Describe what changed or what you want the Agent to evaluate." />
+              <input id="instruction" autocomplete="off" aria-describedby="instructionError" placeholder="Describe what changed or what you want the Agent to evaluate." />
+              <span id="instructionError" class="field-error" aria-live="polite"></span>
             </div>
             <button class="btn soft" type="submit">Send</button>
           </form>
@@ -155,9 +234,18 @@
     </main>
   </div>
 
-  <dialog id="editProjectDialog" class="project-dialog">
+  <dialog id="newProjectNameDialog" class="project-dialog" aria-labelledby="newProjectNameDialogTitle">
+    <form id="newProjectNameForm" novalidate>
+      <div class="dialog-head"><div><small>NEW PROJECT</small><h3 id="newProjectNameDialogTitle">Name your project</h3></div><button class="dialog-close" type="button" data-new-project-name-cancel aria-label="Close">×</button></div>
+      <label>Project name<input id="newProjectName" required autocomplete="off" placeholder="e.g. Design system workspace" /></label>
+      <p id="newProjectNameError" class="field-error" aria-live="polite"></p>
+      <div class="dialog-actions"><button class="btn secondary" type="button" data-new-project-name-cancel>Cancel</button><button class="btn primary" type="submit">Continue</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="editProjectDialog" class="project-dialog" aria-labelledby="editProjectDialogTitle">
     <form id="editProjectForm" method="dialog">
-      <div class="dialog-head"><div><small>PROJECT SETTINGS</small><h3>Edit project</h3></div><button class="dialog-close" type="button" data-close-dialog="editProjectDialog" aria-label="Close">×</button></div>
+      <div class="dialog-head"><div><small>PROJECT SETTINGS</small><h3 id="editProjectDialogTitle">Edit project</h3></div><button class="dialog-close" type="button" data-close-dialog="editProjectDialog" aria-label="Close">×</button></div>
       <label>Project name<input id="editProjectName" required /></label>
       <label>Goal / Project brief<textarea id="editProjectGoal" rows="7" required></textarea></label>
       <p id="editGoalHint" class="dialog-hint hidden">Architecture already exists. Change requirements through “Ask the Agent” so architecture changes still cross the human review boundary.</p>
@@ -166,17 +254,22 @@
     </form>
   </dialog>
 
-  <dialog id="deleteProjectDialog" class="project-dialog delete-dialog">
+  <dialog id="deleteProjectDialog" class="project-dialog delete-dialog" aria-labelledby="deleteProjectDialogTitle">
     <form id="deleteProjectForm" method="dialog">
-      <div class="dialog-head"><div><small>DELETE PROJECT</small><h3>Delete <span id="deleteProjectName">this project</span>?</h3></div><button class="dialog-close" type="button" data-close-dialog="deleteProjectDialog" aria-label="Close">×</button></div>
+      <div class="dialog-head"><div><small>DELETE PROJECT</small><h3 id="deleteProjectDialogTitle">Delete <span id="deleteProjectName">this project</span>?</h3></div><button class="dialog-close" type="button" data-close-dialog="deleteProjectDialog" aria-label="Close">×</button></div>
       <p>This permanently removes its architecture, tasks, proposals, events, and notes. This cannot be undone.</p>
       <div class="dialog-actions"><button class="btn secondary" type="button" data-close-dialog="deleteProjectDialog">Cancel</button><button class="btn danger-btn" type="submit">Delete project</button></div>
     </form>
   </dialog>
 
+  <dialog id="proposalReviewDialog" class="project-dialog proposal-review-dialog" aria-labelledby="proposalReviewDialogTitle"><div class="dialog-head"><h3 id="proposalReviewDialogTitle">Architecture review</h3><button class="dialog-close" type="button" data-close-dialog="proposalReviewDialog" aria-label="Close">×</button></div><div id="proposalList" class="proposal-list"></div></dialog>
+
+  <dialog id="accountSettingsDialog" class="project-dialog account-settings-dialog" aria-labelledby="accountSettingsTitle"><form id="accountSettingsForm" method="dialog"><div class="dialog-head"><div><small>ACCOUNT &amp; SYSTEM</small><h3 id="accountSettingsTitle">Profile</h3></div><button class="dialog-close" type="button" data-close-dialog="accountSettingsDialog" aria-label="Close">×</button></div><nav class="settings-nav" aria-label="Account sections"><button type="button" data-settings-panel="profile">Profile</button><button type="button" data-settings-panel="preferences">Preferences</button><button type="button" data-settings-panel="settings">Settings</button></nav><section id="settingsPanel"></section><div class="dialog-actions"><button class="btn secondary" type="button" data-close-dialog="accountSettingsDialog">Cancel</button><button class="btn primary" type="submit">Save changes</button></div></form></dialog>
+
   <div id="toast" class="toast hidden"></div>
   <script src="/runtime-config.js"></script>
-  <script type="module" src="/static/app.js?v=20260828-firebase-webmcp"></script>
+  <script src="/static/prototype.js?v=20260829-4"></script>
+  <script type="module" src="/static/app.js?v=20260830-4"></script>
   <script type="module" src="/static/archbro-webmcp.js?v=competition-20260828-authz-atomic"></script>
 </body>
 </html>
