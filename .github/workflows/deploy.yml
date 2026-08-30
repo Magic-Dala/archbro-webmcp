@@ -1,17 +1,21 @@
-# Builds an image and deploys it to one of two isolated stacks on the same VM.
+# Builds an image and deploys it to one of two stacks on the same VM.
 #
 # main -> archbro-main -> /opt/archbro/main -> archbro.magicdala.com
 # dev  -> archbro-dev  -> /opt/archbro/dev  -> archbro-dev.magicdala.com
 #
-# The stacks share nothing: separate Compose projects, containers, networks,
-# and database volumes. Deploying dev cannot touch production data.
+# The stacks use separate Compose projects, containers, default networks, and
+# database volumes. They currently share only the external archbro-edge ingress
+# network used by their Cloudflare Tunnel connectors; that boundary is documented
+# explicitly rather than claiming the environments share nothing.
 #
 # Authentication uses Workload Identity Federation, so no long-lived Google
-# credential is stored in GitHub. The VM holds no registry credential either;
-# each deploy hands it a short-lived access token over stdin.
+# credential is stored in GitHub. Each deploy hands the VM a short-lived registry
+# access token over stdin; deploy-stack.sh stores it in a temporary Docker config
+# that is destroyed on every exit path.
 #
 # .env files are placed on the VM by hand and are never written by this
-# workflow. A deploy fails if the target .env is missing.
+# workflow. A deploy fails if the target .env is missing or is not configured
+# for the production runtime/Firebase authentication boundary.
 name: Deploy
 
 on:
@@ -21,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
   id-token: write
 
 concurrency:
@@ -40,6 +45,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # CI and Deploy are separate workflows, so both start on a branch push.
+      # This gate prevents Deploy from touching GCP until the CI workflow has
+      # completed successfully for this exact merge/squash SHA. A manual
+      # workflow_dispatch is an explicit operator action and skips this wait.
+      - name: Wait for CI gate on this exact commit
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 60); do
+            payload="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100")"
+            status="$(jq -r '[.check_runs[] | select(.name == "Python")] | sort_by(.started_at) | last | .status // ""' <<<"$payload")"
+            conclusion="$(jq -r '[.check_runs[] | select(.name == "Python")] | sort_by(.started_at) | last | .conclusion // ""' <<<"$payload")"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "CI gate passed for $GITHUB_SHA"
+                exit 0
+              fi
+              echo "::error::CI gate concluded $conclusion for $GITHUB_SHA"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::Timed out waiting for CI gate for $GITHUB_SHA"
+          exit 1
 
       - name: Resolve the target environment
         id: target
@@ -91,7 +123,8 @@ jobs:
       - name: Deploy
         env:
           # Short-lived, roughly an hour. Piped over stdin so it never lands in
-          # the VM's process list, and the script logs out when it is done.
+          # the VM's process list. The remote script uses an ephemeral Docker
+          # config and destroys it on every exit path.
           ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           STACK: ${{ steps.target.outputs.stack }}
           DIR: ${{ steps.target.outputs.dir }}
@@ -101,7 +134,7 @@ jobs:
             --zone="$GCE_ZONE" --project="$GCP_PROJECT" --quiet \
             --command="bash \$HOME/deploy-stack.sh '$STACK' '$DIR' '$IMAGE' '$REGISTRY' 'oauth2accesstoken'"
 
-      - name: Verify the deployed stack answers
+      - name: Verify the deployed stack answers internally
         env:
           STACK: ${{ steps.target.outputs.stack }}
         run: |

@@ -7,7 +7,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Re-test the exact merge/squash commit before deployment. PR-head CI alone
+    # is not sufficient because the merge commit is a distinct Git object.
+    branches: [main, dev]
   pull_request:
 
 concurrency:
@@ -28,7 +30,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U archbro -d archbro"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -83,3 +85,20 @@ jobs:
           curl --retry 40 --retry-delay 1 --retry-all-errors --max-time 90 \
             --fail -s http://localhost:8080/healthz
           docker rm -f archbro-ci
+
+  # Preserve the existing main ruleset's required status name while making it
+  # an explicit aggregate gate for the real test/image jobs. Once repository
+  # rulesets are updated they may require this single stable check.
+  python-gate:
+    name: Python
+    if: always()
+    needs: [test, image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all CI jobs to succeed
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+        run: |
+          test "$TEST_RESULT" = "success"
+          test "$IMAGE_RESULT" = "success"

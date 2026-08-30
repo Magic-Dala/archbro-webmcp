@@ -32,7 +32,10 @@ from archbro.backend.core.contracts import (
     Task,
     TaskStatus,
 )
-from archbro.backend.core.observation import ObservationMutationPlan
+from archbro.backend.core.observation import (
+    ObservationMutationPlan,
+    ObservationRejectedError,
+)
 from archbro.backend.core.repository import ProjectRepositoryPort
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.platform.persistence.postgres import PostgresProjectRepository
@@ -204,10 +207,29 @@ def test_postgres_save_event_deduplicates_on_source_key(repo):
     conflicting = event.model_copy(
         update={"id": "event_third", "payload": {"message": "different"}}
     )
-    with pytest.raises(ValueError, match="different observation data"):
+    with pytest.raises(ObservationRejectedError, match="different observation data"):
         repo.save_event(conflicting)
     assert len(repo.list_events(project.id)) == 1
 
+
+
+def test_postgres_claim_observation_rejects_identity_collision_with_typed_error(repo):
+    project = Project(name="Typed rejection", goal="Preserve delivery contract")
+    repo.save_project(project)
+    event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.GITHUB_CHANGE,
+        source="GITHUB",
+        source_event_id="github:repo:pr:42",
+        payload={"message": "original"},
+    )
+    repo.claim_observation(event, run_id="run_original")
+
+    conflicting = event.model_copy(
+        update={"id": "event_conflicting", "payload": {"message": "different"}}
+    )
+    with pytest.raises(ObservationRejectedError, match="different observation data"):
+        repo.claim_observation(conflicting, run_id="run_conflicting")
 
 def test_postgres_source_key_uniqueness_is_enforced_by_the_database(repo, dsn):
     """The unique index is the last line of defence against duplicate events.

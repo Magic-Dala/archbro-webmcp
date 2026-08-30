@@ -5,8 +5,8 @@
 # of quoting instead of three, and so it can be run by hand while debugging.
 #
 # The registry token arrives on stdin, never as an argument, so it stays out of
-# the process list. It is the workflow's GITHUB_TOKEN, which expires when the
-# job ends, and the script logs out before it finishes either way.
+# the process list. It is a short-lived Google OAuth access token from WIF.
+# Docker uses a per-deploy temporary config that is destroyed on every exit path.
 #
 # Every docker command runs under sudo: /opt/archbro is root-only so that the
 # .env files, which hold the secrets, are not world-readable.
@@ -23,32 +23,39 @@ if ! sudo test -f "$DIR/.env"; then
     exit 1
 fi
 
-# A deployment whose .env forgot ARCHBRO_ENV would fall back to the development
-# default and serve real traffic on the local development principal.
-if ! sudo grep -q '^ARCHBRO_ENV=' "$DIR/.env"; then
-    echo "::error::$DIR/.env does not set ARCHBRO_ENV"
+# Remote dev/main are production-like stacks. Never permit them to fall back to
+# the local principal or non-production runtime safety semantics.
+if ! sudo grep -qx 'ARCHBRO_ENV=production' "$DIR/.env"; then
+    echo "::error::$DIR/.env must set ARCHBRO_ENV=production"
     exit 1
 fi
-if ! sudo grep -q '^ARCHBRO_ENV=production' "$DIR/.env"; then
-    echo "::warning::$DIR/.env does not set ARCHBRO_ENV=production; Firebase authentication is not enforced"
+if ! sudo grep -qx 'ARCHBRO_AUTH_MODE=firebase' "$DIR/.env"; then
+    echo "::error::$DIR/.env must set ARCHBRO_AUTH_MODE=firebase"
+    exit 1
 fi
 
 sudo mv "$HOME/archbro-$STACK.yml" "$DIR/docker-compose.yml"
 sudo chmod 640 "$DIR/docker-compose.yml"
 
-sudo docker login -u "$REGISTRY_USER" --password-stdin "$REGISTRY" > /dev/null
+DOCKER_CONFIG_DIR="$(mktemp -d)"
+cleanup_registry_auth() {
+    sudo env DOCKER_CONFIG="$DOCKER_CONFIG_DIR" docker logout "$REGISTRY" > /dev/null 2>&1 || true
+    sudo rm -rf "$DOCKER_CONFIG_DIR"
+}
+trap cleanup_registry_auth EXIT
+
+sudo env DOCKER_CONFIG="$DOCKER_CONFIG_DIR" \
+    docker login -u "$REGISTRY_USER" --password-stdin "$REGISTRY" > /dev/null
 
 # --project-directory rather than cd: the calling shell is not root and cannot
 # enter the directory at all.
 compose() {
-    sudo env ARCHBRO_IMAGE="$IMAGE" ARCHBRO_STACK="$STACK" \
+    sudo env DOCKER_CONFIG="$DOCKER_CONFIG_DIR" ARCHBRO_IMAGE="$IMAGE" ARCHBRO_STACK="$STACK" \
         docker compose -f "$DIR/docker-compose.yml" --project-directory "$DIR" -p "$STACK" "$@"
 }
 
 compose pull
 compose up -d --wait
-
-sudo docker logout "$REGISTRY" > /dev/null
 
 echo "--- $STACK ---"
 compose ps --format 'table {{.Service}}\t{{.Status}}'
