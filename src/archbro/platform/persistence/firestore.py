@@ -18,7 +18,7 @@ from archbro.backend.core.contracts import (
     ProposalStatus,
     Task,
 )
-from archbro.backend.core.observation import ObservationMutationPlan
+from archbro.backend.core.observation import ObservationMutationPlan, ObservationRejectedError
 
 
 _OBSERVATION_CLAIM_TTL = timedelta(minutes=2)
@@ -342,7 +342,9 @@ class FirestoreProjectRepository:
                 )
                 existing_event = ProjectEvent.model_validate(self._payload(existing_snapshot))
                 if not self._same_observation(existing_event, event):
-                    raise ValueError("source event id is already registered with different observation data")
+                    raise ObservationRejectedError(
+                        "source event id is already registered with different observation data"
+                    )
                 return
 
             event_ref = self._collection(self._events).document(event.id)
@@ -350,7 +352,9 @@ class FirestoreProjectRepository:
             if existing_snapshot.exists:
                 existing_event = ProjectEvent.model_validate(self._payload(existing_snapshot))
                 if not self._same_observation(existing_event, event):
-                    raise ValueError("event id is already registered with different observation data")
+                    raise ObservationRejectedError(
+                        "event id is already registered with different observation data"
+                    )
             else:
                 transaction.set(
                     event_ref,
@@ -420,7 +424,9 @@ class FirestoreProjectRepository:
             if event_snapshot.exists:
                 canonical_event = ProjectEvent.model_validate(self._payload(event_snapshot))
                 if not self._same_observation(canonical_event, event):
-                    raise ValueError("source event id is already registered with different observation data")
+                    raise ObservationRejectedError(
+                        "source event id is already registered with different observation data"
+                    )
                 if canonical_event.source_event_id is None and event.source_event_id is not None:
                     canonical_event = canonical_event.model_copy(
                         update={"source_event_id": event.source_event_id}

@@ -17,7 +17,7 @@ from archbro.backend.core.contracts import (
     ProposalStatus,
     Task,
 )
-from archbro.backend.core.observation import ObservationMutationPlan
+from archbro.backend.core.observation import ObservationMutationPlan, ObservationRejectedError
 
 
 _OBSERVATION_CLAIM_TTL = timedelta(minutes=2)
@@ -303,7 +303,9 @@ class ProjectRepository:
             if source_row is not None:
                 existing = ProjectEvent.model_validate_json(source_row["data"])
                 if not self._same_observation(existing, event):
-                    raise ValueError("source event id is already registered with different observation data")
+                    raise ObservationRejectedError(
+                        "source event id is already registered with different observation data"
+                    )
                 conn.commit()
                 return
 
@@ -314,10 +316,14 @@ class ProjectRepository:
             if id_row is not None:
                 existing = ProjectEvent.model_validate_json(id_row["data"])
                 if not self._same_observation(existing, event):
-                    raise ValueError("event id is already registered with different observation data")
+                    raise ObservationRejectedError(
+                        "event id is already registered with different observation data"
+                    )
                 existing_source_key = id_row["source_key"]
                 if existing_source_key is not None and source_key is not None and existing_source_key != source_key:
-                    raise ValueError("event id is already registered with a different source event id")
+                    raise ObservationRejectedError(
+                        "event id is already registered with a different source event id"
+                    )
                 if existing.source_event_id is None and event.source_event_id is not None:
                     existing = existing.model_copy(update={"source_event_id": event.source_event_id})
                     conn.execute(
@@ -388,7 +394,9 @@ class ProjectRepository:
             if row is not None:
                 canonical_event = ProjectEvent.model_validate_json(row["data"])
                 if not self._same_observation(canonical_event, event):
-                    raise ValueError("source event id is already registered with different observation data")
+                    raise ObservationRejectedError(
+                        "source event id is already registered with different observation data"
+                    )
                 if source_key is not None:
                     if canonical_event.source_event_id is None and event.source_event_id is not None:
                         canonical_event = canonical_event.model_copy(

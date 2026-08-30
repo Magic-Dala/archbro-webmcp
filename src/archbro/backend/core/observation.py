@@ -14,6 +14,15 @@ class ObservationInProgressError(RuntimeError):
     """Raised when the same durable observation is already being evaluated."""
 
 
+class ObservationRejectedError(ValueError):
+    """Raised when a durable observation identity is permanently invalid.
+
+    This is distinct from transient observation contention and from unrelated
+    persistence ``ValueError`` failures. Callers may safely treat it as a terminal
+    delivery rejection: retrying the same identity and payload cannot succeed.
+    """
+
+
 @dataclass(slots=True)
 class ObservationMutationPlan:
     """Fully materialized domain mutations plus the state they were planned from."""
