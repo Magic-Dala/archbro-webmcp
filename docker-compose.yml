@@ -57,10 +57,13 @@ services:
     ports:
       - "127.0.0.1:${ARCHBRO_PORT:-8080}:8080"
     volumes:
-      - ./src:/app/src
-      - ./tests:/app/tests
-      - ./frontend:/app/frontend
-      - ./pyproject.toml:/app/pyproject.toml:ro
+      # The whole repository, matching what CI checks out. Listing individual
+      # directories looks tidier but is quietly wrong: tests import from qa/,
+      # execute deploy/deploy-stack.sh, and read files under docs/, and each
+      # omission surfaces as a collection error that aborts the entire suite
+      # rather than failing one file. Dependencies still come from the image,
+      # since they install into site-packages rather than /app.
+      - .:/app
       - app-data:/data
     depends_on:
       db:

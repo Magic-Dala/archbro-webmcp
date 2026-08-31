@@ -40,10 +40,14 @@ from the route definitions, so it is never out of date.
 
 ## Editing code
 
-`src/`, `tests/`, and `frontend/` are bind-mounted into the container and the
-app runs under `uvicorn --reload`. Save a file and the server restarts by
-itself — no rebuild, no restart command. Watch it happen with
-`docker compose logs -f app`.
+The repository is bind-mounted into the container and the app runs under
+`uvicorn --reload`. Save a file and the server restarts by itself — no rebuild,
+no restart command. Watch it happen with `docker compose logs -f app`.
+
+The whole repository is mounted rather than a list of directories, because the
+suite reaches beyond `src/` and `tests/`: it imports from `qa/`, executes
+`deploy/deploy-stack.sh`, and reads files under `docs/`. Any omission shows up
+as a collection error, which aborts the entire run instead of failing one file.
 
 Rebuild only when `pyproject.toml` changes: `docker compose build app`.
 
