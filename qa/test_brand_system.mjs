@@ -84,8 +84,9 @@ test('Archbro exposes the approved palette with unambiguous status colors', asyn
   assert.ok(css.includes('.metric.green{--metric-accent:var(--success)'));
   assert.ok(css.includes('.metric.amber{--metric-accent:var(--warning)'));
   assert.ok(css.includes('.account-button{') && css.includes('background:#FFF0ED'));
-  assert.ok(js.includes('#5A49B8'));
-  assert.ok(js.includes('#3B82F6'));
+  assert.match(css, /#graphCanvas \.node-card \.node-surface\{[^}]*fill:var\(--surface\)/);
+  assert.match(css, /#graphCanvas \.node-name\{[^}]*fill:var\(--ink\)/);
+  assert.doesNotMatch(js, /const palette =|const layerTitle =|const indegree =/);
   assert.doesNotMatch(css, /linear-gradient|radial-gradient|backdrop-filter/i);
   assert.doesNotMatch(css, /#7c3aed/i);
   assert.doesNotMatch(progressCss, /#7c3aed/i);
@@ -115,7 +116,8 @@ test('small brand and architecture text meets WCAG AA contrast', async () => {
   assert.ok(contrastRatio(token('--brand-deep'), token('--brand-primary')) >= 4.5);
   assert.ok(contrastRatio(token('--brand-deep'), token('--brand-soft')) >= 4.5);
 
-  const frontendPalette = js.match(/front\|web\|ui\|client[\s\S]+?return \{fill:'(#[0-9A-F]{6})',[^}]+accent:'(#[0-9A-F]{6})'/i);
-  assert.ok(frontendPalette, 'frontend architecture palette is missing');
-  assert.ok(contrastRatio(frontendPalette[2], frontendPalette[1]) >= 4.5);
+  assert.ok(contrastRatio(token('--ink'), token('--surface')) >= 4.5);
+  assert.match(css, /#graphCanvas \.node-card \.node-surface\{[^}]*fill:var\(--surface\)/);
+  assert.match(css, /#graphCanvas \.node-name\{[^}]*fill:var\(--ink\)/);
+  assert.doesNotMatch(js, /front\|web\|ui\|client[\s\S]+?return \{fill:/i);
 });

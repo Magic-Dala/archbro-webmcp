@@ -1,0 +1,121 @@
+import json
+
+import pytest
+
+from archbro.backend.mcp.provider_gateway import ExternalMcpGateway, McpConnectionConfig
+
+
+def test_provider_gateway_validates_connections_and_redacts_secrets():
+    gateway = ExternalMcpGateway(timeout_seconds=2)
+    remote = gateway.add_connection(McpConnectionConfig(
+        name="Remote",
+        transport="streamable_http",
+        url="https://example.com/mcp",
+        headers={"Authorization": "Bearer secret-token"},
+    ))
+    local = gateway.add_connection(McpConnectionConfig(
+        name="Local",
+        transport="streamable_http",
+        url="http://127.0.0.1:8082/mcp",
+    ))
+    stdio = gateway.add_connection(McpConnectionConfig(
+        name="stdio",
+        transport="stdio",
+        command="example-mcp",
+        env={"TOKEN": "secret-value"},
+    ))
+
+    serialized = json.dumps(gateway.list_connections())
+    assert remote["transport"] == "streamable_http"
+    assert local["endpoint"] == "http://127.0.0.1:8082/mcp"
+    assert stdio["transport"] == "stdio"
+    assert "secret-token" not in serialized
+    assert "secret-value" not in serialized
+    assert "Authorization" not in serialized
+    assert "TOKEN" not in serialized
+
+    with pytest.raises(ValueError, match="remote plain HTTP"):
+        McpConnectionConfig(name="Unsafe", transport="streamable_http", url="http://example.com/mcp")
+
+
+def test_oauth_prompt_replaces_existing_prompt_and_preserves_query():
+    from urllib.parse import parse_qs, urlparse
+
+    github = ExternalMcpGateway._with_oauth_prompt(
+        "https://github.com/login/oauth/authorize?client_id=abc&state=xyz&prompt=consent",
+        "select_account",
+    )
+    github_query = parse_qs(urlparse(github).query)
+    assert github_query["client_id"] == ["abc"]
+    assert github_query["state"] == ["xyz"]
+    assert github_query["prompt"] == ["select_account"]
+
+    google = ExternalMcpGateway._with_oauth_prompt(
+        "https://accounts.google.com/o/oauth2/auth?client_id=abc&scope=drive",
+        "select_account consent",
+    )
+    google_query = parse_qs(urlparse(google).query)
+    assert google_query["prompt"] == ["select_account consent"]
+
+
+def test_github_oauth_start_forces_account_picker(monkeypatch):
+    import archbro.backend.mcp.provider_gateway as provider_gateway
+
+    gateway = ExternalMcpGateway(timeout_seconds=2)
+    monkeypatch.setattr(provider_gateway.shutil, "which", lambda name: "docker" if name == "docker" else None)
+    monkeypatch.setattr(gateway, "_start_persistent_stdio", lambda config: object())
+    monkeypatch.setattr(gateway, "_state_list_tools", lambda state: [{"name": "get_me"}])
+    monkeypatch.setattr(
+        gateway,
+        "_state_call",
+        lambda state, tool_name, arguments: {
+            "content": [{
+                "type": "text",
+                "text": (
+                    "Authorize at https://github.com/login/oauth/authorize"
+                    "?client_id=abc&state=xyz&redirect_uri=http%3A%2F%2F127.0.0.1%3A8085%2Fcallback"
+                ),
+            }],
+        },
+    )
+
+    started = gateway.start_github_oauth_connection()
+    from urllib.parse import parse_qs, urlparse
+    query = parse_qs(urlparse(started["authorization_url"]).query)
+    assert started["connected"] is False
+    assert query["prompt"] == ["select_account"]
+
+
+def test_google_login_url_forces_account_picker_and_consent(monkeypatch):
+    from urllib.parse import parse_qs, urlencode, urlparse
+    import archbro.backend.mcp.provider_gateway as provider_gateway
+
+    authorization_url = "https://accounts.google.com/o/oauth2/auth?" + urlencode({
+        "client_id": "abc",
+        "redirect_uri": "http://127.0.0.1:8089/callback",
+        "scope": "https://www.googleapis.com/auth/drive",
+        "prompt": "consent",
+    })
+
+    class FakeProcess:
+        pid = 123456
+        stdin = None
+        stderr = None
+        stdout = [authorization_url + "\n"]
+
+        @staticmethod
+        def poll():
+            return None
+
+    monkeypatch.setattr(provider_gateway.shutil, "which", lambda name: "gcloud" if name == "gcloud" else None)
+    monkeypatch.setattr(provider_gateway.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(ExternalMcpGateway, "_windows_descendant_process_ids", staticmethod(lambda pid: set()))
+
+    gateway = ExternalMcpGateway(timeout_seconds=2)
+    session, result_url = gateway._start_google_gcloud_login()
+    try:
+        query = parse_qs(urlparse(result_url).query)
+        assert query["prompt"] == ["select_account consent"]
+        assert query["client_id"] == ["abc"]
+    finally:
+        session.config_dir.cleanup()

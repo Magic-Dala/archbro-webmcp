@@ -262,19 +262,38 @@ export function createArchBroTools(bridge) {
   return [...createCoreTools(bridge), ...createConnectedMcpTools(bridge)];
 }
 
+function resolveModelContext(modelContext) {
+  if (modelContext && typeof modelContext.registerTool === 'function') return modelContext;
+  const documentModelContext = globalThis.document?.modelContext;
+  if (documentModelContext && typeof documentModelContext.registerTool === 'function') return documentModelContext;
+
+  const navigatorModelContext = globalThis.navigator?.modelContext;
+  if (!navigatorModelContext || typeof navigatorModelContext.registerTool !== 'function') return null;
+
+  if (globalThis.document && !globalThis.document.modelContext) {
+    try {
+      Object.defineProperty(globalThis.document, 'modelContext', {configurable: true, value: navigatorModelContext});
+    } catch {
+      // Some hosts expose the legacy native surface without allowing page-side aliasing.
+    }
+  }
+  return navigatorModelContext;
+}
+
 export async function registerArchBroWebMCP({modelContext, bridge, signal} = {}) {
-  const resolvedModelContext = modelContext ?? globalThis.document?.modelContext;
+  const resolvedModelContext = resolveModelContext(modelContext);
   const resolvedBridge = bridge ?? globalThis.window?.ArchBroWebBridge;
-  if (!resolvedModelContext || typeof resolvedModelContext.registerTool !== 'function') throw new Error('WebMCP is unavailable: document.modelContext.registerTool() was not found');
+  if (!resolvedModelContext) throw new Error('WebMCP is unavailable: document.modelContext.registerTool() / navigator.modelContext.registerTool() was not found');
   const tools = createArchBroTools(resolvedBridge);
   for (const tool of tools) await resolvedModelContext.registerTool(tool, signal ? {signal} : undefined);
   return tools;
 }
 
 export async function autoRegisterArchBroWebMCP() {
-  if (!globalThis.document?.modelContext || !globalThis.window?.ArchBroWebBridge) return {registered: false, reason: 'webmcp-or-bridge-unavailable'};
+  const modelContext = resolveModelContext();
+  if (!modelContext || !globalThis.window?.ArchBroWebBridge) return {registered: false, reason: 'webmcp-or-bridge-unavailable'};
   const controller = new AbortController();
-  const tools = await registerArchBroWebMCP({modelContext: globalThis.document.modelContext, bridge: globalThis.window.ArchBroWebBridge, signal: controller.signal});
+  const tools = await registerArchBroWebMCP({modelContext, bridge: globalThis.window.ArchBroWebBridge, signal: controller.signal});
   globalThis.window.ArchBroWebMCP = {tools: tools.map(({name, title, description}) => ({name, title, description})), dispose: () => controller.abort()};
   return {registered: true, count: tools.length};
 }

@@ -101,6 +101,7 @@
         <div class="page-heading"><h1 id="pageTitle">Overview</h1><div class="page-subtitle-row"><p id="pageSubtitle">Keep project reality aligned with the accepted architecture.</p><span id="workspaceLens" class="workspace-lens"></span></div></div>
         <div class="top-actions">
           <span id="agentStatus" class="agent-status"><span class="pulse"></span>Agent ready</span>
+          <button class="btn secondary" id="mcpConnectionsBtn" type="button">MCP Connections</button>
           <button id="notificationBtn" class="icon-button" type="button" aria-expanded="false" aria-controls="notificationMenu" aria-label="Notifications"><svg class="notification-icon" data-notification-icon viewBox="0 0 24 24" aria-hidden="true"><path d="M10.27 21a2 2 0 0 0 3.46 0"></path><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33Z"></path></svg><span id="notificationBadge" class="notification-badge hidden">0</span></button>
           <button id="accountBtn" class="account-button" type="button" aria-expanded="false" aria-controls="accountMenu" aria-label="Account menu"><span id="accountInitials">HU</span></button>
         </div>
@@ -266,10 +267,135 @@
 
   <dialog id="accountSettingsDialog" class="project-dialog account-settings-dialog" aria-labelledby="accountSettingsTitle"><form id="accountSettingsForm" method="dialog"><div class="dialog-head"><div><small>ACCOUNT &amp; SYSTEM</small><h3 id="accountSettingsTitle">Profile</h3></div><button class="dialog-close" type="button" data-close-dialog="accountSettingsDialog" aria-label="Close">×</button></div><nav class="settings-nav" aria-label="Account sections"><button type="button" data-settings-panel="profile">Profile</button><button type="button" data-settings-panel="preferences">Preferences</button><button type="button" data-settings-panel="settings">Settings</button></nav><section id="settingsPanel"></section><div class="dialog-actions"><button class="btn secondary" type="button" data-close-dialog="accountSettingsDialog">Cancel</button><button class="btn primary" type="submit">Save changes</button></div></form></dialog>
 
+  <dialog id="mcpConnectionsDialog" class="mcp-picker-dialog">
+    <div class="mcp-picker-shell">
+      <header class="mcp-picker-header">
+        <div class="mcp-picker-heading">
+          <span class="mcp-hub-mark">M</span>
+          <div><small>ARCHBRO TOOL HUB</small><h2>Connect an MCP</h2><p>Choose a provider, authorize it, and return here automatically.</p></div>
+        </div>
+        <button class="mcp-picker-close" type="button" data-close-dialog="mcpConnectionsDialog" aria-label="Close">×</button>
+      </header>
+
+      <div class="mcp-picker-content">
+        <section class="mcp-library">
+          <div class="mcp-search-wrap">
+            <span class="mcp-search-icon">⌕</span>
+            <input id="mcpSearch" type="search" autocomplete="off" placeholder="Search MCP providers" aria-label="Search MCP providers" />
+          </div>
+          <div class="mcp-tabs" role="tablist" aria-label="MCP library">
+            <button type="button" class="mcp-tab active" data-mcp-tab="browse">Browse</button>
+            <button type="button" class="mcp-tab" data-mcp-tab="connected">Connected <span id="mcpConnectedCount">0</span></button>
+          </div>
+
+          <div id="mcpBrowsePane" class="mcp-library-pane">
+            <div class="mcp-library-label"><strong>Available</strong><span>Select one to configure</span></div>
+            <div id="mcpProviderGrid" class="mcp-provider-grid">
+              <button type="button" class="mcp-provider-card selected" data-mcp-preset="github-remote" data-mcp-search="github remote cloud repository pull request issue">
+                <span class="mcp-provider-icon github-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 .7a11.5 11.5 0 0 0-3.64 22.4c.58.1.79-.25.79-.56v-2.22c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.57-.29-5.27-1.29-5.27-5.73 0-1.27.45-2.3 1.2-3.11-.12-.3-.52-1.48.11-3.07 0 0 .98-.31 3.16 1.19A11 11 0 0 1 12 6.05c.98 0 1.95.13 2.86.38 2.18-1.5 3.16-1.19 3.16-1.19.63 1.59.23 2.77.11 3.07.75.81 1.2 1.84 1.2 3.11 0 4.45-2.71 5.43-5.29 5.72.42.36.79 1.06.79 2.14v3.26c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg></span>
+                <span class="mcp-provider-copy"><strong>GitHub</strong><small>OAuth · Official MCP</small><span>Repos, issues, pull requests and more</span></span>
+                <span class="mcp-provider-chevron">›</span>
+              </button>
+
+              <button type="button" class="mcp-provider-card" data-mcp-preset="slack" data-mcp-search="slack messages channels files workspace chat canvas">
+                <span class="mcp-provider-icon slack-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="10" y="1" width="4" height="9" rx="2" fill="#36C5F0"/><rect x="14" y="6" width="9" height="4" rx="2" fill="#2EB67D"/><rect x="10" y="14" width="4" height="9" rx="2" fill="#ECB22E"/><rect x="1" y="14" width="9" height="4" rx="2" fill="#E01E5A"/><circle cx="7" cy="7" r="2" fill="#36C5F0"/><circle cx="17" cy="7" r="2" fill="#2EB67D"/><circle cx="17" cy="17" r="2" fill="#ECB22E"/><circle cx="7" cy="17" r="2" fill="#E01E5A"/></svg></span>
+                <span class="mcp-provider-copy"><strong>Slack</strong><small>OAuth · Official MCP</small><span>Search and read across your workspace</span></span>
+                <span class="mcp-provider-chevron">›</span>
+              </button>
+
+              <button type="button" class="mcp-provider-card" data-mcp-preset="google-drive" data-mcp-search="google drive files docs sheets storage workspace">
+                <span class="mcp-provider-icon drive-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8.3 2h5.4l7.1 12.3h-5.4z" fill="#FFC107"/><path d="M8.3 2 1.2 14.3l2.7 4.7L11 6.7z" fill="#00A86B"/><path d="M3.9 19 6.6 14.3h14.2L18.1 19z" fill="#4285F4"/></svg></span>
+                <span class="mcp-provider-copy"><strong>Google Drive</strong><small>OAuth · Official MCP · Preview</small><span>Search, read, create and download Drive files</span></span>
+                <span class="mcp-provider-chevron">›</span>
+              </button>
+
+              <button type="button" class="mcp-provider-card" data-mcp-preset="microsoft-teams" data-mcp-search="microsoft teams chats channels messages graph office 365">
+                <span class="mcp-provider-icon teams-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="8" height="8" rx="2" fill="#6264A7"/><rect x="11" y="3" width="8" height="8" rx="2" fill="#464EB8"/><rect x="2" y="12" width="8" height="8" rx="2" fill="#464EB8"/><path d="M13 12h7v5.5a2.5 2.5 0 0 1-2.5 2.5H13z" fill="#7B83EB"/><circle cx="20" cy="6" r="2" fill="#8B8CC7"/></svg></span>
+                <span class="mcp-provider-copy"><strong>Microsoft Teams</strong><small>OAuth · Microsoft Graph</small><span>Teams, channels, chats and messages</span></span>
+                <span class="mcp-provider-chevron">›</span>
+              </button>
+
+              <button type="button" class="mcp-provider-card" data-mcp-preset="custom" data-mcp-search="custom mcp server remote local http stdio">
+                <span class="mcp-provider-icon custom-icon" aria-hidden="true">&lt;/&gt;</span>
+                <span class="mcp-provider-copy"><strong>Custom MCP</strong><small>Remote or local</small><span>Connect any compatible MCP endpoint</span></span>
+                <span class="mcp-provider-chevron">›</span>
+              </button>
+            </div>
+            <p id="mcpNoSearchResults" class="mcp-empty-state hidden">No MCP provider matches that search.</p>
+          </div>
+
+          <div id="mcpConnectedPane" class="mcp-library-pane hidden">
+            <div class="mcp-library-label"><strong>Your connections</strong><span>Test or remove configured MCPs</span></div>
+            <div id="mcpConnectionList" class="mcp-connection-list"><p class="muted">No connections configured.</p></div>
+          </div>
+        </section>
+
+        <form id="mcpConnectionForm" class="mcp-config-panel">
+          <input id="mcpPreset" type="hidden" value="github-remote" />
+          <div class="mcp-config-head">
+            <div class="mcp-config-provider"><span id="mcpConfigIcon" class="mcp-provider-icon github-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 .7a11.5 11.5 0 0 0-3.64 22.4c.58.1.79-.25.79-.56v-2.22c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.57-.29-5.27-1.29-5.27-5.73 0-1.27.45-2.3 1.2-3.11-.12-.3-.52-1.48.11-3.07 0 0 .98-.31 3.16 1.19A11 11 0 0 1 12 6.05c.98 0 1.95.13 2.86.38 2.18-1.5 3.16-1.19 3.16-1.19.63 1.59.23 2.77.11 3.07.75.81 1.2 1.84 1.2 3.11 0 4.45-2.71 5.43-5.29 5.72.42.36.79 1.06.79 2.14v3.26c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg></span><div><small>CONNECTION SETUP</small><h3 id="mcpConfigTitle">GitHub</h3><p id="mcpConfigSubtitle">OAuth · Official MCP</p></div></div>
+            <span class="mcp-memory-pill">Memory only</span>
+          </div>
+
+          <div id="mcpManualPanel">
+            <div class="mcp-config-fields">
+              <label>Name<input id="mcpName" required placeholder="External MCP" /></label>
+              <label>Transport<select id="mcpTransport">
+                <option value="streamable_http">streamable_http</option>
+                <option value="stdio">stdio</option>
+              </select></label>
+
+              <div id="mcpHttpFields" class="mcp-fields">
+                <label>Endpoint URL<input id="mcpUrl" placeholder="https://api.githubcopilot.com/mcp/" /></label>
+                <label>Access token <span id="mcpAuthHint" class="mcp-secret-note">Bearer token · kept in memory only</span><input id="mcpBearerToken" type="password" autocomplete="off" placeholder="Paste access token if required" /></label>
+              </div>
+              <div id="mcpStdioFields" class="mcp-fields hidden">
+                <label>Command<input id="mcpCommand" placeholder="docker" /></label>
+                <label>Args JSON<textarea id="mcpArgs" rows="3" placeholder='["run","-i","--rm",...]'></textarea></label>
+                <label>Env JSON <span class="mcp-secret-note">values stay in memory</span><textarea id="mcpEnv" rows="3" placeholder='{"TOKEN":"..."}'></textarea></label>
+              </div>
+            </div>
+            <div class="mcp-config-note"><span>🔒</span><p><strong>Human-controlled connection.</strong> Credentials stay in this local ArchBro process and are never exposed to WebMCP agents.</p></div>
+          </div>
+
+          <div id="mcpOAuthPanel" class="mcp-oauth-panel hidden">
+            <div class="mcp-oauth-hero">
+              <div id="mcpOAuthProviderIcon" class="mcp-oauth-provider-icon"></div>
+              <div><small>SECURE OAUTH CONNECTION</small><h3 id="mcpOAuthTitle">Connect provider</h3><p id="mcpOAuthDescription">A provider sign-in window will open. ArchBro receives the OAuth callback and keeps the token in backend memory.</p></div>
+            </div>
+            <div id="mcpOAuthReady" class="mcp-oauth-state hidden">
+              <span class="mcp-oauth-state-icon ready">✓</span>
+              <div><strong>Ready to connect</strong><p id="mcpOAuthRedirectReady"></p></div>
+            </div>
+            <div id="mcpGithubSetup" class="mcp-oauth-state setup hidden">
+              <span class="mcp-oauth-state-icon">!</span>
+              <div><strong>GitHub OAuth runtime unavailable</strong><p>ArchBro uses the official GitHub MCP OAuth flow with a loopback-only callback. Make sure Docker is running, then retry.</p></div>
+            </div>
+            <div id="mcpGoogleSetup" class="mcp-oauth-state setup hidden">
+              <span class="mcp-oauth-state-icon">!</span>
+              <div><strong>Google Drive prerequisite</strong><p id="mcpGoogleSetupText"></p></div>
+            </div>
+            <div id="mcpProviderSetup" class="mcp-oauth-state setup hidden">
+              <span class="mcp-oauth-state-icon">!</span>
+              <div><strong>Provider sign-in unavailable</strong><p id="mcpProviderSetupText"></p></div>
+            </div>
+            <div class="mcp-oauth-privacy"><span>🔒</span><p>Access and refresh tokens remain backend-only and memory-only. The browser and WebMCP agent never receive them.</p></div>
+          </div>
+
+          <div class="mcp-config-actions">
+            <button class="btn secondary" type="button" data-close-dialog="mcpConnectionsDialog">Cancel</button>
+            <button id="mcpManualConnectBtn" class="btn primary" type="submit">Connect MCP</button>
+            <button id="mcpOAuthConnectBtn" class="btn primary hidden" type="button">Continue with provider</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
   <div id="toast" class="toast hidden"></div>
   <script src="/runtime-config.js"></script>
   <script src="/static/prototype.js?v=20260829-4"></script>
-  <script type="module" src="/static/app.js?v=20260830-4"></script>
-  <script type="module" src="/static/archbro-webmcp.js?v=competition-20260828-authz-atomic"></script>
+  <script type="module" src="/static/app.js?v=20260830-webmcp-host-compat"></script>
+  <script type="module" src="/static/archbro-webmcp.js?v=20260830-webmcp-host-compat"></script>
 </body>
 </html>

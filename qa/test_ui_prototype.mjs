@@ -235,7 +235,7 @@ test('goal refinement ask composer exposes a reduced-motion-safe vibrant full-pe
     readFile(new URL('styles.css', webRoot), 'utf8'),
   ]);
   assert.match(html, /id="onboardingAsk"/);
-  assert.match(html, /app\.js\?v=20260830-4/);
+  assert.match(html, /app\.js\?v=20260830-mcp-graph/);
   assert.match(html, /styles\.css\?v=20260830-5/);
   assert.match(js, /onboardingAsk.*classList\.toggle\('rainbow-active'/s);
   assert.match(css, /\.onboarding-ask\.rainbow-active/);

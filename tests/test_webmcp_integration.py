@@ -13,14 +13,26 @@ def make_client() -> TestClient:
     return TestClient(build_app(repo, FakeModelProvider()))
 
 
+def test_real_host_acceptance_invokes_discovered_ping_before_page_api_diagnostics():
+    root = Path(__file__).resolve().parents[1]
+    runbook = (root / "docs" / "CODEX_WEBMCP_ACCEPTANCE.md").read_text(encoding="utf-8")
+    submission = (root / "docs" / "SUBMISSION.md").read_text(encoding="utf-8")
+
+    assert "https://archbro.hoson.xyz/?mode=webmcp" in runbook
+    assert "Immediately invoke `archbro_ping` through the host Site Tools surface." in runbook
+    assert "Do **not** inspect `document.modelContext` as a prerequisite" in runbook
+    assert "Do **not** use `REAL_HOST_BLOCKED` merely because page JavaScript reports `document.modelContext`" in runbook
+    assert "docs/CODEX_WEBMCP_ACCEPTANCE.md" in submission
+
+
 def test_webmcp_asset_uses_current_imperative_document_model_context_surface():
     client = make_client()
 
     index = client.get("/")
     assert index.status_code == 200
     assert 'src="/runtime-config.js"' in index.text
-    assert 'type="module" src="/static/app.js?v=20260830-4"' in index.text
-    assert 'type="module" src="/static/archbro-webmcp.js?v=competition-20260828-authz-atomic"' in index.text
+    assert 'type="module" src="/static/app.js?v=20260830-webmcp-host-compat"' in index.text
+    assert 'type="module" src="/static/archbro-webmcp.js?v=20260830-webmcp-host-compat"' in index.text
 
     module = client.get("/static/archbro-webmcp.js")
     assert module.status_code == 200
@@ -28,6 +40,7 @@ def test_webmcp_asset_uses_current_imperative_document_model_context_surface():
     app = client.get("/static/app.js")
     assert app.status_code == 200
     assert "WEBMCP_AGENT_MODE" in app.text
+    assert "window.location.hostname === 'archbro.hoson.xyz'" in app.text
     assert "Built-in architecture generation is disabled in WebMCP Agent Mode." in app.text
     brief_block = app.text.split("async getProjectBrief()", 1)[1].split("async getDecisionContext()", 1)[0]
     assert "await refresh();" in brief_block
@@ -42,7 +55,8 @@ def test_webmcp_asset_uses_current_imperative_document_model_context_surface():
     ):
         method_block = app.text.split(f"async {method}", 1)[1].split("\n  async ", 1)[0]
         assert "await ensureAppInitialized();" in method_block
-    assert "navigator.modelContext" not in module.text
+    assert "globalThis.navigator?.modelContext" in module.text
+    assert "Object.defineProperty(globalThis.document, 'modelContext'" in module.text
     assert "provideContext" not in module.text
 
     expected = [

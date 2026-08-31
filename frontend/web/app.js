@@ -2,7 +2,7 @@ import {getFirebaseIdToken} from './firebase-auth.js';
 
 const prototype = window.ArchbroPrototype;
 const storedProjectId = localStorage.getItem('archbro-project-id');
-const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp';
+const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp' || window.location.hostname === 'archbro.hoson.xyz';
 
 function loadExpandedProjectIds(storage = localStorage) {
   try {
@@ -23,6 +23,9 @@ const state = {
   project: null,
   tasks: [],
   architecture: null,
+  diagram: null,
+  diagramError: null,
+  graphFocusMode: 'connected',
   proposals: [],
   activity: [],
   lastRun: null,
@@ -61,6 +64,12 @@ state.experience = {
   dialogReturnFocus: new Map(),
   authClosingReturnFocus: true,
 };
+
+let activeMcpOAuthPopup = null;
+let mcpOAuthStatusRequestId = 0;
+const MCP_PROVIDER_STATUS_TTL_MS = 5000;
+const mcpProviderStatusCache = new Map();
+const handledMcpOAuthPopups = new WeakSet();
 
 const $ = (id) => document.getElementById(id);
 const views = {
@@ -376,6 +385,9 @@ async function openPersonalWorkspace() {
   state.project = null;
   state.tasks = [];
   state.architecture = null;
+  state.diagram = null;
+  state.diagramError = null;
+  state.graphFocusMode = 'connected';
   state.proposals = [];
   state.lastRun = null;
   state.selectedNode = null;
@@ -624,6 +636,68 @@ function wireProjectTree() {
   });
 }
 
+function normalizeDiagramGraph(payload) {
+  const diagram = payload?.diagram || payload?.diagram_view || payload?.diagramView;
+  const layout = payload?.positioned_graph || payload?.positionedGraph || payload?.layout;
+  if (!diagram || !layout) throw new Error('Positioned diagram response must include DiagramView and PositionedGraph.');
+  if (diagram.diagram_version !== 'archbro.diagram.v1') throw new Error(`Unsupported diagram contract: ${diagram.diagram_version || 'missing'}`);
+  if (layout.layout_version !== 'archbro.layout.v1') throw new Error(`Unsupported layout contract: ${layout.layout_version || 'missing'}`);
+  if (Number(diagram.architecture_version) !== Number(layout.architecture_version)) throw new Error('Diagram and layout architecture versions do not match.');
+
+  const positionedById = new Map((layout.nodes || []).map((node) => [node.node_id, node]));
+  const nodes = (diagram.nodes || []).map((node) => {
+    const positioned = positionedById.get(node.id);
+    if (!positioned) throw new Error(`PositionedGraph is missing node ${node.id}.`);
+    const numbers = [positioned.x, positioned.y, positioned.width, positioned.height].map(Number);
+    if (numbers.some((value) => !Number.isFinite(value)) || numbers[2] <= 0 || numbers[3] <= 0) throw new Error(`Invalid positioned node ${node.id}.`);
+    return {
+      ...node,
+      x: numbers[0],
+      y: numbers[1],
+      width: numbers[2],
+      height: numbers[3],
+      layer: Number(positioned.layer || 0),
+      order: Number(positioned.order || 0),
+      hierarchyPath: positioned.hierarchy_path || [],
+    };
+  });
+  if (nodes.length !== positionedById.size) throw new Error('DiagramView and PositionedGraph node sets do not match.');
+
+  const routesById = new Map((layout.edges || []).map((edge) => [edge.edge_id, edge]));
+  const edges = (diagram.edges || []).map((edge) => {
+    const route = routesById.get(edge.id);
+    if (!route) throw new Error(`PositionedGraph is missing edge ${edge.id}.`);
+    if (route.source !== edge.source || route.target !== edge.target) throw new Error(`Edge route endpoints do not match DiagramView for ${edge.id}.`);
+    const points = (route.points || []).map((point) => ({x: Number(point.x), y: Number(point.y)}));
+    if (points.length < 2 || points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) throw new Error(`Invalid route points for ${edge.id}.`);
+    return {...edge, points, routing: route.routing || '', order: Number(route.order || 0)};
+  });
+  if (edges.length !== routesById.size) throw new Error('DiagramView and PositionedGraph edge sets do not match.');
+
+  const width = Number(layout.width);
+  const height = Number(layout.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('PositionedGraph requires positive graph dimensions.');
+  return {
+    diagramVersion: diagram.diagram_version,
+    layoutVersion: layout.layout_version,
+    architectureVersion: Number(diagram.architecture_version),
+    summary: diagram.summary || '',
+    width,
+    height,
+    nodes: nodes.sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)),
+    edges: edges.sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)),
+  };
+}
+
+async function loadArchitectureDiagram(projectId, architecture) {
+  if (!architecture?.components?.length) return null;
+  const embedded = architecture.diagram && (architecture.positioned_graph || architecture.layout)
+    ? architecture
+    : null;
+  const payload = embedded || await api(`/projects/${projectId}/architecture/diagram`);
+  return normalizeDiagramGraph(payload);
+}
+
 async function loadProjectContext(projectId) {
   const [project, tasks, architecture, proposals, activity] = await Promise.all([
     api(`/projects/${projectId}`),
@@ -632,7 +706,14 @@ async function loadProjectContext(projectId) {
     api(`/projects/${projectId}/architecture/proposals`),
     api(`/projects/${projectId}/events?limit=12`),
   ]);
-  return {project, tasks, architecture, proposals, activity};
+  let diagram = null;
+  let diagramError = null;
+  try {
+    diagram = await loadArchitectureDiagram(projectId, architecture);
+  } catch (err) {
+    diagramError = err?.message || String(err);
+  }
+  return {project, tasks, architecture, diagram, diagramError, proposals, activity};
 }
 
 async function selectProject(projectId) {
@@ -652,6 +733,7 @@ async function selectProject(projectId) {
       lastRun: null,
       selectedNode: null,
       drillNodeId: null,
+      graphFocusMode: 'connected',
       selectedTaskId: null,
       selectedProposalId: null,
       currentView: 'overview',
@@ -1096,6 +1178,9 @@ async function deleteCurrentProject() {
     state.project = null;
     state.tasks = [];
     state.architecture = null;
+  state.diagram = null;
+  state.diagramError = null;
+  state.graphFocusMode = 'connected';
     state.proposals = [];
     state.lastRun = null;
     state.selectedNode = null;
@@ -1275,6 +1360,9 @@ function resetEphemeralSessionState() {
   state.project = null;
   state.tasks = [];
   state.architecture = null;
+  state.diagram = null;
+  state.diagramError = null;
+  state.graphFocusMode = 'connected';
   state.proposals = [];
   state.projectSnapshots = new Map();
   state.taskUpdating.clear();
@@ -1395,7 +1483,7 @@ function render() {
   $('archVersion').textContent = `Version ${state.architecture.version}`;
   $('archState').textContent = state.architecture.components.length ? 'Machine-readable source of truth' : 'Goal saved; Architecture v1 pending';
   $('needsCount').textContent = `${needsYou.length} item${needsYou.length === 1 ? '' : 's'}`;
-  $('graphVersion').textContent = `v${state.architecture.version}`;
+  $('graphVersion').textContent = `v${state.diagram?.architectureVersion ?? state.architecture.version}`;
   $('graphReviewState').textContent = pending.length ? `${pending.length} item${pending.length === 1 ? '' : 's'} need review` : 'Aligned';
 
   const aligned = state.architecture.components.length && !pending.length;
@@ -1645,230 +1733,211 @@ function renderArchitectureDrilldown(parent) {
   updateInstructionContext();
 }
 
+function diagramNodeByComponentId(componentId) {
+  return (state.diagram?.nodes || []).find((node) => node.component_id === componentId) || null;
+}
+
+function diagramNodeById(nodeId) {
+  return (state.diagram?.nodes || []).find((node) => node.id === nodeId) || null;
+}
+
+function diagramNodeHealth(node) {
+  const value = node?.status?.health || 'UNKNOWN';
+  const visual = {
+    BLOCKED: {key:'blocked', label:'Blocked', needsAttention:true},
+    CHANGE_PENDING: {key:'review', label:'Review', needsAttention:true},
+    IN_PROGRESS: {key:'active', label:'Active', needsAttention:false},
+    DONE: {key:'healthy', label:'Done', needsAttention:false},
+    TODO: {key:'planned', label:'Todo', needsAttention:false},
+    PLANNED: {key:'planned', label:'Planned', needsAttention:false},
+    UNKNOWN: {key:'planned', label:'Unknown', needsAttention:false},
+  }[value] || {key:'planned', label:String(value), needsAttention:false};
+  return {
+    ...visual,
+    detail: (node?.supporting_text || []).join(' · ') || node?.status?.canonical_status || 'No additional status evidence.',
+  };
+}
+
+function wrapGraphText(text, maxChars, maxLines = 2) {
+  const words = String(text || '').trim().split(' ').filter(Boolean);
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    if (lines.length >= maxLines) break;
+    const next = line ? `${line} ${word}` : word;
+    if (line && next.length > maxChars) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  if (lines.length === maxLines && lines.join(' ').length < String(text || '').length - 2) lines[maxLines - 1] = `${lines[maxLines - 1].replace(/[.…]+$/, '')}…`;
+  return lines;
+}
+
+function graphFocusState(selectedNode) {
+  if (!selectedNode || state.graphFocusMode === 'all') return null;
+  const nodes = new Set([selectedNode.id]);
+  const edges = new Set();
+  const authoredEdges = state.diagram?.edges || [];
+  if (state.graphFocusMode === 'connected') {
+    authoredEdges.forEach((edge) => {
+      if (edge.source === selectedNode.id || edge.target === selectedNode.id) {
+        edges.add(edge.id);
+        nodes.add(edge.source);
+        nodes.add(edge.target);
+      }
+    });
+    return {nodes, edges};
+  }
+
+  const upstream = state.graphFocusMode === 'upstream';
+  const visited = new Set([selectedNode.id]);
+  const queue = [selectedNode.id];
+  while (queue.length) {
+    const current = queue.shift();
+    authoredEdges.forEach((edge) => {
+      const matches = upstream ? edge.target === current : edge.source === current;
+      if (!matches) return;
+      const peer = upstream ? edge.source : edge.target;
+      edges.add(edge.id);
+      nodes.add(peer);
+      if (!visited.has(peer)) {
+        visited.add(peer);
+        queue.push(peer);
+      }
+    });
+  }
+  return {nodes, edges};
+}
+
 function renderGraph() {
-  const a = state.architecture;
   const canvas = $('graphCanvas');
-  if (!a.components.length) {
-    canvas.innerHTML = '<div class="architecture-empty-state"><div><strong>No architecture yet</strong><p class="muted">Architecture v1 has not completed.</p></div></div>';
+  if (!state.architecture?.components?.length) {
+    canvas.innerHTML = '<div class="graph-empty"><div><strong>No architecture yet</strong><p class="muted">Architecture v1 has not completed.</p></div></div>';
+    renderSelectedNode();
     renderLists();
     return;
   }
-  if (state.drillNodeId && !findArchitectureNode(state.drillNodeId)) state.drillNodeId = null;
-  const drillNode = findArchitectureNode(state.drillNodeId);
-  if (drillNode && (drillNode.children || []).length) {
-    renderArchitectureDrilldown(drillNode);
+  if (!state.diagram) {
+    canvas.innerHTML = `<div class="graph-empty"><div><strong>Positioned diagram unavailable</strong><p class="muted">${escapeHtml(state.diagramError || 'The backend has not published the positioned Diagram View for this architecture version.')}</p></div></div>`;
+    $('graphReviewState').textContent = 'Diagram unavailable';
+    renderSelectedNode();
+    renderLists();
     return;
   }
-  const nodeW = 224, nodeH = 148, gapX = 78, gapY = 42, padX = 42, padY = 72;
-  const byId = new Map(a.components.map((c) => [c.id, c]));
-  const indegree = new Map(a.components.map((c) => [c.id, 0]));
-  const outgoing = new Map(a.components.map((c) => [c.id, []]));
-  a.relationships.forEach((r) => {
-    if (!byId.has(r.source) || !byId.has(r.target) || r.source === r.target) return;
-    outgoing.get(r.source).push(r.target);
-    indegree.set(r.target, (indegree.get(r.target) || 0) + 1);
-  });
 
-  const depth = new Map(a.components.map((c) => [c.id, 0]));
-  const queue = a.components.filter((c) => indegree.get(c.id) === 0).map((c) => c.id);
-  const visited = new Set();
-  while (queue.length) {
-    const id = queue.shift();
-    if (visited.has(id)) continue;
-    visited.add(id);
-    (outgoing.get(id) || []).forEach((target) => {
-      depth.set(target, Math.max(depth.get(target) || 0, (depth.get(id) || 0) + 1));
-      indegree.set(target, indegree.get(target) - 1);
-      if (indegree.get(target) === 0) queue.push(target);
-    });
-  }
-  a.components.filter((c) => !visited.has(c.id)).forEach((c, i) => depth.set(c.id, i % Math.max(1, Math.ceil(Math.sqrt(a.components.length)))));
+  const diagram = state.diagram;
+  const selected = diagramNodeByComponentId(state.selectedNode);
+  if (state.selectedNode && !selected) state.selectedNode = null;
+  const focus = graphFocusState(selected);
+  const nodeById = new Map(diagram.nodes.map((node) => [node.id, node]));
+  const attentionNodes = diagram.nodes.filter((node) => diagramNodeHealth(node).needsAttention);
+  const activeTaskCount = state.tasks.filter((task) => task.status === 'IN_PROGRESS').length;
 
-  const layerCount = Math.max(...[...depth.values()]) + 1;
-  const layers = Array.from({length: layerCount}, () => []);
-  a.components.forEach((c) => layers[depth.get(c.id) || 0].push(c));
-  const maxRows = Math.max(1, ...layers.map((layer) => layer.length));
-  const maxLayerHeight = maxRows * nodeH + Math.max(0, maxRows - 1) * gapY;
-  const W = Math.max(780, padX * 2 + layerCount * nodeW + Math.max(0, layerCount - 1) * gapX);
-  const H = Math.max(470, 96 + maxLayerHeight + 52);
-  const positions = {};
-  layers.forEach((layer, layerIndex) => {
-    const layerHeight = layer.length * nodeH + Math.max(0, layer.length - 1) * gapY;
-    const startY = 78 + (maxLayerHeight - layerHeight) / 2;
-    layer.forEach((c, row) => {
-      positions[c.id] = {x: padX + layerIndex * (nodeW + gapX), y: startY + row * (nodeH + gapY), c};
-    });
-  });
-
-  const wrap = (text, maxChars, maxLines = 2) => {
-    const words = String(text || '').split(/\s+/).filter(Boolean);
-    const lines = [];
-    let line = '';
-    words.forEach((word) => {
-      if (lines.length >= maxLines) return;
-      const next = line ? `${line} ${word}` : word;
-      if (next.length > maxChars && line) {
-        lines.push(line);
-        line = word;
-      } else line = next;
-    });
-    if (line && lines.length < maxLines) lines.push(line);
-    if (words.length && lines.length === maxLines && lines.join(' ').length < String(text).length - 2) {
-      lines[maxLines - 1] = `${lines[maxLines - 1].replace(/[.…]+$/, '')}…`;
-    }
-    return lines;
-  };
-  const palette = (c) => {
-    const text = `${c.type} ${c.name}`;
-    if (/agent|model|\bai\b|adk|orchestrat/i.test(text)) return {fill:'#F4F1FB', stroke:'#B8AADD', accent:'#5A49B8', tag:'#CBC3E3'};
-    if (/data|database|storage|state|sql|firestore/i.test(text)) return {fill:'#F8F7F4', stroke:'#D8D4CC', accent:'#5E5A53', tag:'#EEECE7'};
-    if (/front|web|ui|client/i.test(text)) return {fill:'#F2F7FF', stroke:'#3B82F6', accent:'#245FAE', tag:'#E4EFFF'};
-    if (/cloud|infra|deploy|service/i.test(text)) return {fill:'#FAF9F7', stroke:'#DDD8CF', accent:'#615C54', tag:'#F1EEE8'};
-    return {fill:'#FFFFFF', stroke:'#D8D5DD', accent:'#625E68', tag:'#F2F0F3'};
-  };
-
-  const layerTitle = (layer, index) => {
-    const text = layer.map((c) => `${c.type} ${c.name}`).join(' ');
-    if (/front|web|ui|client/i.test(text)) return 'EXPERIENCE';
-    if (/agent|model|\bai\b|adk|orchestrat/i.test(text)) return 'AGENT & ORCHESTRATION';
-    if (/data|database|storage|state|sql|firestore/i.test(text)) return 'DATA & STATE';
-    if (/cloud|infra|deploy/i.test(text)) return 'CLOUD & INFRA';
-    if (/domain|search|recommend|listing|catalog|service|backend|api/i.test(text)) return 'DOMAIN & SERVICES';
-    return `LAYER ${index + 1}`;
-  };
-  const layerHeaders = layers.map((layer, index) => {
-    const x = padX + index * (nodeW + gapX);
-    return `<g><text x="${x + nodeW / 2}" y="38" text-anchor="middle" font-size="9.5" font-weight="850" letter-spacing="1.1" fill="#6F6B78">${escapeHtml(layerTitle(layer, index))}</text><line x1="${x}" y1="51" x2="${x + nodeW}" y2="51" stroke="#E6E3EA" stroke-width="1"/></g>`;
+  const hierarchy = diagram.nodes.map((node) => {
+    if (!node.parent_id) return '';
+    const parent = nodeById.get(node.parent_id);
+    if (!parent) return '';
+    return `<line class="graph-hierarchy" x1="${parent.x + parent.width / 2}" y1="${parent.y + parent.height / 2}" x2="${node.x + node.width / 2}" y2="${node.y + node.height / 2}"/>`;
   }).join('');
 
-  const edges = a.relationships.map((r, index) => {
-    const s = positions[r.source], t = positions[r.target];
-    if (!s || !t) return '';
-    const sx = s.x + nodeW, sy = s.y + nodeH / 2, tx = t.x, ty = t.y + nodeH / 2;
-    const sameOrBack = tx <= sx;
-    const bend = sameOrBack ? Math.max(sx, tx) + 42 + index * 4 : (sx + tx) / 2;
-    const path = sameOrBack
-      ? `M ${sx} ${sy} C ${bend} ${sy}, ${bend} ${ty}, ${tx} ${ty}`
-      : `M ${sx} ${sy} C ${bend} ${sy}, ${bend} ${ty}, ${tx} ${ty}`;
-    const label = escapeHtml(r.relationship_type || 'relates to');
-    const lx = sameOrBack ? bend : (sx + tx) / 2;
-    const ly = (sy + ty) / 2 - 9;
-    const labelW = Math.max(54, Math.min(128, label.length * 6.2 + 18));
-    return `<g class="graph-edge"><path d="${path}" fill="none" stroke="#9aa7b7" stroke-width="2" marker-end="url(#arrow)"/><rect x="${lx - labelW / 2}" y="${ly - 11}" width="${labelW}" height="22" rx="11" fill="#ffffff" stroke="#e2e8f0"/><text x="${lx}" y="${ly + 4}" text-anchor="middle" font-size="9.5" font-weight="700" fill="#667588">${label}</text></g>`;
+  const edges = diagram.edges.map((edge) => {
+    const points = edge.points;
+    const d = `M ${points[0].x} ${points[0].y} ${points.slice(1).map((point) => `L ${point.x} ${point.y}`).join(' ')}`;
+    const highlighted = !focus || focus.edges.has(edge.id);
+    const anchor = points[Math.floor((points.length - 1) / 2)];
+    const label = edge.label || edge.semantic_type || '';
+    return `<g class="graph-edge${highlighted ? ' is-focused' : ' is-dimmed'}" data-edge="${escapeHtml(edge.id)}"><path d="${d}" marker-end="url(#arrow)"/>${label ? `<text x="${anchor.x}" y="${anchor.y - 7}" text-anchor="middle">${escapeHtml(label)}</text>` : ''}</g>`;
   }).join('');
 
-  const nodes = a.components.map((c) => {
-    const p = positions[c.id];
-    const selected = state.selectedNode === c.id;
-    const baseColors = palette(c);
-    const health = architectureHealth(c);
-    const colors = healthVisual(health, baseColors);
-    const nameLines = wrap(c.name, 24, 2);
-    const responsibilityLines = wrap(c.responsibility, 32, 2);
-    const nameText = nameLines.map((line, i) => `<text x="${p.x + 18}" y="${p.y + 49 + i * 17}" font-size="13.5" font-weight="800" fill="#1D1D1F">${escapeHtml(line)}</text>`).join('');
-    const responsibilityText = responsibilityLines.map((line, i) => `<text x="${p.x + 18}" y="${p.y + 91 + i * 14}" font-size="10.2" fill="#64748b">${escapeHtml(line)}</text>`).join('');
-    const type = escapeHtml(c.type || 'Component');
-    const status = escapeHtml(health.label);
-    const componentTasks = state.tasks.filter((t) => t.related_component === c.id);
-    const doneTasks = componentTasks.filter((t) => t.status === 'DONE').length;
-    const activeTasks = componentTasks.filter((t) => t.status === 'IN_PROGRESS').length;
-    const childCount = (c.children || []).length;
-    const taskText = health.needsAttention
-      ? health.detail
-      : childCount
-      ? `${health.detail} · ${childCount} detail${childCount === 1 ? '' : 's'}`
-      : componentTasks.length
-      ? `${doneTasks}/${componentTasks.length} done${activeTasks ? ` · ${activeTasks} active` : ''}`
-      : health.detail;
-    const progress = componentTasks.length ? Math.round((doneTasks / componentTasks.length) * 100) : 0;
-    const visibleProgress = progress || (activeTasks ? 18 : 0);
-    const clickable = health.needsAttention || childCount > 0;
-    return `<g class="node-card health-${health.key}${health.needsAttention ? ' attention' : ''}" data-node="${escapeHtml(c.id)}" data-clickable="${clickable}">
-      <rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="16" fill="${colors.fill}" stroke="${selected ? '#4D416F' : colors.stroke}" stroke-width="${selected ? 2.8 : health.needsAttention ? 2.2 : 1.5}"/>
-      <rect x="${p.x + 14}" y="${p.y + 13}" width="${Math.min(112, type.length * 6 + 18)}" height="21" rx="10.5" fill="${baseColors.tag}"/>
-      <text x="${p.x + 24}" y="${p.y + 27}" font-size="9.2" font-weight="800" fill="${baseColors.accent}">${type}</text>
-      <circle cx="${p.x + nodeW - 70}" cy="${p.y + 23.5}" r="4" fill="${health.key === 'healthy' ? '#237A57' : health.key === 'active' ? '#8B5CF6' : colors.accent}"/>
-      <text x="${p.x + nodeW - 60}" y="${p.y + 27}" font-size="8.8" font-weight="800" fill="${health.needsAttention ? colors.accent : '#667588'}">${status}</text>
+  const nodes = diagram.nodes.map((node) => {
+    const health = diagramNodeHealth(node);
+    const isSelected = state.selectedNode === node.component_id;
+    const highlighted = !focus || focus.nodes.has(node.id);
+    const nameLines = wrapGraphText(node.label, Math.max(14, Math.floor((node.width - 34) / 8)), 2);
+    const responsibilityLines = wrapGraphText(node.responsibility, Math.max(20, Math.floor((node.width - 34) / 6.5)), 2);
+    const nameText = nameLines.map((line, index) => `<text class="node-name" x="${node.x + 18}" y="${node.y + 55 + index * 17}">${escapeHtml(line)}</text>`).join('');
+    const responsibilityText = responsibilityLines.map((line, index) => `<text class="node-responsibility" x="${node.x + 18}" y="${node.y + 96 + index * 14}">${escapeHtml(line)}</text>`).join('');
+    const kind = escapeHtml(String(node.semantic_kind || 'COMPONENT'));
+    const type = escapeHtml(node.semantic_type || 'component');
+    return `<g class="node-card health-${health.key}${isSelected ? ' selected' : ''}${highlighted ? ' is-focused' : ' is-dimmed'}" data-node="${escapeHtml(node.id)}" data-component="${escapeHtml(node.component_id)}" role="button" tabindex="0">
+      <rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/>
+      <text class="node-kind" x="${node.x + 18}" y="${node.y + 25}">${kind} · ${type}</text>
+      <circle class="node-health-dot" cx="${node.x + node.width - 20}" cy="${node.y + 21}" r="4.5"/>
       ${nameText}${responsibilityText}
-      <text x="${p.x + 18}" y="${p.y + 124}" font-size="8.8" font-weight="750" fill="#738095">${escapeHtml(taskText)}</text>
-      <rect x="${p.x + 18}" y="${p.y + 133}" width="${nodeW - 36}" height="5" rx="2.5" fill="#e8edf3"/>
-      <rect x="${p.x + 18}" y="${p.y + 133}" width="${Math.max(0, (nodeW - 36) * visibleProgress / 100)}" height="5" rx="2.5" fill="${colors.accent}"/>
+      <text class="node-status" x="${node.x + 18}" y="${node.y + node.height - 13}">${escapeHtml(health.label)} · depth ${node.depth}</text>
     </g>`;
   }).join('');
-  const activeTaskCount = state.tasks.filter((t) => t.status === 'IN_PROGRESS').length;
-  const attentionRoots = a.components.filter((component) => architectureHealth(component).needsAttention);
-  const interactiveNodes = a.components.filter((component) => architectureHealth(component).needsAttention || (component.children || []).length);
-  const nodeControls = interactiveNodes.length
-    ? `<div class="graph-node-controls" role="group" aria-label="Interactive architecture areas"><span>Architecture controls</span>${interactiveNodes.map((node) => `<span class="graph-node-control"><button type="button" data-graph-node="${escapeHtml(node.id)}" aria-pressed="${state.selectedNode === node.id}">Use ${escapeHtml(node.name)} as Agent context · ${escapeHtml(architectureHealth(node).label)}</button>${(node.children || []).length ? `<button type="button" data-graph-drill="${escapeHtml(node.id)}">Inspect ${escapeHtml(node.name)} details</button>` : ''}</span>`).join('')}</div>`
-    : '';
-  $('graphReviewState').textContent = attentionRoots.length ? `${attentionRoots.length} area${attentionRoots.length === 1 ? '' : 's'} need attention` : 'All top-level areas aligned';
-  canvas.innerHTML = `<div class="graph-meta"><span>${a.components.length} top-level areas</span><span>${a.relationships.length} relationships</span><span>${activeTaskCount} task${activeTaskCount === 1 ? '' : 's'} active</span><span>Accepted v${a.version}</span>${attentionRoots.length ? `<span class="graph-meta-attention">${attentionRoots.length} need attention</span>` : '<span class="graph-meta-ok">No action needed</span>'}</div>${nodeControls}<svg class="architecture-graph-svg" viewBox="0 0 ${W} ${H}" width="${Math.min(W, 860)}" height="${H}" aria-hidden="true" focusable="false"><defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8 Z" fill="#8b98a9"/></marker></defs>${layerHeaders}${edges}${nodes}</svg>`;
-  canvas.querySelectorAll('[data-node][data-clickable="true"]').forEach((el) => el.addEventListener('click', () => {
-    const node = findArchitectureNode(el.dataset.node);
-    if (!node) return;
-    state.selectedNode = node.id;
-    state.selectedTaskId = null;
-    state.selectedProposalId = null;
-    if ((node.children || []).length) state.drillNodeId = node.id;
+
+  $('graphReviewState').textContent = attentionNodes.length
+    ? `${attentionNodes.length} node${attentionNodes.length === 1 ? '' : 's'} need attention`
+    : 'All projected nodes aligned';
+  canvas.innerHTML = `<div class="graph-meta"><span>${diagram.nodes.length} nodes</span><span>${diagram.edges.length} authored relationships</span><span>${activeTaskCount} task${activeTaskCount === 1 ? '' : 's'} active</span><span>Accepted v${diagram.architectureVersion}</span>${attentionNodes.length ? `<span class="graph-meta-attention">${attentionNodes.length} need attention</span>` : '<span class="graph-meta-ok">No action needed</span>'}</div><svg class="living-graph-svg" viewBox="0 0 ${diagram.width} ${diagram.height}" role="img" aria-label="Accepted project architecture graph"><defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8 Z"/></marker></defs>${hierarchy}${edges}${nodes}</svg>`;
+
+  const focusNode = (el) => {
+    state.selectedNode = el.dataset.component;
+    state.drillNodeId = null;
+    state.graphFocusMode = 'connected';
     renderGraph();
-  }));
-  canvas.querySelectorAll('[data-graph-node]').forEach((button) => button.addEventListener('click', () => {
-    const nodeId = button.dataset.graphNode;
-    if (!findArchitectureNode(nodeId)) return;
-    state.selectedNode = nodeId;
-    state.selectedTaskId = null;
-    state.selectedProposalId = null;
-    renderGraph();
-    setTimeout(() => document.querySelector(`[data-graph-node="${CSS.escape(nodeId)}"]`)?.focus(), 0);
-  }));
-  canvas.querySelectorAll('[data-graph-drill]').forEach((button) => button.addEventListener('click', () => {
-    const nodeId = button.dataset.graphDrill;
-    const node = findArchitectureNode(nodeId);
-    if (!node || !(node.children || []).length) return;
-    state.selectedNode = nodeId;
-    state.selectedTaskId = null;
-    state.selectedProposalId = null;
-    state.drillNodeId = nodeId;
-    renderGraph();
-    setTimeout(() => document.querySelector('.drill-back')?.focus(), 0);
-  }));
+  };
+  canvas.querySelectorAll('[data-node]').forEach((el) => {
+    el.addEventListener('click', () => focusNode(el));
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        focusNode(el);
+      }
+    });
+  });
   renderSelectedNode();
   renderLists();
   updateInstructionContext();
 }
 
 function renderSelectedNode() {
-  const c = findArchitectureNode(state.selectedNode);
-  if (!c) {
-    const attentionRoots = (state.architecture?.components || []).filter((component) => architectureHealth(component).needsAttention);
-    $('selectedNode').innerHTML = attentionRoots.length
-      ? `<small>SYSTEM HEALTH</small><h3>${attentionRoots.length} area${attentionRoots.length === 1 ? '' : 's'} need attention</h3><p>Only the colored problem areas require inspection. Click one to locate the blocked child, task, dependency, or architecture decision.</p>`
-      : '<small>SYSTEM HEALTH</small><h3>Everything is aligned</h3><p>No top-level area needs your attention. You can ignore the graph until a boundary changes, a task blocks, or the Agent raises an architecture review.</p>';
-    $('nodeEvidence').innerHTML = attentionRoots.length
-      ? `<p><strong>What should I inspect?</strong></p><p class="muted">${attentionRoots.map((root) => `${escapeHtml(root.name)} — ${escapeHtml(architectureHealth(root).detail)}`).join('<br>')}</p>`
-      : '<p><strong>No action needed</strong></p><p class="muted">Healthy areas stay quiet. Human attention is reserved for blocked work or architecture decisions.</p>';
+  const c = diagramNodeByComponentId(state.selectedNode);
+  const diagram = state.diagram;
+  if (!c || !diagram) {
+    const attentionNodes = (diagram?.nodes || []).filter((node) => diagramNodeHealth(node).needsAttention);
+    $('selectedNode').innerHTML = attentionNodes.length
+      ? `<small>SYSTEM HEALTH</small><h3>${attentionNodes.length} node${attentionNodes.length === 1 ? '' : 's'} need attention</h3><p>Select a node to inspect its authored relationships, hierarchy, responsibility, and projected health.</p>`
+      : '<small>SYSTEM HEALTH</small><h3>Everything is aligned</h3><p>Select any node to focus the graph. Upstream and downstream views follow authored relationships only.</p>';
+    $('nodeEvidence').innerHTML = state.diagramError
+      ? `<p><strong>Diagram unavailable</strong></p><p class="muted">${escapeHtml(state.diagramError)}</p>`
+      : attentionNodes.length
+      ? `<p><strong>What should I inspect?</strong></p><p class="muted">${attentionNodes.map((node) => `${escapeHtml(node.label)} — ${escapeHtml(diagramNodeHealth(node).detail)}`).join('<br>')}</p>`
+      : '<p><strong>No action needed</strong></p><p class="muted">Health is projected by the backend Diagram View; the renderer does not infer architecture semantics.</p>';
     return;
   }
-  const health = architectureHealth(c);
-  const ids = new Set(descendantArchitectureIds(c));
-  const incoming = state.architecture.relationships.filter((r) => r.target === c.id);
-  const outgoing = state.architecture.relationships.filter((r) => r.source === c.id);
-  const linkedTasks = state.tasks.filter((t) => t.related_component && ids.has(t.related_component));
-  const connectionLine = (r, direction) => {
-    const peerId = direction === 'in' ? r.source : r.target;
-    const peer = findArchitectureNode(peerId);
-    return `<li><strong>${direction === 'in' ? 'From' : 'To'} ${escapeHtml(peer?.name || peerId)}</strong><span>${escapeHtml(r.relationship_type)}${r.description ? ` · ${escapeHtml(r.description)}` : ''}</span></li>`;
+
+  const health = diagramNodeHealth(c);
+  const incoming = diagram.edges.filter((edge) => edge.target === c.id);
+  const outgoing = diagram.edges.filter((edge) => edge.source === c.id);
+  const children = diagram.nodes.filter((node) => node.parent_id === c.id);
+  const parent = c.parent_id ? diagramNodeById(c.parent_id) : null;
+  const linkedTasks = state.tasks.filter((task) => task.related_component === c.component_id);
+  const connectionLine = (edge, direction) => {
+    const peerId = direction === 'in' ? edge.source : edge.target;
+    const peer = diagramNodeById(peerId);
+    return `<li><strong>${direction === 'in' ? 'From' : 'To'} ${escapeHtml(peer?.label || peerId)}</strong><span>${escapeHtml(edge.semantic_type)}${edge.supporting_text ? ` · ${escapeHtml(edge.supporting_text)}` : ''}</span></li>`;
   };
-  const childSummary = (c.children || []).length ? `<div class="component-children-summary"><strong>${c.children.length} detailed area${c.children.length === 1 ? '' : 's'}</strong>${c.children.map((child) => { const childHealth = architectureHealth(child); return `<span class="health-${childHealth.key}">${escapeHtml(child.name)} · ${escapeHtml(childHealth.label)}</span>`; }).join('')}</div>` : '';
-  $('selectedNode').innerHTML = `<small>SELECTED COMPONENT · ${escapeHtml(c.kind || c.type)}</small><div class="selected-node-title"><h3>${escapeHtml(c.name)}</h3><span class="health-pill health-${health.key}">${escapeHtml(health.label)}</span></div><p>${escapeHtml(c.responsibility)}</p>${childSummary}<div class="component-task-summary"><strong>${linkedTasks.length} linked task${linkedTasks.length === 1 ? '' : 's'}</strong>${linkedTasks.length ? linkedTasks.map((t) => `<span><i class="status-dot ${statusClass(t.status)}"></i>${escapeHtml(t.title)} · ${escapeHtml(t.status.replace('_', ' '))}</span>`).join('') : '<span class="muted">No execution task is linked to this component yet.</span>'}</div><div class="component-connections">${incoming.length || outgoing.length ? `<ul>${incoming.map((r) => connectionLine(r, 'in')).join('')}${outgoing.map((r) => connectionLine(r, 'out')).join('')}</ul>` : '<p class="muted">No explicit relationships recorded at this level.</p>'}</div>`;
-  const healthReason = health.key === 'blocked'
-    ? `This area is blocked because ${health.detail}.`
-    : health.key === 'review'
-    ? `Human review is required: ${health.detail}.`
-    : health.key === 'active'
-    ? `Work is progressing normally: ${health.detail}.`
-    : 'No blocked task or pending architecture decision maps to this area.';
-  $('nodeEvidence').innerHTML = `<p><strong>${escapeHtml(health.label)}</strong></p><p class="muted">${escapeHtml(healthReason)}</p><p><strong>Accepted responsibility</strong></p><p class="muted">${escapeHtml(c.responsibility)}</p><p><strong>Node ID</strong></p><p class="muted">${escapeHtml(c.id)}</p><p><strong>Architecture status</strong></p><p class="muted">${escapeHtml(c.status)} — sourced from Architecture v${state.architecture.version}.</p>`;
+  const hierarchySummary = `<div class="component-children-summary"><strong>Hierarchy</strong><span>${parent ? `Parent · ${escapeHtml(parent.label)}` : 'Root node'}</span>${children.map((child) => `<span>Child · ${escapeHtml(child.label)}</span>`).join('')}</div>`;
+  const focusControls = `<div class="graph-focus-controls" role="group" aria-label="Graph focus"><button type="button" data-graph-focus="connected" class="${state.graphFocusMode === 'connected' ? 'active' : ''}">Connected</button><button type="button" data-graph-focus="upstream" class="${state.graphFocusMode === 'upstream' ? 'active' : ''}">Upstream</button><button type="button" data-graph-focus="downstream" class="${state.graphFocusMode === 'downstream' ? 'active' : ''}">Downstream</button><button type="button" data-graph-focus="all" class="${state.graphFocusMode === 'all' ? 'active' : ''}">All</button><button type="button" data-graph-focus="clear">Clear</button></div>`;
+  $('selectedNode').innerHTML = `<small>SELECTED COMPONENT · ${escapeHtml(String(c.semantic_kind))}</small><div class="selected-node-title"><h3>${escapeHtml(c.label)}</h3><span class="health-pill health-${health.key}">${escapeHtml(health.label)}</span></div><p>${escapeHtml(c.responsibility)}</p>${focusControls}${hierarchySummary}<div class="component-task-summary"><strong>${linkedTasks.length} linked task${linkedTasks.length === 1 ? '' : 's'}</strong>${linkedTasks.length ? linkedTasks.map((task) => `<span><i class="status-dot ${statusClass(task.status)}"></i>${escapeHtml(task.title)} · ${escapeHtml(task.status.replace('_', ' '))}</span>`).join('') : '<span class="muted">No execution task is linked to this component.</span>'}</div><div class="component-connections">${incoming.length || outgoing.length ? `<ul>${incoming.map((edge) => connectionLine(edge, 'in')).join('')}${outgoing.map((edge) => connectionLine(edge, 'out')).join('')}</ul>` : '<p class="muted">No authored relationships for this node.</p>'}</div>`;
+  $('nodeEvidence').innerHTML = `<p><strong>${escapeHtml(health.label)}</strong></p><p class="muted">${escapeHtml(health.detail)}</p><p><strong>Accepted responsibility</strong></p><p class="muted">${escapeHtml(c.responsibility)}</p><p><strong>Semantic type</strong></p><p class="muted">${escapeHtml(String(c.semantic_kind))} · ${escapeHtml(c.semantic_type)}</p><p><strong>Stable Diagram ID</strong></p><p class="muted">${escapeHtml(c.id)}</p><p><strong>Canonical component ID</strong></p><p class="muted">${escapeHtml(c.component_id)}</p><p><strong>Architecture status</strong></p><p class="muted">${escapeHtml(c.status?.canonical_status || 'UNKNOWN')} — projected from Architecture v${diagram.architectureVersion}.</p>`;
+  $('selectedNode').querySelectorAll('[data-graph-focus]').forEach((button) => button.addEventListener('click', () => {
+    const mode = button.dataset.graphFocus;
+    if (mode === 'clear') {
+      state.selectedNode = null;
+      state.graphFocusMode = 'connected';
+    } else {
+      state.graphFocusMode = mode;
+    }
+    renderGraph();
+  }));
 }
 
 function renderLists() {
@@ -2093,6 +2162,557 @@ function wireGoButtons() {
       open();
     });
   });
+}
+
+function syncMcpTransportFields() {
+  const isHttp = $('mcpTransport').value === 'streamable_http';
+  $('mcpHttpFields').classList.toggle('hidden', !isHttp);
+  $('mcpStdioFields').classList.toggle('hidden', isHttp);
+}
+
+function mcpOAuthProviderId(preset = $('mcpPreset').value) {
+  if (preset === 'github-remote') return 'github';
+  if (preset === 'slack') return 'slack';
+  if (preset === 'google-drive') return 'google-drive';
+  if (preset === 'microsoft-teams') return 'microsoft-teams';
+  return null;
+}
+
+function mcpPresetForProvider(providerId) {
+  if (providerId === 'github') return 'github-remote';
+  if (providerId === 'slack') return 'slack';
+  if (providerId === 'google-drive') return 'google-drive';
+  if (providerId === 'microsoft-teams') return 'microsoft-teams';
+  return null;
+}
+
+function mcpProviderStatusEntry(providerId) {
+  let entry = mcpProviderStatusCache.get(providerId);
+  if (!entry) {
+    entry = {value: null, fetchedAt: 0, inFlight: null, generation: 0};
+    mcpProviderStatusCache.set(providerId, entry);
+  }
+  return entry;
+}
+
+function mcpProviderStatusEndpoint(providerId) {
+  if (providerId === 'github') return '/mcp/auth/github/status';
+  if (providerId === 'google-drive') return '/mcp/auth/google-drive/status';
+  return `/mcp/oauth/${encodeURIComponent(providerId)}/status`;
+}
+
+function invalidateMcpProviderStatus(providerId) {
+  if (!providerId) return;
+  const entry = mcpProviderStatusEntry(providerId);
+  entry.value = null;
+  entry.fetchedAt = 0;
+  entry.generation += 1;
+  entry.inFlight = null;
+}
+
+function requestMcpProviderStatus(providerId, {force = false} = {}) {
+  const entry = mcpProviderStatusEntry(providerId);
+  const fresh = entry.value && (Date.now() - entry.fetchedAt) < MCP_PROVIDER_STATUS_TTL_MS;
+  if (!force && fresh) return Promise.resolve(entry.value);
+  if (entry.inFlight) return entry.inFlight;
+
+  const generation = entry.generation;
+  const request = api(mcpProviderStatusEndpoint(providerId))
+    .then((value) => {
+      if (entry.generation === generation) {
+        entry.value = value;
+        entry.fetchedAt = Date.now();
+      }
+      return value;
+    })
+    .finally(() => {
+      if (entry.inFlight === request) entry.inFlight = null;
+    });
+  entry.inFlight = request;
+  return request;
+}
+
+function renderMcpOAuthStatusShell(preset) {
+  const providerId = mcpOAuthProviderId(preset);
+  const oauthMode = Boolean(providerId);
+  $('mcpManualPanel').classList.toggle('hidden', oauthMode);
+  $('mcpOAuthPanel').classList.toggle('hidden', !oauthMode);
+  $('mcpManualConnectBtn').classList.toggle('hidden', oauthMode);
+  $('mcpOAuthConnectBtn').classList.toggle('hidden', !oauthMode);
+  if (!providerId) return null;
+
+  const sourceIcon = $('mcpConfigIcon');
+  $('mcpOAuthProviderIcon').innerHTML = sourceIcon?.innerHTML || '';
+  $('mcpOAuthProviderIcon').className = `mcp-oauth-provider-icon ${sourceIcon?.className || ''}`;
+  const titles = {github: 'Connect GitHub', slack: 'Connect Slack', 'google-drive': 'Connect Google Drive', 'microsoft-teams': 'Connect Microsoft Teams'};
+  $('mcpOAuthTitle').textContent = titles[providerId] || 'Connect provider';
+  const descriptions = {
+    github: 'A GitHub authorization window will open. ArchBro uses the official GitHub MCP OAuth runtime and keeps the resulting session backend-only.',
+    slack: 'A Slack authorization window will open. ArchBro keeps the OAuth client and resulting user token backend-only and memory-only.',
+    'google-drive': 'A Google authorization window will open. ArchBro requests Drive access and calls the Drive API directly; no Google Cloud MCP project or IAM setup is needed.',
+    'microsoft-teams': 'A Microsoft authorization window will open. ArchBro uses delegated Microsoft Graph access for Teams and keeps the OAuth session backend-only and memory-only.',
+  };
+  $('mcpOAuthDescription').textContent = descriptions[providerId] || 'A provider sign-in window will open.';
+  return providerId;
+}
+
+function renderMcpOAuthStatusLoading(preset) {
+  if ($('mcpPreset').value !== preset) return;
+  $('mcpOAuthReady').classList.add('hidden');
+  $('mcpGithubSetup').classList.add('hidden');
+  $('mcpGoogleSetup').classList.add('hidden');
+  $('mcpProviderSetup').classList.add('hidden');
+  $('mcpOAuthRedirectReady').textContent = 'Checking provider sign-in status…';
+  $('mcpOAuthConnectBtn').classList.remove('hidden');
+  $('mcpOAuthConnectBtn').disabled = true;
+  $('mcpOAuthConnectBtn').textContent = 'Checking sign-in…';
+  delete $('mcpOAuthConnectBtn').dataset.statusRetry;
+}
+
+function renderMcpOAuthStatus(preset, status) {
+  if ($('mcpPreset').value !== preset || !status) return;
+  const providerId = mcpOAuthProviderId(preset);
+  $('mcpOAuthReady').classList.add('hidden');
+  $('mcpGithubSetup').classList.add('hidden');
+  $('mcpGoogleSetup').classList.add('hidden');
+  $('mcpProviderSetup').classList.add('hidden');
+  delete $('mcpOAuthConnectBtn').dataset.statusRetry;
+
+  if (providerId === 'github') {
+    $('mcpOAuthRedirectReady').textContent = status.message || 'Ready to authorize with GitHub.';
+    $('mcpOAuthReady').classList.toggle('hidden', !status.configured);
+    $('mcpGithubSetup').classList.toggle('hidden', status.configured);
+    $('mcpOAuthConnectBtn').classList.remove('hidden');
+    $('mcpOAuthConnectBtn').disabled = !status.configured;
+    $('mcpOAuthConnectBtn').textContent = status.connected ? 'Reconnect GitHub' : 'Continue with GitHub';
+    return;
+  }
+
+  if (providerId === 'google-drive') {
+    $('mcpOAuthRedirectReady').textContent = status.message || 'Ready to authorize Google Drive.';
+    const prerequisiteBlocked = !status.connected && status.prerequisites && status.prerequisites.ready !== true;
+    $('mcpOAuthReady').classList.toggle('hidden', !status.configured || prerequisiteBlocked);
+    $('mcpGoogleSetup').classList.toggle('hidden', status.connected || !prerequisiteBlocked);
+    $('mcpGoogleSetupText').textContent = status.message || 'Google Drive prerequisites are not ready.';
+    $('mcpOAuthConnectBtn').classList.remove('hidden');
+    $('mcpOAuthConnectBtn').disabled = !status.configured;
+    $('mcpOAuthConnectBtn').textContent = status.connected ? 'Reconnect Google Drive' : 'Continue with Google Drive';
+    return;
+  }
+
+  const configured = status.configured === true;
+  $('mcpOAuthRedirectReady').textContent = configured
+    ? `${status.name} sign-in is ready. Authorization opens in a separate window.`
+    : `${status.name} is a built-in ArchBro connector. Sign-in requires the ArchBro deployment provider identity.`;
+  $('mcpOAuthReady').classList.toggle('hidden', !configured);
+  $('mcpProviderSetup').classList.toggle('hidden', configured);
+  const missingConfiguration = Array.isArray(status.missing_configuration) && status.missing_configuration.length
+    ? ` Missing: ${status.missing_configuration.join(', ')}.`
+    : '';
+  $('mcpProviderSetupText').textContent = configured
+    ? ''
+    : `${status.name} sign-in is not provisioned for this ArchBro deployment. The deployment owner must configure the provider identity.${missingConfiguration}`;
+  $('mcpOAuthConnectBtn').classList.remove('hidden');
+  $('mcpOAuthConnectBtn').disabled = !configured;
+  $('mcpOAuthConnectBtn').textContent = `Continue with ${status.name}`;
+}
+
+function renderMcpOAuthStatusError(preset, err) {
+  if ($('mcpPreset').value !== preset) return;
+  $('mcpOAuthRedirectReady').textContent = `Unable to refresh sign-in status: ${err.message}`;
+  $('mcpOAuthConnectBtn').classList.remove('hidden');
+  $('mcpOAuthConnectBtn').disabled = false;
+  $('mcpOAuthConnectBtn').textContent = 'Retry status';
+  $('mcpOAuthConnectBtn').dataset.statusRetry = 'true';
+}
+
+async function refreshMcpProviderStatusAfterMutation(providerId) {
+  if (!providerId) return null;
+  invalidateMcpProviderStatus(providerId);
+  const preset = mcpPresetForProvider(providerId);
+  try {
+    const status = await requestMcpProviderStatus(providerId, {force: true});
+    if (preset) renderMcpOAuthStatus(preset, status);
+    return status;
+  } catch (err) {
+    if (preset) renderMcpOAuthStatusError(preset, err);
+    return null;
+  }
+}
+
+function openMcpOAuthPopup(providerId) {
+  const width = 620;
+  const height = 760;
+  const left = Math.max(0, window.screenX + Math.round((window.outerWidth - width) / 2));
+  const top = Math.max(0, window.screenY + Math.round((window.outerHeight - height) / 2));
+  const popup = window.open(
+    'about:blank',
+    `archbro_mcp_oauth_${providerId}`,
+    `popup=yes,width=${width},height=${height},left=${left},top=${top}`,
+  );
+  if (!popup) {
+    toast('Your browser blocked the OAuth window. Allow popups for this localhost page and retry.', true);
+    return null;
+  }
+  activeMcpOAuthPopup = popup;
+  popup.document.title = 'ArchBro authorization';
+  popup.document.body.innerHTML = '<p style="font:16px system-ui;padding:24px">Opening authorization…</p>';
+  popup.focus();
+  return popup;
+}
+
+function watchMcpOAuthPopup(popup, preset) {
+  const timer = setInterval(async () => {
+    if (!popup.closed) return;
+    clearInterval(timer);
+    if (activeMcpOAuthPopup === popup) activeMcpOAuthPopup = null;
+    if (handledMcpOAuthPopups.has(popup)) {
+      handledMcpOAuthPopups.delete(popup);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if ($('mcpConnectionsDialog').open && $('mcpPreset').value === preset) {
+      await loadMcpOAuthStatus(preset, {force: true});
+    }
+  }, 500);
+}
+
+function applyMcpPreset(preset = $('mcpPreset').value) {
+  $('mcpBearerToken').value = '';
+  $('mcpCommand').value = '';
+  $('mcpArgs').value = '';
+  $('mcpEnv').value = '{}';
+  $('mcpTransport').value = 'streamable_http';
+  $('mcpBearerToken').placeholder = 'Paste access token if required';
+  $('mcpAuthHint').textContent = 'Bearer token · kept in memory only';
+
+  if (preset === 'github-remote') {
+    $('mcpName').value = 'GitHub';
+    $('mcpUrl').value = 'https://api.githubcopilot.com/mcp/';
+    $('mcpBearerToken').placeholder = 'GitHub access token';
+    $('mcpAuthHint').textContent = 'GitHub token · kept in memory only';
+  } else if (preset === 'slack') {
+    $('mcpName').value = 'Slack';
+    $('mcpUrl').value = 'https://mcp.slack.com/mcp';
+  } else if (preset === 'google-drive') {
+    $('mcpName').value = 'Google Drive';
+    $('mcpUrl').value = '';
+    $('mcpAuthHint').textContent = 'Google Drive OAuth · direct Drive API';
+  } else if (preset === 'microsoft-teams') {
+    $('mcpName').value = 'Microsoft Teams';
+    $('mcpUrl').value = 'https://graph.microsoft.com/v1.0';
+  } else {
+    $('mcpName').value = 'Custom MCP';
+    $('mcpUrl').value = '';
+    $('mcpAuthHint').textContent = 'Optional bearer token · kept in memory only';
+  }
+  syncMcpTransportFields();
+}
+
+async function loadMcpOAuthStatus(preset = $('mcpPreset').value, {force = false, background = false} = {}) {
+  const requestId = ++mcpOAuthStatusRequestId;
+  const providerId = renderMcpOAuthStatusShell(preset);
+  if (!providerId) return null;
+
+  const entry = mcpProviderStatusEntry(providerId);
+  const fresh = entry.value && (Date.now() - entry.fetchedAt) < MCP_PROVIDER_STATUS_TTL_MS;
+  if (entry.value) renderMcpOAuthStatus(preset, entry.value);
+  if (!force && fresh) return entry.value;
+  if (!entry.value) renderMcpOAuthStatusLoading(preset);
+
+  const request = requestMcpProviderStatus(providerId, {force});
+  const applyResult = request
+    .then((status) => {
+      if (requestId === mcpOAuthStatusRequestId && $('mcpPreset').value === preset) {
+        renderMcpOAuthStatus(preset, status);
+      }
+      return status;
+    })
+    .catch((err) => {
+      if (requestId === mcpOAuthStatusRequestId && $('mcpPreset').value === preset) {
+        renderMcpOAuthStatusError(preset, err);
+      }
+      return null;
+    });
+
+  if (background) {
+    void applyResult;
+    return entry.value;
+  }
+  return applyResult;
+}
+
+function selectMcpPreset(preset) {
+  const selected = document.querySelector(`[data-mcp-preset="${preset}"]`);
+  if (!selected) return;
+  $('mcpPreset').value = preset;
+  document.querySelectorAll('[data-mcp-preset]').forEach((card) => card.classList.toggle('selected', card === selected));
+  const sourceIcon = selected.querySelector('.mcp-provider-icon');
+  const configIcon = $('mcpConfigIcon');
+  if (sourceIcon && configIcon) {
+    configIcon.className = sourceIcon.className;
+    configIcon.innerHTML = sourceIcon.innerHTML;
+  }
+  const title = selected.querySelector('.mcp-provider-copy strong')?.textContent || 'Custom MCP';
+  const subtitle = selected.querySelector('.mcp-provider-copy small')?.textContent || 'Remote or local';
+  $('mcpConfigTitle').textContent = title;
+  $('mcpConfigSubtitle').textContent = subtitle;
+  applyMcpPreset(preset);
+  void loadMcpOAuthStatus(preset, {background: true});
+}
+
+async function startMcpOAuth() {
+  const preset = $('mcpPreset').value;
+  const providerId = mcpOAuthProviderId(preset);
+  if (!providerId) return;
+  if ($('mcpOAuthConnectBtn').dataset.statusRetry === 'true') {
+    await loadMcpOAuthStatus(preset, {force: true});
+    return;
+  }
+
+  const popup = openMcpOAuthPopup(providerId);
+  if (!popup) return;
+
+  const status = await loadMcpOAuthStatus(preset);
+  if ($('mcpPreset').value !== preset || !$('mcpConnectionsDialog').open) {
+    popup.close();
+    return;
+  }
+  if (providerId === 'github' && !status?.configured) {
+    popup.close();
+    toast('GitHub OAuth runtime is unavailable.', true);
+    return;
+  }
+
+  $('mcpOAuthConnectBtn').disabled = true;
+  $('mcpOAuthConnectBtn').textContent = 'Waiting for authorization…';
+
+  if (providerId === 'github') {
+    let connectionId = null;
+    try {
+      const started = await api('/mcp/auth/github/start', {method: 'POST'});
+      connectionId = started.connection?.id || null;
+      if (started.connected) {
+        popup.close();
+        toast(`GitHub connected: ${started.tool_count || started.connection?.tool_count || 0} tools discovered.`);
+        await refreshMcpProviderStatusAfterMutation(providerId);
+        await loadMcpConnections();
+        setMcpPickerTab('connected');
+        return;
+      }
+      if (!started.authorization_url || !connectionId) throw new Error('GitHub did not return an authorization URL.');
+      popup.location.replace(started.authorization_url);
+      popup.focus();
+
+      const deadline = Date.now() + 180000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const result = await api(`/mcp/auth/github/${encodeURIComponent(connectionId)}/poll`, {method: 'POST'});
+        if (!result.connected) {
+          // The official runtime receives the OAuth callback on its own local
+          // server. The browser window can close before that callback is
+          // exchanged, especially when the provider replaces the popup with
+          // a success page, so keep polling until the backend reports success.
+          continue;
+        }
+        if (!popup.closed) popup.close();
+        toast(`GitHub connected: ${result.tool_count} tools discovered.`);
+        await refreshMcpProviderStatusAfterMutation(providerId);
+        await loadMcpConnections();
+        setMcpPickerTab('connected');
+        return;
+      }
+      throw new Error('GitHub authorization timed out. Retry Connect when ready.');
+    } catch (err) {
+      if (!popup.closed) popup.close();
+      if (connectionId) {
+        try { await api(`/mcp/connections/${encodeURIComponent(connectionId)}`, {method: 'DELETE'}); } catch {}
+      }
+      toast(err.message, true);
+      await refreshMcpProviderStatusAfterMutation(providerId);
+    }
+    return;
+  }
+
+  if (providerId === 'google-drive') {
+    let connectionId = null;
+    try {
+      if (!status?.configured) {
+        popup.close();
+        throw new Error(status?.message || 'Google Drive sign-in is unavailable.');
+      }
+      const started = await api('/mcp/auth/google-drive/start', {method: 'POST'});
+      connectionId = started.connection?.id || null;
+      if (started.connected) {
+        popup.close();
+        toast(`Google Drive connected: ${started.tool_count || started.connection?.tool_count || 0} tools discovered.`);
+        await refreshMcpProviderStatusAfterMutation(providerId);
+        await loadMcpConnections();
+        setMcpPickerTab('connected');
+        return;
+      }
+      if (!started.authorization_url || !connectionId) throw new Error('Google Drive did not return an authorization URL.');
+      popup.location.replace(started.authorization_url);
+      popup.focus();
+
+      const deadline = Date.now() + 180000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const result = await api(`/mcp/auth/google-drive/${encodeURIComponent(connectionId)}/poll`, {method: 'POST'});
+        if (!result.connected) {
+          if (popup.closed) throw new Error('Google Drive authorization was cancelled.');
+          continue;
+        }
+        if (!popup.closed) popup.close();
+        toast(`Google Drive connected: ${result.tool_count} tools discovered.`);
+        await refreshMcpProviderStatusAfterMutation(providerId);
+        await loadMcpConnections();
+        setMcpPickerTab('connected');
+        return;
+      }
+      throw new Error('Google Drive authorization timed out. Retry Connect when ready.');
+    } catch (err) {
+      if (!popup.closed) popup.close();
+      if (connectionId) {
+        try { await api(`/mcp/connections/${encodeURIComponent(connectionId)}`, {method: 'DELETE'}); } catch {}
+      }
+      toast(err.message, true);
+      await refreshMcpProviderStatusAfterMutation(providerId);
+    }
+    return;
+  }
+
+  if (!status?.configured) {
+    popup.close();
+    toast(`${providerId.replace('-', ' ')} sign-in is not available in this ArchBro deployment.`, true);
+    return;
+  }
+
+  popup.location.replace(`/mcp/oauth/${encodeURIComponent(providerId)}/start`);
+  popup.focus();
+  watchMcpOAuthPopup(popup, preset);
+}
+
+function setMcpPickerTab(tab) {
+  const connected = tab === 'connected';
+  $('mcpBrowsePane').classList.toggle('hidden', connected);
+  $('mcpConnectedPane').classList.toggle('hidden', !connected);
+  document.querySelectorAll('[data-mcp-tab]').forEach((button) => button.classList.toggle('active', button.dataset.mcpTab === tab));
+}
+
+function filterMcpProviders(query = '') {
+  const normalized = String(query).trim().toLowerCase();
+  let visible = 0;
+  document.querySelectorAll('[data-mcp-preset]').forEach((card) => {
+    const haystack = `${card.dataset.mcpSearch || ''} ${card.textContent || ''}`.toLowerCase();
+    const match = !normalized || haystack.includes(normalized);
+    card.classList.toggle('hidden', !match);
+    if (match) visible += 1;
+  });
+  $('mcpNoSearchResults').classList.toggle('hidden', visible !== 0);
+}
+
+function parseMcpJson(id, fallback) {
+  const text = $(id).value.trim();
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${id === 'mcpArgs' ? 'Args' : 'Env'} must be valid JSON.`);
+  }
+}
+
+async function loadMcpConnections() {
+  const connections = await api('/mcp/connections');
+  const list = $('mcpConnectionList');
+  $('mcpConnectedCount').textContent = connections.length;
+  if (!connections.length) {
+    list.innerHTML = '<div class="mcp-empty-state"><strong>No MCPs connected yet</strong><span>Choose Browse and connect one when you are ready.</span></div>';
+    return connections;
+  }
+  list.innerHTML = connections.map((connection) => {
+    const probe = connection.last_probe_ok === true ? 'READY' : connection.last_probe_ok === false ? 'FAILED' : 'NOT TESTED';
+    const probeClass = connection.last_probe_ok === true ? 'ready' : connection.last_probe_ok === false ? 'failed' : '';
+    const toolCount = connection.tool_count == null ? '—' : connection.tool_count;
+    const authBadge = connection.auth_type === 'oauth'
+      ? '<span class="ready">OAuth</span>'
+      : connection.auth_type === 'github_oauth'
+        ? '<span class="ready">GitHub OAuth</span>'
+      : ['google_gcloud', 'google_drive_oauth'].includes(connection.auth_type)
+          ? '<span class="ready">Google OAuth</span>'
+        : connection.auth_type === 'microsoft_teams_oauth'
+          ? '<span class="ready">Teams OAuth</span>'
+        : connection.has_credentials ? '<span>credential set</span>' : '';
+    return `<div class="mcp-connection-row">
+      <div class="mcp-connected-main"><span class="mcp-connected-dot ${probeClass}"></span><div><strong>${escapeHtml(connection.name)}</strong><p>${escapeHtml(connection.endpoint || '')}</p><div class="mcp-connection-meta"><span>${escapeHtml(connection.transport)}</span><span class="${probeClass}">${probe}</span><span>${toolCount} tools</span>${authBadge}</div>${connection.last_error ? `<p class="mcp-connection-error">${escapeHtml(connection.last_error)}</p>` : ''}</div></div>
+      <div class="mcp-connection-actions"><button type="button" data-mcp-probe="${escapeHtml(connection.id)}">Test</button><button type="button" class="danger" data-mcp-remove="${escapeHtml(connection.id)}" data-mcp-provider="${escapeHtml(connection.provider || '')}">Remove</button></div>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('[data-mcp-probe]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    button.textContent = 'Testing…';
+    try {
+      const result = await api(`/mcp/connections/${encodeURIComponent(button.dataset.mcpProbe)}/probe`, {method: 'POST'});
+      toast(`MCP ready: ${result.tool_count} tool${result.tool_count === 1 ? '' : 's'} discovered.`);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      await loadMcpConnections();
+    }
+  }));
+  list.querySelectorAll('[data-mcp-remove]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    const providerId = button.dataset.mcpProvider || null;
+    try {
+      await api(`/mcp/connections/${encodeURIComponent(button.dataset.mcpRemove)}`, {method: 'DELETE'});
+      toast('MCP connection removed.');
+      if (providerId) await refreshMcpProviderStatusAfterMutation(providerId);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      await loadMcpConnections();
+    }
+  }));
+  return connections;
+}
+
+function openMcpConnections() {
+  $('mcpConnectionsDialog').showModal();
+  $('mcpSearch').value = '';
+  filterMcpProviders('');
+  setMcpPickerTab('browse');
+  selectMcpPreset($('mcpPreset').value || 'github-remote');
+  setTimeout(() => $('mcpSearch').focus(), 20);
+  void loadMcpConnections().catch((err) => toast(err.message, true));
+}
+
+async function addMcpConnection() {
+  if (mcpOAuthProviderId()) throw new Error('Use the provider sign-in button for GitHub, Slack, Google Drive, or Microsoft Teams.');
+  const transport = $('mcpTransport').value;
+  const secret = $('mcpBearerToken').value.trim();
+  const body = {
+    name: $('mcpName').value.trim(),
+    transport,
+  };
+  if (!body.name) throw new Error('Connection name is required.');
+  if (transport === 'streamable_http') {
+    body.url = $('mcpUrl').value.trim();
+    body.headers = secret ? {Authorization: `Bearer ${secret}`} : {};
+  } else {
+    const args = parseMcpJson('mcpArgs', []);
+    const env = parseMcpJson('mcpEnv', {});
+    if (!Array.isArray(args)) throw new Error('Args must be a JSON array.');
+    if (!env || Array.isArray(env) || typeof env !== 'object') throw new Error('Env must be a JSON object.');
+    body.command = $('mcpCommand').value.trim();
+    body.args = args.map((value) => String(value));
+    body.env = Object.fromEntries(Object.entries(env).map(([key, value]) => [key, String(value)]));
+  }
+  await api('/mcp/connections', {method: 'POST', body: JSON.stringify(body)});
+  $('mcpBearerToken').value = '';
+  $('mcpEnv').value = transport === 'stdio' ? '{}' : '';
+  toast('MCP connected in memory.');
+  await loadMcpConnections();
+  setMcpPickerTab('connected');
 }
 
 function webMcpRequireProject() {
@@ -2631,6 +3251,47 @@ $('newProjectBtn').addEventListener('click', () => {
   closeMobileSidebar();
   startOnboarding();
 });
+$('mcpConnectionsBtn').addEventListener('click', openMcpConnections);
+document.querySelectorAll('[data-mcp-preset]').forEach((card) => card.addEventListener('click', async () => selectMcpPreset(card.dataset.mcpPreset)));
+document.querySelectorAll('[data-mcp-tab]').forEach((button) => button.addEventListener('click', async () => {
+  setMcpPickerTab(button.dataset.mcpTab);
+  if (button.dataset.mcpTab === 'connected') {
+    try { await loadMcpConnections(); } catch (err) { toast(err.message, true); }
+  }
+}));
+$('mcpSearch').addEventListener('input', (event) => filterMcpProviders(event.target.value));
+$('mcpTransport').addEventListener('change', syncMcpTransportFields);
+$('mcpOAuthConnectBtn').addEventListener('click', startMcpOAuth);
+$('mcpConnectionForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await addMcpConnection();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+window.addEventListener('message', async (event) => {
+  const trustedOAuthOrigins = new Set([window.location.origin, 'https://archbro.hoson.xyz']);
+  if (!trustedOAuthOrigins.has(event.origin)) return;
+  if (activeMcpOAuthPopup && event.source && event.source !== activeMcpOAuthPopup) return;
+  const payload = event.data;
+  if (!payload || payload.type !== 'archbro-mcp-oauth') return;
+  if (event.source) handledMcpOAuthPopups.add(event.source);
+  const providerId = payload.provider || mcpOAuthProviderId();
+  if (payload.ok) {
+    toast(payload.message || 'MCP OAuth connection completed.');
+    try {
+      if (providerId) await refreshMcpProviderStatusAfterMutation(providerId);
+      await loadMcpConnections();
+      setMcpPickerTab('connected');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  } else {
+    toast(payload.message || 'MCP OAuth connection failed.', true);
+    if (providerId) await refreshMcpProviderStatusAfterMutation(providerId);
+  }
+});
 $('workspaceSwitcherBtn').addEventListener('click', openPersonalWorkspace);
 $('workspaceHomeNewProjectBtn').addEventListener('click', () => {
   closeMobileSidebar();
@@ -2664,6 +3325,7 @@ document.querySelectorAll('[data-new-project-name-cancel]').forEach((button) => 
 $('deleteProjectDialog').addEventListener('click', closeDialogOnBackdrop);
 $('proposalReviewDialog').addEventListener('click', closeDialogOnBackdrop);
 $('accountSettingsDialog').addEventListener('click', closeDialogOnBackdrop);
+$('mcpConnectionsDialog').addEventListener('click', closeDialogOnBackdrop);
 $('notificationBtn').addEventListener('click', () => toggleTopMenu('notificationBtn', 'notificationMenu'));
 $('notificationCloseBtn').addEventListener('click', () => {
   closeTopMenus();

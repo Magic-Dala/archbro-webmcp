@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel, field_validator, model_validator
 
 from archbro.backend.agent.orchestration import AgentOrchestrator
 from archbro.backend.api.agent_surface import build_agent_surface_router
+from archbro.backend.api.provider_connections import build_provider_mcp_router
 from archbro.backend.core.action_executor import ActionExecutor
 from archbro.backend.core.authorization import (
     AuthenticationError,
@@ -35,6 +37,8 @@ from archbro.backend.core.contracts import (
     utcnow,
 )
 from archbro.backend.core.observation import ObservationInProgressError
+from archbro.backend.core.diagram import project_diagram
+from archbro.backend.core.diagram_layout import layout_diagram
 from archbro.backend.core.repository import ProjectRepositoryPort
 from archbro.backend.llm.provider import GoalConversationMessage, GoalDraft, ModelProvider
 
@@ -362,6 +366,20 @@ def build_router(
         await authorized_project(http_request, project_id, ProjectPermission.READ)
         return repository.get_architecture(project_id)
 
+    @router.get("/projects/{project_id}/architecture/diagram")
+    async def get_architecture_diagram(project_id: str, http_request: Request):
+        await authorized_project(http_request, project_id, ProjectPermission.READ)
+        architecture = repository.get_architecture(project_id)
+        diagram = project_diagram(
+            architecture,
+            tasks=repository.list_tasks(project_id),
+            proposals=repository.list_proposals(project_id),
+        )
+        return {
+            "diagram": diagram.model_dump(mode="json"),
+            "positioned_graph": asdict(layout_diagram(diagram)),
+        }
+
     @router.get("/projects/{project_id}/architecture/proposals")
     async def list_proposals(project_id: str, http_request: Request):
         await authorized_project(http_request, project_id, ProjectPermission.READ)
@@ -521,4 +539,5 @@ def build_router(
             raise HTTPException(status_code=409, detail=str(exc))
 
     router.include_router(build_agent_surface_router(repository, authorized_project))
+    router.include_router(build_provider_mcp_router(principal_for))
     return router

@@ -68,6 +68,19 @@ An operational PostgreSQL health-check failure alone was correctly treated as an
 - [ ] <3 minute public YouTube demo URL recorded here: **TBD**
 - [ ] Devpost form completed with final live/repo/video links.
 
+## Real-host acceptance boundary
+
+The real Codex/ChatGPT host acceptance must distinguish **host tool discovery/invocation** from the page JavaScript registration API.
+
+- Open exactly `https://archbro.hoson.xyz/?mode=webmcp` so the competition-safe UI is active.
+- If the host discovers `archbro_ping`, Phase 1 must invoke `archbro_ping` directly through the host Site Tools surface.
+- `document.modelContext` visibility in page DevTools is **diagnostic only** and must never block a host invocation after Site Tools have already been discovered.
+- `data-webmcp-agent-mode` validates only the explicit `?mode=webmcp` UI mode; it is not evidence for or against host Site Tools transport.
+- `REAL_HOST_BLOCKED` is valid only when the host cannot discover or invoke `archbro_ping`, permission is denied, invocation fails, or Site Tools are lost after navigation.
+- A host that discovers and successfully invokes `archbro_ping` has crossed the real-host boundary and must continue the acceptance flow.
+
+See `docs/CODEX_WEBMCP_ACCEPTANCE.md` for the exact executable sequence.
+
 ## Final acceptance prompt sequence
 
 1. Create a collaborative issue-tracking project in ArchBro with React, FastAPI, PostgreSQL, and realtime collaboration. Do not name tools.
