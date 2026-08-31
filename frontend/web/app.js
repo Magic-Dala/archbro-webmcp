@@ -2146,6 +2146,9 @@ function switchView(name) {
   renderProjectTree();
   if (name === 'architecture') renderGraph();
   updateInstructionContext();
+  const workspaceMain = $('workspaceMain');
+  if (workspaceMain) workspaceMain.scrollTop = 0;
+  window.scrollTo(0, 0);
 }
 
 function wireGoButtons() {
