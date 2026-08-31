@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from pathlib import Path
-import tempfile
 
 from fastapi.testclient import TestClient
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
@@ -15,12 +13,15 @@ from archbro.backend.mcp.gateway import (
     ConnectedMcpServer,
     McpToolNotAllowedError,
 )
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import build_app
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def make_client() -> TestClient:
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "agent-context.db"))
+def make_client(dsn) -> TestClient:
+    repo = PostgresProjectRepository(dsn)
     return TestClient(build_app(repo, FakeModelProvider()))
 
 
@@ -71,7 +72,7 @@ def create_project_with_architecture(client: TestClient) -> str:
     return project_id
 
 
-def test_agent_context_is_compact_projection_and_lists_bound_sources(monkeypatch):
+def test_agent_context_is_compact_projection_and_lists_bound_sources(dsn, monkeypatch):
     monkeypatch.setenv(
         "ARCHBRO_MCP_SERVERS_JSON",
         json.dumps(
@@ -86,7 +87,7 @@ def test_agent_context_is_compact_projection_and_lists_bound_sources(monkeypatch
             ]
         ),
     )
-    client = make_client()
+    client = make_client(dsn)
     project_id = create_project_with_architecture(client)
 
     response = client.get(f"/projects/{project_id}/agent-context")
@@ -109,7 +110,7 @@ def test_agent_context_is_compact_projection_and_lists_bound_sources(monkeypatch
     assert "url" not in server
 
 
-def test_gateway_discovers_and_calls_only_allowlisted_mcp_tools():
+def test_gateway_discovers_and_calls_only_allowlisted_mcp_tools(dsn):
     class FakeSession:
         async def list_tools(self, cursor=None):
             assert cursor is None
@@ -166,8 +167,8 @@ def test_gateway_discovers_and_calls_only_allowlisted_mcp_tools():
         raise AssertionError("hidden MCP tool should not be callable")
 
 
-def test_webmcp_exposes_agent_context_and_connected_mcp_tools():
-    client = make_client()
+def test_webmcp_exposes_agent_context_and_connected_mcp_tools(dsn):
+    client = make_client(dsn)
     module = client.get("/static/archbro-webmcp.js")
     assert module.status_code == 200
     # The module builds every tool name from TOOL_PREFIX, so the literal

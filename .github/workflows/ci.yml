@@ -1,4 +1,4 @@
-# Runs the test suite and proves the deployment image still builds.
+# Runs the test suite and proves the deployment image still builds and boots.
 #
 # The suite talks to a real PostgreSQL: tests/test_postgres_foundation.py skips
 # itself when DATABASE_URL is absent, so without the service below the
@@ -72,6 +72,25 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
+
+    # The image needs a database to start at all now that PostgreSQL is the
+    # only backend, so proving it boots means giving it one. Without this the
+    # probe fails with a connection error and says nothing about the image.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: archbro
+          POSTGRES_PASSWORD: archbro
+          POSTGRES_DB: archbro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U archbro -d archbro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -79,9 +98,15 @@ jobs:
         run: docker build -t archbro:ci .
 
       - name: Boot it and check the liveness probe
+        # --network host rather than -p: the container has to reach the service
+        # container, which is published on the runner's own localhost.
         run: |
-          docker run -d --name archbro-ci \
-            -e PORT=8080 -e ARCHBRO_PROVIDER=fake -p 8080:8080 archbro:ci
+          docker run -d --name archbro-ci --network host \
+            -e PORT=8080 \
+            -e ARCHBRO_PROVIDER=fake \
+            -e ARCHBRO_PERSISTENCE=postgres \
+            -e DATABASE_URL=postgresql://archbro:archbro@localhost:5432/archbro \
+            archbro:ci
           curl --retry 40 --retry-delay 1 --retry-all-errors --max-time 90 \
             --fail -s http://localhost:8080/healthz
           docker rm -f archbro-ci

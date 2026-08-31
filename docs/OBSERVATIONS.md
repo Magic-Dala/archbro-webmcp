@@ -92,19 +92,16 @@ Read APIs expose `/events`, `/agent-runs`, and `/activity` per project so the UI
 does not need to reconstruct this history from logs.
 
 History reads are bounded at the persistence query, not after loading the full
-project history into the backend. The Firestore adapter uses these query shapes:
+project history into the backend. The PostgreSQL adapter uses these query
+shapes, each backed by an index on `project_id`:
 
-- events: `project_id == <project>` ordered by `data.received_at DESC`, then
-  `limit(N)`
-- agent runs: `project_id == <project>` ordered by `data.completed_at DESC`, then
-  `limit(N)`
+- events: `WHERE project_id = <project> ORDER BY seq DESC LIMIT N`
+- agent runs: `WHERE project_id = <project> ORDER BY seq DESC LIMIT N`
 
-Firestore deployments must provision the composite indexes required by those
-query shapes for their configured collection prefix. The default collection
-names are `archbro_events` and `archbro_agent_runs`; a custom
-`ARCHBRO_FIRESTORE_PREFIX` needs equivalent indexes under its own collection
-names. Index provisioning stays a Platform/deployment concern rather than being
-hard-coded into the backend contract.
+Both read newest-first under the limit and are reversed in the adapter, so
+callers still see oldest-first history. Index provisioning stays a
+Platform/deployment concern rather than being hard-coded into the backend
+contract.
 
 ## Security boundary
 

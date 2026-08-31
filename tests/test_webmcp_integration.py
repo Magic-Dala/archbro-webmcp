@@ -1,32 +1,34 @@
 from pathlib import Path
-import tempfile
 
 from fastapi.testclient import TestClient
 
 from archbro.backend.llm.fake import FakeModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import build_app
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def make_client() -> TestClient:
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "webmcp.db"))
+def make_client(dsn) -> TestClient:
+    repo = PostgresProjectRepository(dsn)
     return TestClient(build_app(repo, FakeModelProvider()))
 
 
-def test_real_host_acceptance_invokes_discovered_ping_before_page_api_diagnostics():
+def test_real_host_acceptance_invokes_discovered_ping_before_page_api_diagnostics(dsn):
     root = Path(__file__).resolve().parents[1]
     runbook = (root / "docs" / "CODEX_WEBMCP_ACCEPTANCE.md").read_text(encoding="utf-8")
     submission = (root / "docs" / "SUBMISSION.md").read_text(encoding="utf-8")
 
-    assert "https://archbro.hoson.xyz/?mode=webmcp" in runbook
+    assert "https://archbro-dev.magicdala.com/?mode=webmcp" in runbook
     assert "Immediately invoke `archbro_ping` through the host Site Tools surface." in runbook
     assert "Do **not** inspect `document.modelContext` as a prerequisite" in runbook
     assert "Do **not** use `REAL_HOST_BLOCKED` merely because page JavaScript reports `document.modelContext`" in runbook
     assert "docs/CODEX_WEBMCP_ACCEPTANCE.md" in submission
 
 
-def test_webmcp_asset_uses_current_imperative_document_model_context_surface():
-    client = make_client()
+def test_webmcp_asset_uses_current_imperative_document_model_context_surface(dsn):
+    client = make_client(dsn)
 
     index = client.get("/")
     assert index.status_code == 200
@@ -40,7 +42,9 @@ def test_webmcp_asset_uses_current_imperative_document_model_context_surface():
     app = client.get("/static/app.js")
     assert app.status_code == 200
     assert "WEBMCP_AGENT_MODE" in app.text
-    assert "window.location.hostname === 'archbro.hoson.xyz'" in app.text
+    assert "WEBMCP_PUBLIC_HOSTS" in app.text
+    assert "archbro-dev.magicdala.com" in app.text
+    assert "archbro.magicdala.com" in app.text
     assert "Built-in architecture generation is disabled in WebMCP Agent Mode." in app.text
     brief_block = app.text.split("async getProjectBrief()", 1)[1].split("async getDecisionContext()", 1)[0]
     assert "await refresh();" in brief_block
@@ -83,8 +87,8 @@ def test_webmcp_asset_uses_current_imperative_document_model_context_surface():
         assert removed_low_level_tool not in module.text
 
 
-def test_webmcp_bootstrap_bridge_is_single_agent_call_without_builtin_model():
-    client = make_client()
+def test_webmcp_bootstrap_bridge_is_single_agent_call_without_builtin_model(dsn):
+    client = make_client(dsn)
     app = client.get("/static/app.js")
     assert app.status_code == 200
 
@@ -99,8 +103,8 @@ def test_webmcp_bootstrap_bridge_is_single_agent_call_without_builtin_model():
     assert "await generateInitialArchitecture()" in human_ui_block
 
 
-def test_host_agent_can_supply_initial_architecture_without_model_provider_call():
-    client = make_client()
+def test_host_agent_can_supply_initial_architecture_without_model_provider_call(dsn):
+    client = make_client(dsn)
 
     project = client.post("/projects", json={
         "name": "Codex Host Demo",
@@ -146,8 +150,8 @@ def test_host_agent_can_supply_initial_architecture_without_model_provider_call(
     assert activity[-1]["payload"]["intent"] == "INITIAL_ARCHITECTURE"
 
 
-def test_webmcp_agent_can_create_reviewable_recommendation_without_model_provider():
-    client = make_client()
+def test_webmcp_agent_can_create_reviewable_recommendation_without_model_provider(dsn):
+    client = make_client(dsn)
     project = client.post("/projects", json={
         "name": "Interactive Decision Demo",
         "goal": "Build a React frontend, FastAPI backend, and PostgreSQL persistence.",

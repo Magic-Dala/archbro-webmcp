@@ -4,10 +4,11 @@ import json
 from urllib import request
 
 from archbro.backend.core.contracts import Task, TaskOwner, TaskSource, TaskStatus
-from archbro.platform.persistence.repository import ProjectRepository
+import os
+
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 
 BASE_URL = "http://127.0.0.1:8012"
-DB_PATH = ".webmcp-competition-live.db"
 PROJECT_NAME = "WebMCP Demo"
 
 
@@ -68,7 +69,10 @@ def main() -> None:
         raise SystemExit(f"Project not found: {PROJECT_NAME}")
     project_id = project["id"]
 
-    repo = ProjectRepository(DB_PATH)
+    database_url = (os.environ.get("DATABASE_URL") or "").strip()
+    if not database_url:
+        raise SystemExit("DATABASE_URL is required")
+    repo = PostgresProjectRepository(database_url)
     existing_titles = {task.title for task in repo.list_tasks(project_id)}
     seeded_tasks = [
         Task(

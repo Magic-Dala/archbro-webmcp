@@ -1,6 +1,4 @@
 import asyncio
-import tempfile
-from pathlib import Path
 
 from archbro.backend.agent.orchestration import AgentOrchestrator
 from archbro.backend.core.contracts import (
@@ -28,18 +26,21 @@ from archbro.backend.core.evaluation import (
 )
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.backend.llm.provider import ModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def _repo_with_project(goal: str = "Build the project."):
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "m4.db"))
+def _repo_with_project(dsn, goal: str = "Build the project."):
+    repo = PostgresProjectRepository(dsn)
     project = Project(name="M4 Test", goal=goal)
     repo.save_project(project)
     return repo, project
 
 
-def test_blocked_listing_identity_is_implementation_issue_and_keeps_architecture():
-    repo, project = _repo_with_project("Build an AI rental assistant.")
+def test_blocked_listing_identity_is_implementation_issue_and_keeps_architecture(dsn):
+    repo, project = _repo_with_project(dsn, "Build an AI rental assistant.")
     architecture = Architecture(
         version=1,
         summary="Rental architecture",
@@ -93,8 +94,8 @@ def test_blocked_listing_identity_is_implementation_issue_and_keeps_architecture
     assert repo.get_task(task.id).status == TaskStatus.BLOCKED
 
 
-def test_explicit_persistence_boundary_change_creates_proposal_without_mutating_accepted_architecture():
-    repo, project = _repo_with_project(
+def test_explicit_persistence_boundary_change_creates_proposal_without_mutating_accepted_architecture(dsn):
+    repo, project = _repo_with_project(dsn,
         "Build a project app using FastAPI and PostgreSQL for persistence."
     )
     repo.save_architecture(
@@ -135,8 +136,8 @@ def test_explicit_persistence_boundary_change_creates_proposal_without_mutating_
     assert set(proposal.affected_components) == {"backend", "database"}
 
 
-def test_internal_refactor_is_aligned_and_does_not_create_proposal():
-    repo, project = _repo_with_project("Build a FastAPI project app.")
+def test_internal_refactor_is_aligned_and_does_not_create_proposal(dsn):
+    repo, project = _repo_with_project(dsn, "Build a FastAPI project app.")
     repo.save_architecture(
         project.id,
         Architecture(
@@ -205,8 +206,8 @@ class _ContradictoryProvider(ModelProvider):
         )
 
 
-def test_drift_policy_rejects_proposal_when_model_classifies_event_as_aligned():
-    repo, project = _repo_with_project("Build a FastAPI project app.")
+def test_drift_policy_rejects_proposal_when_model_classifies_event_as_aligned(dsn):
+    repo, project = _repo_with_project(dsn, "Build a FastAPI project app.")
     repo.save_architecture(
         project.id,
         Architecture(

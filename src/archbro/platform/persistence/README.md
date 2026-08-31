@@ -2,14 +2,12 @@
 
 Archbro backend code depends on `ProjectRepositoryPort`; concrete storage belongs here.
 
-- `repository.py` — SQLite implementation for local development and deterministic demos.
-- `firestore.py` — Firestore implementation for durable Google Cloud deployment, adapted from the repository pattern proven in Keys by Friday.
+- `postgres.py` — the PostgreSQL implementation, and the only one.
 
-Runtime selection:
+One implementation is deliberate. Keeping several backends behaviourally
+identical is a standing source of bugs -- the kind where one store raises a
+different exception than another on the same input, which no reasonable test
+catches until production does. `ARCHBRO_PERSISTENCE` accepts only `postgres`,
+and `DATABASE_URL` is required.
 
-```text
-ARCHBRO_PERSISTENCE=sqlite      -> local SQLite
-ARCHBRO_PERSISTENCE=firestore   -> Firebase Admin / Cloud Firestore
-```
-
-The frontend never imports the Firestore SDK and Jim's agent/API code never imports this concrete adapter.
+Jim's agent/API code never imports this concrete adapter.

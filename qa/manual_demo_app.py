@@ -27,7 +27,7 @@ from archbro.backend.core.evaluation import (
     DriftRecommendedAction,
 )
 from archbro.backend.llm.provider import GoalConversationMessage, GoalDraft, ModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 
 
 class ManualDemoProvider(ModelProvider):
@@ -245,5 +245,7 @@ class ManualDemoProvider(ModelProvider):
         )
 
 
-_demo_db = os.environ.get("ARCHBRO_DEMO_DB", "qa/manual_demo.db")
-app = build_app(ProjectRepository(_demo_db), ManualDemoProvider())
+_demo_database_url = (os.environ.get("DATABASE_URL") or "").strip()
+if not _demo_database_url:
+    raise SystemExit("DATABASE_URL is required")
+app = build_app(PostgresProjectRepository(_demo_database_url), ManualDemoProvider())

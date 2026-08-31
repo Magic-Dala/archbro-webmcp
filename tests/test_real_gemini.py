@@ -1,7 +1,5 @@
 import asyncio
 import os
-from pathlib import Path
-import tempfile
 
 import pytest
 from dotenv import load_dotenv
@@ -24,7 +22,10 @@ from archbro.backend.core.contracts import (
 from archbro.backend.core.evaluation import DriftClassification, DriftRecommendedAction
 from archbro.backend.llm.gemini import GeminiProvider
 from archbro.backend.llm.provider import GoalConversationMessage
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
+from conftest import requires_database
+
+pytestmark = requires_database
 
 load_dotenv()
 
@@ -51,7 +52,7 @@ def _github_change(summary: str, commit_sha: str) -> dict:
 
 
 @pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")), reason="Gemini API key not set")
-def test_real_gemini_goal_and_ask_merge_to_architecture_flow():
+def test_real_gemini_goal_and_ask_merge_to_architecture_flow(dsn):
     provider = GeminiProvider(model_id=os.getenv("GEMINI_TEST_MODEL", "gemini-3.5-flash-lite"))
     current_goal = (
         "Build a simple issue tracking system for a small software engineering team. "
@@ -75,7 +76,7 @@ def test_real_gemini_goal_and_ask_merge_to_architecture_flow():
     assert "csv" in lowered_goal
     assert "microservice" in lowered_goal
 
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "gemini.db"))
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name=draft.suggested_project_name,
         goal=draft.goal,
@@ -104,8 +105,8 @@ def test_real_gemini_goal_and_ask_merge_to_architecture_flow():
 
 
 @pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")), reason="Gemini API key not set")
-def test_real_gemini_drift_evaluation_proposes_without_mutating_accepted_architecture():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "m4-real.db"))
+def test_real_gemini_drift_evaluation_proposes_without_mutating_accepted_architecture(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="M4 Drift Probe",
         goal="Build a project workspace with FastAPI and PostgreSQL persistence.",
@@ -149,8 +150,8 @@ def test_real_gemini_drift_evaluation_proposes_without_mutating_accepted_archite
 
 
 @pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")), reason="Gemini API key not set")
-def test_real_gemini_m5_acceptance_reconciles_architecture_and_execution_tasks():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "m5-real.db"))
+def test_real_gemini_m5_acceptance_reconciles_architecture_and_execution_tasks(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="M5 Real Acceptance",
         goal="Build a project workspace with FastAPI and PostgreSQL persistence.",
@@ -228,8 +229,8 @@ def test_real_gemini_m5_acceptance_reconciles_architecture_and_execution_tasks()
 
 
 @pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")), reason="Gemini API key not set")
-def test_real_gemini_m5_rejection_preserves_accepted_architecture_and_tasks():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "m5-real-reject.db"))
+def test_real_gemini_m5_rejection_preserves_accepted_architecture_and_tasks(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="M5 Real Rejection",
         goal="Build a project workspace with FastAPI and PostgreSQL persistence.",
@@ -289,8 +290,8 @@ def test_real_gemini_m5_rejection_preserves_accepted_architecture_and_tasks():
 
 
 @pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")), reason="Gemini API key not set")
-def test_real_gemini_aligned_external_observation_is_durable_without_architecture_churn():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "aligned-observation.db"))
+def test_real_gemini_aligned_external_observation_is_durable_without_architecture_churn(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="Aligned Observation",
         goal="Build a FastAPI project service backed by PostgreSQL.",
@@ -338,8 +339,8 @@ def test_real_gemini_aligned_external_observation_is_durable_without_architectur
 
 
 @pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")), reason="Gemini API key not set")
-def test_real_gemini_external_drift_links_real_evidence_and_replays_exactly_once():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "evidence-replay.db"))
+def test_real_gemini_external_drift_links_real_evidence_and_replays_exactly_once(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="Evidence Replay",
         goal="Build a FastAPI project service backed by PostgreSQL.",
@@ -399,8 +400,8 @@ def test_real_gemini_external_drift_links_real_evidence_and_replays_exactly_once
 
 
 @pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")), reason="Gemini API key not set")
-def test_real_gemini_untrusted_external_instruction_does_not_override_project_state():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "untrusted-observation.db"))
+def test_real_gemini_untrusted_external_instruction_does_not_override_project_state(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="Untrusted Observation",
         goal="Build and maintain a FastAPI service with PostgreSQL persistence.",

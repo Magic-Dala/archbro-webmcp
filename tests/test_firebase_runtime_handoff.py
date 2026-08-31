@@ -1,22 +1,21 @@
-from pathlib import Path
-import tempfile
-
 import pytest
 from fastapi.testclient import TestClient
 
 import archbro.integrations.firebase as firebase_integration
 from archbro.backend.core.authorization import TrustedPrincipal
 from archbro.backend.llm.fake import FakeModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import create_app
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def _repository() -> ProjectRepository:
-    database = Path(tempfile.mkdtemp()) / "firebase-runtime-handoff.db"
-    return ProjectRepository(str(database))
+def _repository(dsn) -> PostgresProjectRepository:
+    return PostgresProjectRepository(dsn)
 
 
-def test_firebase_auth_mode_constructs_canonical_provider_and_forwards_token(
+def test_firebase_auth_mode_constructs_canonical_provider_and_forwards_token(dsn,
     monkeypatch: pytest.MonkeyPatch,
 ):
     constructed_projects: list[str] = []
@@ -45,7 +44,7 @@ def test_firebase_auth_mode_constructs_canonical_provider_and_forwards_token(
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "archbro-test-project")
     monkeypatch.setenv("ARCHBRO_EDGE_GUARD", "off")
 
-    client = TestClient(create_app(_repository(), FakeModelProvider()))
+    client = TestClient(create_app(_repository(dsn), FakeModelProvider()))
 
     missing_credentials = client.get("/projects")
     authenticated = client.get(
@@ -60,7 +59,7 @@ def test_firebase_auth_mode_constructs_canonical_provider_and_forwards_token(
     assert authenticated.json() == []
 
 
-def test_firebase_auth_mode_requires_a_google_project(
+def test_firebase_auth_mode_requires_a_google_project(dsn,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("ARCHBRO_ENV", "test")
@@ -73,4 +72,4 @@ def test_firebase_auth_mode_requires_a_google_project(
         ValueError,
         match="FIREBASE_PROJECT_ID or GOOGLE_CLOUD_PROJECT is required",
     ):
-        create_app(_repository(), FakeModelProvider())
+        create_app(_repository(dsn), FakeModelProvider())

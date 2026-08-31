@@ -37,7 +37,12 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
     gateways: dict[str, ExternalMcpGateway] = {}
     oauth_managers: dict[str, McpOAuthManager] = {}
     oauth_state_owners: dict[str, str] = {}
-    local_persistence = os.getenv("ARCHBRO_PERSISTENCE", "sqlite").strip().lower() == "sqlite"
+    # Slack refuses a localhost redirect, and the OAuth popup has to post back
+    # to the developer's UI origin, so both borrow fixed values during local
+    # development. The condition is the environment itself: this used to be
+    # inferred from the persistence backend being SQLite, which stopped meaning
+    # anything once PostgreSQL became the only store.
+    local_environment = os.getenv("ARCHBRO_ENV", "local").strip().lower() == "local"
 
     def runtime_for(principal: TrustedPrincipal) -> tuple[ExternalMcpGateway, McpOAuthManager]:
         user_id = principal.user_id
@@ -56,10 +61,10 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
         return gateway, manager
 
     def oauth_redirect_uri(request: Request, provider_id: str) -> str:
-        if provider_id == "slack" and local_persistence:
+        if provider_id == "slack" and local_environment:
             public_base = os.getenv(
                 "ARCHBRO_SLACK_OAUTH_REDIRECT_BASE_URL",
-                "https://archbro.hoson.xyz",
+                "https://archbro-dev.magicdala.com",
             ).strip().rstrip("/")
             parsed = urlsplit(public_base)
             if parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.query and not parsed.fragment:
@@ -82,7 +87,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
         }
         payload_json = json.dumps(payload).replace("<", "\\u003c")
         target_origin = "window.location.origin"
-        if provider_id == "slack" and local_persistence:
+        if provider_id == "slack" and local_environment:
             local_ui_origin = os.getenv(
                 "ARCHBRO_LOCAL_UI_ORIGIN",
                 "http://127.0.0.1:8012",

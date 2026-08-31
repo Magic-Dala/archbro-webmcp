@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-import tempfile
 
 import pytest
 
@@ -23,13 +22,16 @@ from archbro.backend.core.contracts import (
 )
 from archbro.backend.core.observation import ObservationInProgressError
 from archbro.backend.llm.fake import FakeModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.pipeline.contracts import DeliveryOutcome, NormalizedSignal
 from archbro.platform.pipeline.delivery import SignalDelivery
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def _repo_with_architecture() -> tuple[ProjectRepository, Project]:
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "signal-pipeline.db"))
+def _repo_with_architecture(dsn) -> tuple[PostgresProjectRepository, Project]:
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="Signal Pipeline",
         goal="Keep project reality aligned with a FastAPI and PostgreSQL architecture.",
@@ -75,8 +77,8 @@ def _github_push_signal(commit_sha: str = "abc123") -> NormalizedSignal:
     )
 
 
-def test_normalized_signal_reaches_the_agent_and_produces_a_durable_run():
-    repo, project = _repo_with_architecture()
+def test_normalized_signal_reaches_the_agent_and_produces_a_durable_run(dsn):
+    repo, project = _repo_with_architecture(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
     delivery = SignalDelivery(orchestrator)
 
@@ -96,8 +98,8 @@ def test_normalized_signal_reaches_the_agent_and_produces_a_durable_run():
     assert events[0].source_event_id == "abc123"
 
 
-def test_redelivering_the_same_signal_does_not_produce_a_second_run():
-    repo, project = _repo_with_architecture()
+def test_redelivering_the_same_signal_does_not_produce_a_second_run(dsn):
+    repo, project = _repo_with_architecture(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
     delivery = SignalDelivery(orchestrator)
 
@@ -113,8 +115,8 @@ def test_redelivering_the_same_signal_does_not_produce_a_second_run():
     assert len(repo.list_events(project.id)) == 1
 
 
-def test_concurrent_observation_conflict_is_retried_with_backoff():
-    repo, project = _repo_with_architecture()
+def test_concurrent_observation_conflict_is_retried_with_backoff(dsn):
+    repo, project = _repo_with_architecture(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
 
     real_observe = orchestrator.observe_event
@@ -143,8 +145,8 @@ def test_concurrent_observation_conflict_is_retried_with_backoff():
     assert len(repo.list_agent_runs(project.id)) == 1
 
 
-def test_persistent_conflict_gives_up_without_raising():
-    repo, project = _repo_with_architecture()
+def test_persistent_conflict_gives_up_without_raising(dsn):
+    repo, project = _repo_with_architecture(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
 
     attempts = 0
@@ -173,8 +175,8 @@ def test_persistent_conflict_gives_up_without_raising():
     assert repo.list_agent_runs(project.id) == []
 
 
-def test_failed_agent_run_is_not_reported_as_applied():
-    repo, project = _repo_with_architecture()
+def test_failed_agent_run_is_not_reported_as_applied(dsn):
+    repo, project = _repo_with_architecture(dsn)
 
     class _FailingProvider(FakeModelProvider):
         async def generate(self, **kwargs):
@@ -205,7 +207,7 @@ def _github_merged_pr_signal(source_event_id: str, repository: str) -> Normalize
     )
 
 
-def test_reusing_one_identity_across_repositories_is_rejected_not_crashed():
+def test_reusing_one_identity_across_repositories_is_rejected_not_crashed(dsn):
     """A bare PR number is only unique inside one repository.
 
     The backend replay key is ``project_id | source | source_event_id`` and does
@@ -213,7 +215,7 @@ def test_reusing_one_identity_across_repositories_is_rejected_not_crashed():
     to the same identity with different payloads. That must surface as a terminal
     outcome rather than an exception, or one bad signal aborts the whole batch.
     """
-    repo, project = _repo_with_architecture()
+    repo, project = _repo_with_architecture(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
     delivery = SignalDelivery(orchestrator)
 
@@ -230,8 +232,8 @@ def test_reusing_one_identity_across_repositories_is_rejected_not_crashed():
     assert events[0].payload["repository"] == "org/repo-a"
 
 
-def test_provider_scoped_identities_stay_independent_across_repositories():
-    repo, project = _repo_with_architecture()
+def test_provider_scoped_identities_stay_independent_across_repositories(dsn):
+    repo, project = _repo_with_architecture(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
     delivery = SignalDelivery(orchestrator)
 
@@ -254,11 +256,11 @@ def test_provider_scoped_identities_stay_independent_across_repositories():
     assert len(repo.list_agent_runs(project.id)) == 2
 
 
-def test_malformed_payload_does_not_abort_the_batch():
+def test_malformed_payload_does_not_abort_the_batch(dsn):
     """Payload validation is caught inside the orchestrator, so it surfaces as a
     failed run rather than a raised error. Either way the batch keeps going.
     """
-    repo, project = _repo_with_architecture()
+    repo, project = _repo_with_architecture(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
     delivery = SignalDelivery(orchestrator)
 
@@ -279,14 +281,14 @@ def test_malformed_payload_does_not_abort_the_batch():
     assert len(repo.list_events(project.id)) == 1
 
 
-def test_unexpected_value_error_propagates_instead_of_looking_like_a_rejection():
+def test_unexpected_value_error_propagates_instead_of_looking_like_a_rejection(dsn):
     """Only observation-contract violations are terminal rejections.
 
     Persistence corruption also surfaces as ValueError (for example the Firestore
     adapter raising on a malformed idempotency key). Swallowing that as REJECTED
     would let the connector advance past corrupted state and hide the fault.
     """
-    repo, project = _repo_with_architecture()
+    repo, project = _repo_with_architecture(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
 
     async def corrupt_store(event):
@@ -299,7 +301,7 @@ def test_unexpected_value_error_propagates_instead_of_looking_like_a_rejection()
         asyncio.run(delivery.deliver(project.id, _github_push_signal()))
 
 
-def test_payload_is_copied_so_later_mutation_cannot_change_a_delivered_observation():
+def test_payload_is_copied_so_later_mutation_cannot_change_a_delivered_observation(dsn):
     """The backend rejects a redelivery whose identity matches but data differs.
 
     A caller holding a reference to the original dict must not be able to turn a
@@ -318,7 +320,7 @@ def test_payload_is_copied_so_later_mutation_cannot_change_a_delivered_observati
     assert signal.payload["summary"] == "one"
 
 
-def test_pipeline_cannot_mutate_project_state_directly():
+def test_pipeline_cannot_mutate_project_state_directly(dsn):
     """The Agent boundary is the only path into canonical state.
 
     Import-level guard so a future change cannot quietly bypass
@@ -329,7 +331,7 @@ def test_pipeline_cannot_mutate_project_state_directly():
 
     import archbro.platform.pipeline as pipeline_package
 
-    forbidden = ("action_executor", "reconciliation", "persistence.repository", "persistence.firestore")
+    forbidden = ("action_executor", "reconciliation", "persistence.postgres")
     package_dir = _Path(pipeline_package.__file__).parent
 
     for module_path in package_dir.glob("*.py"):
@@ -347,7 +349,7 @@ def test_pipeline_cannot_mutate_project_state_directly():
                 )
 
 
-def test_signal_identity_is_required_so_replay_protection_cannot_be_bypassed():
+def test_signal_identity_is_required_so_replay_protection_cannot_be_bypassed(dsn):
     with pytest.raises(ValueError, match="source_event_id"):
         NormalizedSignal(
             source_event_id="   ",

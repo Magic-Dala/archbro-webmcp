@@ -59,26 +59,28 @@ docker compose run --rm app python -m pytest tests/test_api_contract.py
 docker compose run --rm app python -m pytest -k healthz   # by name
 ```
 
-Do not add `--no-deps`: the PostgreSQL tests need the database container, and
-without it they silently **skip** rather than fail.
+Do not add `--no-deps`: almost every test needs the database container, and
+without `DATABASE_URL` they silently **skip** rather than fail.
 
-Expect `184 passed, 7 skipped`. The 7 skips are `test_real_gemini.py`, which
+Expect `252 passed, 7 skipped`. The 7 skips are `test_real_gemini.py`, which
 needs a real API key.
 
 ## Persistence
 
-The application talks to `ProjectRepositoryPort`, never to a database directly,
-so the backend is identical whichever store is configured.
+PostgreSQL is the only store. The application talks to
+`ProjectRepositoryPort`, never to a database directly, so the domain code stays
+independent of it -- but there is nothing to switch: `ARCHBRO_PERSISTENCE`
+accepts only `postgres`, and the app refuses to start without `DATABASE_URL`.
+
+There used to be SQLite and Firestore implementations as well. Three
+implementations meant three chances to diverge on a detail no test pins down --
+the last such bug was a Postgres repository raising a different exception type
+than SQLite for a duplicate observation. One implementation cannot disagree
+with itself.
 
 ```bash
-# SQLite (the default) — file on a named volume, nothing else to run
 docker compose up -d --wait
-
-# PostgreSQL
-ARCHBRO_PERSISTENCE=postgres docker compose up -d --wait
 ```
-
-To make PostgreSQL your default, put `ARCHBRO_PERSISTENCE=postgres` in `.env`.
 
 **How the app reaches the database.** Compose builds `DATABASE_URL` from the
 `POSTGRES_*` values and injects it:
@@ -112,7 +114,7 @@ Defaults chosen so a new machine needs no secrets:
 | --- | --- | --- |
 | `ARCHBRO_AUTH_MODE` | `local` | No Firebase project needed |
 | `ARCHBRO_PROVIDER` | `fake` | Deterministic model, no API key needed |
-| `ARCHBRO_PERSISTENCE` | `sqlite` | Nothing to provision |
+| `ARCHBRO_PERSISTENCE` | `postgres` | The `db` service is part of the stack |
 
 For real model calls, put `GEMINI_API_KEY=...` and `ARCHBRO_PROVIDER=gemini`
 in `.env`. See `.env.example` for every variable.
@@ -147,9 +149,8 @@ detects anything.
 
 **Respect the ownership boundaries** in [OWNERSHIP.md](OWNERSHIP.md). The one
 that bites hardest: `backend/core/repository.py` defines the persistence port,
-and backend code must not import `ProjectRepository`, `FirestoreProjectRepository`,
-or `PostgresProjectRepository`. Import the port. That is what lets the store be
-swapped without touching the domain.
+and backend code must not import `PostgresProjectRepository`. Import the port.
+That is what keeps the domain independent of the store.
 
 **`platform/runtime/app.py` is the only place that chooses concrete
 implementations.** Feature code never imports the runtime layer.

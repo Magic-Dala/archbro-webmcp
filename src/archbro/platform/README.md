@@ -2,7 +2,7 @@
 
 Owns concrete runtime and operational infrastructure:
 
-- `persistence/` — SQLite, PostgreSQL, or Firestore, selected by `ARCHBRO_PERSISTENCE`. All three implement the backend-owned `ProjectRepositoryPort`.
+- `persistence/` — PostgreSQL, the only store, implementing the backend-owned `ProjectRepositoryPort`.
 - `runtime/` — FastAPI composition root and dependency wiring.
 - `pipeline/` — normalized event delivery / buffering boundary.
 - `observability/` — logs, metrics, telemetry.

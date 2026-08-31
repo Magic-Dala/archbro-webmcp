@@ -7,7 +7,7 @@ Use this runbook only for real Codex/ChatGPT Site Tools acceptance. It intention
 Open exactly:
 
 ```text
-https://archbro.hoson.xyz/?mode=webmcp
+https://archbro-dev.magicdala.com/?mode=webmcp
 ```
 
 The `?mode=webmcp` query parameter enables ArchBro's competition-safe UI. `data-webmcp-agent-mode="true"` proves only that this UI mode is active; it does not prove or disprove host Site Tools transport.

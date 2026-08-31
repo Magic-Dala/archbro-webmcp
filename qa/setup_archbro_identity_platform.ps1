@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$publicHost = "archbro.hoson.xyz"
+$publicHost = "archbro-dev.magicdala.com"
 $runHost = "archbro-webmcp-23051378248.us-west1.run.app"
 $alternateRunHost = "archbro-webmcp-fbfcgmlcsq-uw.a.run.app"
 $gcloud = (Get-Command gcloud.cmd -ErrorAction Stop).Source

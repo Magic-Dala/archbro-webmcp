@@ -47,11 +47,10 @@ services:
       # Fixed for local development. Production overrides these on the host.
       ARCHBRO_ENV: local
       ARCHBRO_AUTH_MODE: local
-      ARCHBRO_PERSISTENCE: ${ARCHBRO_PERSISTENCE:-sqlite}
-      ARCHBRO_DB: /data/archbro.db
+      ARCHBRO_PERSISTENCE: ${ARCHBRO_PERSISTENCE:-postgres}
       ARCHBRO_PROVIDER: ${ARCHBRO_PROVIDER:-fake}
-      # Consumed by the PostgreSQL repository once it exists. The database is
-      # already provisioned here so its tests have a real server to run against.
+      # PostgreSQL is the only persistence backend, so the app cannot start
+      # without this and the test suite skips every database test without it.
       DATABASE_URL: postgresql://${POSTGRES_USER:-archbro}:${POSTGRES_PASSWORD:-archbro}@db:5432/${POSTGRES_DB:-archbro}
       PORT: "8080"
     ports:
@@ -64,7 +63,6 @@ services:
       # rather than failing one file. Dependencies still come from the image,
       # since they install into site-packages rather than /app.
       - .:/app
-      - app-data:/data
     depends_on:
       db:
         condition: service_healthy
@@ -88,4 +86,3 @@ services:
 
 volumes:
   db-data:
-  app-data:

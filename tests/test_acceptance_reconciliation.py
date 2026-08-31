@@ -1,7 +1,4 @@
-from pathlib import Path
-import sqlite3
-import tempfile
-
+import psycopg
 import pytest
 
 from archbro.backend.core.action_executor import ActionExecutor
@@ -19,11 +16,14 @@ from archbro.backend.core.contracts import (
     TaskSource,
     TaskStatus,
 )
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def _repo_with_project():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "m5.db"))
+def _repo_with_project(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="M5 Reconciliation",
         goal="Keep execution aligned with accepted architecture.",
@@ -84,8 +84,8 @@ def _proposal(project_id: str, *, affected_components=None, proposed_changes=Non
     )
 
 
-def test_acceptance_reconciles_tasks_without_technology_specific_rules():
-    repo, project = _repo_with_project()
+def test_acceptance_reconciles_tasks_without_technology_specific_rules(dsn):
+    repo, project = _repo_with_project(dsn)
     todo = Task(
         title="Implement Store A persistence",
         description="Wire durable application persistence.",
@@ -150,8 +150,8 @@ def test_acceptance_reconciles_tasks_without_technology_specific_rules():
     assert migration.acceptance_criteria
 
 
-def test_acceptance_blocks_other_impacted_component_tasks_but_does_not_invent_extra_task():
-    repo, project = _repo_with_project()
+def test_acceptance_blocks_other_impacted_component_tasks_but_does_not_invent_extra_task(dsn):
+    repo, project = _repo_with_project(dsn)
     primary_task = Task(title="Implement persistence", related_component="primary_store")
     api_task = Task(
         title="Update API persistence adapter",
@@ -180,8 +180,8 @@ def test_acceptance_blocks_other_impacted_component_tasks_but_does_not_invent_ex
     assert not any(task.title.startswith("Migrate API") for task in generated)
 
 
-def test_acceptance_does_not_duplicate_existing_active_migration_task():
-    repo, project = _repo_with_project()
+def test_acceptance_does_not_duplicate_existing_active_migration_task(dsn):
+    repo, project = _repo_with_project(dsn)
     existing = Task(
         title="Migrate Store A to Store B",
         description="Human already created the migration work.",
@@ -205,8 +205,8 @@ def test_acceptance_does_not_duplicate_existing_active_migration_task():
     assert matching[0].status == TaskStatus.TODO
 
 
-def test_migration_task_deduplication_is_component_scoped():
-    repo, project = _repo_with_project()
+def test_migration_task_deduplication_is_component_scoped(dsn):
+    repo, project = _repo_with_project(dsn)
     architecture = repo.get_architecture(project.id)
     data = architecture.find_component("data")
     data.children.append(
@@ -247,8 +247,8 @@ def test_migration_task_deduplication_is_component_scoped():
     assert {task.related_component for task in migrations} == {"primary_store", "archive_store"}
 
 
-def test_completed_matching_migration_task_prevents_duplicate_generation():
-    repo, project = _repo_with_project()
+def test_completed_matching_migration_task_prevents_duplicate_generation(dsn):
+    repo, project = _repo_with_project(dsn)
     completed = Task(
         title="Migrate Store A to Store B",
         status=TaskStatus.DONE,
@@ -269,8 +269,8 @@ def test_completed_matching_migration_task_prevents_duplicate_generation():
     assert matching[0].status == TaskStatus.DONE
 
 
-def test_null_optional_replacement_fields_preserve_existing_component_contract():
-    repo, project = _repo_with_project()
+def test_null_optional_replacement_fields_preserve_existing_component_contract(dsn):
+    repo, project = _repo_with_project(dsn)
     proposal = _proposal(
         project.id,
         proposed_changes=[
@@ -293,8 +293,8 @@ def test_null_optional_replacement_fields_preserve_existing_component_contract()
     assert component.responsibility == "Persist durable application state."
 
 
-def test_invalid_reconciliation_plan_fails_before_architecture_or_tasks_change():
-    repo, project = _repo_with_project()
+def test_invalid_reconciliation_plan_fails_before_architecture_or_tasks_change(dsn):
+    repo, project = _repo_with_project(dsn)
     task = Task(
         title="Persistence task",
         status=TaskStatus.IN_PROGRESS,
@@ -323,8 +323,8 @@ def test_invalid_reconciliation_plan_fails_before_architecture_or_tasks_change()
     assert repo.get_proposal(proposal.id).status == ProposalStatus.PENDING
 
 
-def test_acceptance_rejects_multiple_replacements_of_same_component_before_writes():
-    repo, project = _repo_with_project()
+def test_acceptance_rejects_multiple_replacements_of_same_component_before_writes(dsn):
+    repo, project = _repo_with_project(dsn)
     proposal = _proposal(
         project.id,
         proposed_changes=[
@@ -350,8 +350,8 @@ def test_acceptance_rejects_multiple_replacements_of_same_component_before_write
     assert repo.get_proposal(proposal.id).status == ProposalStatus.PENDING
 
 
-def test_acceptance_rejects_proposal_created_for_an_older_architecture_version():
-    repo, project = _repo_with_project()
+def test_acceptance_rejects_proposal_created_for_an_older_architecture_version(dsn):
+    repo, project = _repo_with_project(dsn)
     first = _proposal(project.id)
     second = _proposal(
         project.id,
@@ -377,8 +377,8 @@ def test_acceptance_rejects_proposal_created_for_an_older_architecture_version()
     assert repo.get_proposal(second.id).status == ProposalStatus.PENDING
 
 
-def test_acceptance_rejects_noop_component_replacement_without_bumping_architecture():
-    repo, project = _repo_with_project()
+def test_acceptance_rejects_noop_component_replacement_without_bumping_architecture(dsn):
+    repo, project = _repo_with_project(dsn)
     architecture = repo.get_architecture(project.id)
     component = architecture.find_component("primary_store")
     assert component is not None
@@ -403,8 +403,8 @@ def test_acceptance_rejects_noop_component_replacement_without_bumping_architect
     assert repo.get_proposal(proposal.id).status == ProposalStatus.PENDING
 
 
-def test_acceptance_rejects_replace_component_fields_that_would_be_silently_ignored():
-    repo, project = _repo_with_project()
+def test_acceptance_rejects_replace_component_fields_that_would_be_silently_ignored(dsn):
+    repo, project = _repo_with_project(dsn)
     proposal = _proposal(
         project.id,
         proposed_changes=[
@@ -425,8 +425,8 @@ def test_acceptance_rejects_replace_component_fields_that_would_be_silently_igno
     assert repo.get_proposal(proposal.id).status == ProposalStatus.PENDING
 
 
-def test_proposal_persistence_rebuilds_server_owned_review_provenance():
-    repo, project = _repo_with_project()
+def test_proposal_persistence_rebuilds_server_owned_review_provenance(dsn):
+    repo, project = _repo_with_project(dsn)
     candidate = _proposal(project.id).model_copy(
         update={
             "id": "proposal_provider_chosen",
@@ -451,8 +451,8 @@ def test_proposal_persistence_rebuilds_server_owned_review_provenance():
         repo.get_proposal(candidate.id)
 
 
-def test_acceptance_rejects_inconsistent_project_architecture_version_before_writes():
-    repo, project = _repo_with_project()
+def test_acceptance_rejects_inconsistent_project_architecture_version_before_writes(dsn):
+    repo, project = _repo_with_project(dsn)
     repo.save_project(project.model_copy(update={"architecture_version": 0}))
     proposal = _proposal(project.id)
     repo.save_proposal(proposal)
@@ -465,8 +465,8 @@ def test_acceptance_rejects_inconsistent_project_architecture_version_before_wri
     assert repo.get_proposal(proposal.id).status == ProposalStatus.PENDING
 
 
-def test_sqlite_acceptance_rolls_back_all_state_if_a_write_fails_mid_transaction():
-    repo, project = _repo_with_project()
+def test_acceptance_rolls_back_all_state_if_a_write_fails_mid_transaction(dsn):
+    repo, project = _repo_with_project(dsn)
     task = Task(
         title="Implement Store A persistence",
         status=TaskStatus.IN_PROGRESS,
@@ -479,16 +479,18 @@ def test_sqlite_acceptance_rolls_back_all_state_if_a_write_fails_mid_transaction
     with repo._connect() as conn:
         conn.execute(
             """
+            CREATE FUNCTION fail_acceptance_project_write() RETURNS trigger AS $$
+            BEGIN
+                RAISE EXCEPTION 'injected acceptance failure';
+            END;
+            $$ LANGUAGE plpgsql;
             CREATE TRIGGER fail_acceptance_project_write
             BEFORE INSERT ON projects
-            WHEN NEW.id = ?
-            BEGIN
-                SELECT RAISE(ABORT, 'injected acceptance failure');
-            END;
-            """.replace("?", "'" + project.id + "'")
+            FOR EACH ROW EXECUTE FUNCTION fail_acceptance_project_write();
+            """
         )
 
-    with pytest.raises(sqlite3.IntegrityError, match="injected acceptance failure"):
+    with pytest.raises(psycopg.errors.RaiseException, match="injected acceptance failure"):
         ActionExecutor(repo).accept_proposal(project.id, proposal.id)
 
     architecture = repo.get_architecture(project.id)
@@ -499,8 +501,8 @@ def test_sqlite_acceptance_rolls_back_all_state_if_a_write_fails_mid_transaction
     assert repo.get_proposal(proposal.id).status == ProposalStatus.PENDING
 
 
-def test_sqlite_acceptance_rechecks_base_version_inside_commit(monkeypatch):
-    repo, project = _repo_with_project()
+def test_acceptance_rechecks_base_version_inside_commit(dsn, monkeypatch):
+    repo, project = _repo_with_project(dsn)
     stale_architecture = repo.get_architecture(project.id)
     stale_project = repo.get_project(project.id)
     first = _proposal(project.id)
@@ -518,7 +520,7 @@ def test_sqlite_acceptance_rechecks_base_version_inside_commit(monkeypatch):
     repo.save_proposal(second)
 
     ActionExecutor(repo).accept_proposal(project.id, first.id)
-    assert ProjectRepository.get_architecture(repo, project.id).version == 2
+    assert PostgresProjectRepository.get_architecture(repo, project.id).version == 2
 
     # Simulate a second request that planned against v1 before the first request
     # committed. The atomic repository check must observe the real persisted v2.
@@ -528,50 +530,50 @@ def test_sqlite_acceptance_rechecks_base_version_inside_commit(monkeypatch):
     with pytest.raises(ValueError, match="accepted architecture changed before proposal commit"):
         ActionExecutor(repo).accept_proposal(project.id, second.id)
 
-    accepted = ProjectRepository.get_architecture(repo, project.id)
+    accepted = PostgresProjectRepository.get_architecture(repo, project.id)
     assert accepted.version == 2
     assert accepted.find_component("primary_store").name == "Store B"
-    assert ProjectRepository.get_proposal(repo, second.id).status == ProposalStatus.PENDING
+    assert PostgresProjectRepository.get_proposal(repo, second.id).status == ProposalStatus.PENDING
 
 
-def test_sqlite_reject_cannot_overwrite_a_concurrent_accept(monkeypatch):
-    repo, project = _repo_with_project()
+def test_reject_cannot_overwrite_a_concurrent_accept(dsn, monkeypatch):
+    repo, project = _repo_with_project(dsn)
     proposal = _proposal(project.id)
     repo.save_proposal(proposal)
     stale_pending = repo.get_proposal(proposal.id)
 
     ActionExecutor(repo).accept_proposal(project.id, proposal.id)
-    assert ProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.ACCEPTED
+    assert PostgresProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.ACCEPTED
 
     # Simulate a reject request that read PENDING before the accept committed.
     monkeypatch.setattr(repo, "get_proposal", lambda _proposal_id: stale_pending)
     with pytest.raises(ValueError, match="proposal status changed before decision commit"):
         ActionExecutor(repo).reject_proposal(project.id, proposal.id)
 
-    assert ProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.ACCEPTED
+    assert PostgresProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.ACCEPTED
 
 
-def test_sqlite_accept_cannot_overwrite_a_concurrent_reject(monkeypatch):
-    repo, project = _repo_with_project()
+def test_accept_cannot_overwrite_a_concurrent_reject(dsn, monkeypatch):
+    repo, project = _repo_with_project(dsn)
     proposal = _proposal(project.id)
     repo.save_proposal(proposal)
     stale_pending = repo.get_proposal(proposal.id)
 
     ActionExecutor(repo).reject_proposal(project.id, proposal.id)
-    assert ProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.REJECTED
+    assert PostgresProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.REJECTED
 
     monkeypatch.setattr(repo, "get_proposal", lambda _proposal_id: stale_pending)
     with pytest.raises(ValueError, match="proposal is no longer pending at acceptance commit"):
         ActionExecutor(repo).accept_proposal(project.id, proposal.id)
 
-    assert ProjectRepository.get_architecture(repo, project.id).version == 1
-    assert ProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.REJECTED
+    assert PostgresProjectRepository.get_architecture(repo, project.id).version == 1
+    assert PostgresProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.REJECTED
 
 
-def test_sqlite_acceptance_rejects_concurrent_task_update(monkeypatch):
+def test_acceptance_rejects_concurrent_task_update(dsn, monkeypatch):
     from datetime import timedelta
 
-    repo, project = _repo_with_project()
+    repo, project = _repo_with_project(dsn)
     task = Task(
         title="Validate persistence recovery",
         status=TaskStatus.IN_PROGRESS,
@@ -603,6 +605,6 @@ def test_sqlite_acceptance_rejects_concurrent_task_update(monkeypatch):
     with pytest.raises(ValueError, match="acceptance task changed before proposal commit"):
         ActionExecutor(repo).accept_proposal(project.id, proposal.id)
 
-    assert ProjectRepository.get_task(repo, task.id).status == TaskStatus.DONE
-    assert ProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.PENDING
-    assert ProjectRepository.get_architecture(repo, project.id).version == 1
+    assert PostgresProjectRepository.get_task(repo, task.id).status == TaskStatus.DONE
+    assert PostgresProjectRepository.get_proposal(repo, proposal.id).status == ProposalStatus.PENDING
+    assert PostgresProjectRepository.get_architecture(repo, project.id).version == 1

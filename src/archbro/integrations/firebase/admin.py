@@ -36,22 +36,3 @@ def get_firebase_admin_app(project_id: str):
         raise FirebaseAdminUnavailable(
             "Firebase Admin could not be initialized."
         ) from exc
-
-
-@lru_cache(maxsize=8)
-def get_firestore_client(project_id: str, database_id: str = "(default)"):
-    """Create and reuse the privileged server-side Firestore client."""
-
-    try:
-        from firebase_admin import firestore
-
-        return firestore.client(
-            app=get_firebase_admin_app(project_id),
-            database_id=database_id or "(default)",
-        )
-    except FirebaseAdminUnavailable:
-        raise
-    except Exception as exc:
-        raise FirebaseAdminUnavailable(
-            "Cloud Firestore could not be initialized."
-        ) from exc

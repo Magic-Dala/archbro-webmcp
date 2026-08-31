@@ -1,6 +1,3 @@
-from pathlib import Path
-import tempfile
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,12 +11,15 @@ from archbro.backend.core.authorization import (
 )
 from archbro.backend.core.contracts import Architecture, Project
 from archbro.backend.llm.fake import FakeModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import build_app
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
 def _client(
-    repo: ProjectRepository,
+    repo: PostgresProjectRepository,
     principal: TrustedPrincipal,
     *,
     token: str = "test-firebase-token",
@@ -39,8 +39,8 @@ def _client(
     return client
 
 
-def _repo() -> ProjectRepository:
-    return ProjectRepository(str(Path(tempfile.mkdtemp()) / "authorization.db"))
+def _repo(dsn) -> PostgresProjectRepository:
+    return PostgresProjectRepository(dsn)
 
 
 def _create_project(client: TestClient, *, team_id: str | None = None) -> dict:
@@ -56,8 +56,8 @@ def _create_project(client: TestClient, *, team_id: str | None = None) -> dict:
     return response.json()
 
 
-def test_verified_firebase_uid_is_canonical_owner_identity():
-    repo = _repo()
+def test_verified_firebase_uid_is_canonical_owner_identity(dsn):
+    repo = _repo(dsn)
     firebase_uid = "firebase-uid-alice"
     alice = _client(repo, TrustedPrincipal(user_id=firebase_uid, team_ids=[]))
 
@@ -67,8 +67,8 @@ def test_verified_firebase_uid_is_canonical_owner_identity():
     assert project["team_id"] is None
 
 
-def test_backend_extracts_bearer_token_before_calling_async_provider():
-    repo = _repo()
+def test_backend_extracts_bearer_token_before_calling_async_provider(dsn):
+    repo = _repo(dsn)
     received_tokens: list[str] = []
 
     async def principal_provider(token: str) -> TrustedPrincipal:
@@ -86,8 +86,8 @@ def test_backend_extracts_bearer_token_before_calling_async_provider():
     assert received_tokens == ["signed.firebase.token"]
 
 
-def test_missing_or_malformed_bearer_token_returns_401_without_calling_provider():
-    repo = _repo()
+def test_missing_or_malformed_bearer_token_returns_401_without_calling_provider(dsn):
+    repo = _repo(dsn)
     calls = 0
 
     async def principal_provider(_: str) -> TrustedPrincipal:
@@ -107,8 +107,8 @@ def test_missing_or_malformed_bearer_token_returns_401_without_calling_provider(
     assert calls == 0
 
 
-def test_invalid_credentials_map_to_401_and_provider_unavailable_maps_to_503():
-    repo = _repo()
+def test_invalid_credentials_map_to_401_and_provider_unavailable_maps_to_503(dsn):
+    repo = _repo(dsn)
 
     async def invalid_provider(_: str) -> TrustedPrincipal:
         raise InvalidCredentialsError("firebase token is invalid")
@@ -130,8 +130,8 @@ def test_invalid_credentials_map_to_401_and_provider_unavailable_maps_to_503():
     assert unavailable.json()["detail"] == "firebase unavailable"
 
 
-def test_owner_identity_is_server_trusted_and_other_user_is_denied():
-    repo = _repo()
+def test_owner_identity_is_server_trusted_and_other_user_is_denied(dsn):
+    repo = _repo(dsn)
     alice = _client(repo, TrustedPrincipal(user_id="alice"))
     bob = _client(repo, TrustedPrincipal(user_id="bob"))
 
@@ -149,8 +149,8 @@ def test_owner_identity_is_server_trusted_and_other_user_is_denied():
     assert spoofed.status_code == 403
 
 
-def test_trusted_team_member_can_work_and_review_but_not_manage_project():
-    repo = _repo()
+def test_trusted_team_member_can_work_and_review_but_not_manage_project(dsn):
+    repo = _repo(dsn)
     alice_principal = TrustedPrincipal(user_id="alice", team_ids=["team-1"])
     bob_principal = TrustedPrincipal(user_id="bob", team_ids=["team-1"])
     alice = _client(repo, alice_principal)
@@ -180,8 +180,8 @@ def test_trusted_team_member_can_work_and_review_but_not_manage_project():
     assert alice.delete(f"/projects/{project_id}").status_code == 204
 
 
-def test_project_cannot_be_created_for_team_not_present_in_trusted_identity():
-    repo = _repo()
+def test_project_cannot_be_created_for_team_not_present_in_trusted_identity(dsn):
+    repo = _repo(dsn)
     client = _client(repo, TrustedPrincipal(user_id="alice", team_ids=["team-1"]))
 
     response = client.post(
@@ -196,8 +196,8 @@ def test_project_cannot_be_created_for_team_not_present_in_trusted_identity():
     assert repo.list_projects() == []
 
 
-def test_real_trusted_identity_fails_closed_on_legacy_unowned_project():
-    repo = _repo()
+def test_real_trusted_identity_fails_closed_on_legacy_unowned_project(dsn):
+    repo = _repo(dsn)
     legacy = Project(
         name="Legacy",
         goal="Pre-auth project without trusted ownership metadata.",
@@ -214,8 +214,8 @@ def test_real_trusted_identity_fails_closed_on_legacy_unowned_project():
     assert local.get(f"/projects/{legacy.id}").status_code == 200
 
 
-def test_authentication_precedes_project_lookup_for_missing_project():
-    repo = _repo()
+def test_authentication_precedes_project_lookup_for_missing_project(dsn):
+    repo = _repo(dsn)
     calls = 0
 
     async def unavailable_provider(_: str) -> TrustedPrincipal:
@@ -240,8 +240,8 @@ def test_authentication_precedes_project_lookup_for_missing_project():
     assert valid.get("/projects/project_missing").status_code == 404
 
 
-def test_goal_drafting_requires_trusted_identity_before_provider_call():
-    repo = _repo()
+def test_goal_drafting_requires_trusted_identity_before_provider_call(dsn):
+    repo = _repo(dsn)
     calls = 0
 
     class CountingProvider(FakeModelProvider):
@@ -272,15 +272,15 @@ def test_goal_drafting_requires_trusted_identity_before_provider_call():
     assert calls == 1
 
 
-def test_production_runtime_rejects_local_development_identity(monkeypatch: pytest.MonkeyPatch):
+def test_production_runtime_rejects_local_development_identity(dsn, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ARCHBRO_ENV", "production")
     monkeypatch.setenv("ARCHBRO_AUTH_MODE", "local")
     with pytest.raises(ValueError, match="must use ARCHBRO_AUTH_MODE=firebase"):
-        build_app(_repo(), FakeModelProvider())
+        build_app(_repo(dsn), FakeModelProvider())
 
 
-def test_runtime_config_is_no_store_and_security_headers_are_present():
-    client = TestClient(build_app(_repo(), FakeModelProvider()))
+def test_runtime_config_is_no_store_and_security_headers_are_present(dsn):
+    client = TestClient(build_app(_repo(dsn), FakeModelProvider()))
     response = client.get("/runtime-config.js")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
@@ -290,7 +290,7 @@ def test_runtime_config_is_no_store_and_security_headers_are_present():
     assert '"auth_mode": "local"' in response.text
 
 
-def test_required_edge_guard_blocks_direct_origin_requests(monkeypatch: pytest.MonkeyPatch):
+def test_required_edge_guard_blocks_direct_origin_requests(dsn, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ARCHBRO_ENV", "production")
     monkeypatch.setenv("ARCHBRO_AUTH_MODE", "firebase")
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "test-project")
@@ -303,7 +303,7 @@ def test_required_edge_guard_blocks_direct_origin_requests(monkeypatch: pytest.M
 
     client = TestClient(
         build_app(
-            _repo(),
+            _repo(dsn),
             FakeModelProvider(),
             principal_provider=principal_provider,
         )
@@ -326,8 +326,8 @@ def test_required_edge_guard_blocks_direct_origin_requests(monkeypatch: pytest.M
     assert allowed.headers["strict-transport-security"] == "max-age=86400"
 
 
-def test_required_edge_guard_fails_closed_without_token(monkeypatch: pytest.MonkeyPatch):
+def test_required_edge_guard_fails_closed_without_token(dsn, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ARCHBRO_EDGE_GUARD", "required")
     monkeypatch.delenv("ARCHBRO_EDGE_TOKEN", raising=False)
     with pytest.raises(ValueError, match="ARCHBRO_EDGE_TOKEN is required"):
-        build_app(_repo(), FakeModelProvider())
+        build_app(_repo(dsn), FakeModelProvider())

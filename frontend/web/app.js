@@ -2,7 +2,8 @@ import {getFirebaseIdToken} from './firebase-auth.js';
 
 const prototype = window.ArchbroPrototype;
 const storedProjectId = localStorage.getItem('archbro-project-id');
-const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp' || window.location.hostname === 'archbro.hoson.xyz';
+const WEBMCP_PUBLIC_HOSTS = new Set(['archbro-dev.magicdala.com', 'archbro.magicdala.com']);
+const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp' || WEBMCP_PUBLIC_HOSTS.has(window.location.hostname);
 
 function loadExpandedProjectIds(storage = localStorage) {
   try {
@@ -3274,7 +3275,7 @@ $('mcpConnectionForm').addEventListener('submit', async (e) => {
   }
 });
 window.addEventListener('message', async (event) => {
-  const trustedOAuthOrigins = new Set([window.location.origin, 'https://archbro.hoson.xyz']);
+  const trustedOAuthOrigins = new Set([window.location.origin, 'https://archbro-dev.magicdala.com', 'https://archbro.magicdala.com']);
   if (!trustedOAuthOrigins.has(event.origin)) return;
   if (activeMcpOAuthPopup && event.source && event.source !== activeMcpOAuthPopup) return;
   const payload = event.data;

@@ -16,7 +16,7 @@ from archbro.backend.core.repository import ProjectRepositoryPort
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.backend.llm.gemini import GeminiProvider
 from archbro.backend.llm.provider import ModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 
 load_dotenv()
 
@@ -41,42 +41,16 @@ def create_app(
 
     selected_repository = repository
     if selected_repository is None:
-        persistence_mode = os.getenv("ARCHBRO_PERSISTENCE", "sqlite").strip().lower()
-        if persistence_mode == "sqlite":
-            db_path = os.getenv("ARCHBRO_DB") or os.getenv("HUMAN_AGENT_DB") or "archbro.db"
-            selected_repository = ProjectRepository(db_path)
-        elif persistence_mode == "postgres":
-            from archbro.platform.persistence.postgres import PostgresProjectRepository
+        persistence_mode = os.getenv("ARCHBRO_PERSISTENCE", "postgres").strip().lower()
+        if persistence_mode != "postgres":
+            raise ValueError("ARCHBRO_PERSISTENCE must be 'postgres'")
 
-            database_url = (os.getenv("DATABASE_URL") or "").strip()
-            if not database_url:
-                raise ValueError(
-                    "DATABASE_URL is required when ARCHBRO_PERSISTENCE=postgres"
-                )
-            selected_repository = PostgresProjectRepository(database_url)
-        elif persistence_mode == "firestore":
-            from archbro.integrations.firebase.admin import get_firestore_client
-            from archbro.platform.persistence.firestore import FirestoreProjectRepository
-
-            project_id = (
-                os.getenv("FIRESTORE_PROJECT_ID")
-                or os.getenv("FIREBASE_PROJECT_ID")
-                or os.getenv("GOOGLE_CLOUD_PROJECT")
-                or ""
-            ).strip()
-            if not project_id:
-                raise ValueError(
-                    "FIRESTORE_PROJECT_ID, FIREBASE_PROJECT_ID, or GOOGLE_CLOUD_PROJECT "
-                    "is required when ARCHBRO_PERSISTENCE=firestore"
-                )
-            database_id = os.getenv("FIRESTORE_DATABASE_ID", "(default)").strip() or "(default)"
-            prefix = os.getenv("ARCHBRO_FIRESTORE_PREFIX", "archbro").strip() or "archbro"
-            selected_repository = FirestoreProjectRepository(
-                get_firestore_client(project_id, database_id),
-                collection_prefix=prefix,
+        database_url = (os.getenv("DATABASE_URL") or "").strip()
+        if not database_url:
+            raise ValueError(
+                "DATABASE_URL is required when ARCHBRO_PERSISTENCE=postgres"
             )
-        else:
-            raise ValueError("ARCHBRO_PERSISTENCE must be 'sqlite', 'postgres', or 'firestore'")
+        selected_repository = PostgresProjectRepository(database_url)
 
     environment = os.getenv("ARCHBRO_ENV", "local").strip().lower()
     if environment not in {"local", "test", "production"}:

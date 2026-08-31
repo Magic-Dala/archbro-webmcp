@@ -2,7 +2,7 @@
 
 ArchBro is a human-guided agentic project workspace where humans and AI agents share one living architecture, execution state, and review boundary.
 
-**Live WebMCP demo:** https://archbro.hoson.xyz/?mode=webmcp
+**Live WebMCP demo:** https://archbro-dev.magicdala.com/?mode=webmcp
 
 Instead of letting an agent guess the UI or maintain a separate plan, ArchBro exposes semantic browser-native WebMCP Site Tools. The host agent can read current project reality, reason about architecture drift, submit a reviewable recommendation, and continue execution after a human decision.
 
@@ -86,7 +86,7 @@ This mode disables the human New Project flow, built-in architecture generation,
 frontend/                       # Web UI + WebMCP browser integration
 src/archbro/backend/            # Core backend, agent, API, governance
 src/archbro/integrations/       # Firebase Auth / external integrations
-src/archbro/platform/           # Firestore / SQLite / runtime composition
+src/archbro/platform/           # PostgreSQL persistence / runtime composition
 tests/                          # contract + regression + golden WebMCP flow
 qa/                             # browser and competition acceptance harnesses
 docs/OWNERSHIP.md               # ownership + dependency rules
@@ -119,7 +119,7 @@ report healthy, and serves the app on `http://localhost:8080/`.
 | `docker compose run --rm app python -m pytest` | Run the test suite in the container |
 | `docker compose logs -f app` | Follow application logs |
 | `docker compose down` | Stop the stack, keeping data |
-| `docker compose down -v` | Stop and delete the database and SQLite volumes |
+| `docker compose down -v` | Stop and delete the database volume |
 
 `src/`, `tests/`, and `frontend/` are bind-mounted and the app runs with
 `--reload`, so edits take effect without a rebuild. Rebuild only when
@@ -136,10 +136,9 @@ serving and deliberately does not touch persistence, so a transient database
 outage cannot trigger a restart storm.
 
 The `db` service runs PostgreSQL 17, reachable inside the Compose network at
-`postgresql://archbro:archbro@db:5432/archbro`. **The application does not use
-it yet** -- it still persists to SQLite (`ARCHBRO_PERSISTENCE=sqlite`) on a
-named volume. The database is provisioned ahead of the PostgreSQL repository so
-that repository's tests have a real server to run against.
+`postgresql://archbro:archbro@db:5432/archbro`. It is the only store Archbro
+has: `ARCHBRO_PERSISTENCE` accepts only `postgres` and the app refuses to start
+without `DATABASE_URL`. Compose builds that URL from the `POSTGRES_*` values.
 
 Both published ports bind to `127.0.0.1`, so the development database -- whose
 password really is `archbro` -- is not reachable from the rest of the network.
@@ -175,12 +174,8 @@ GEMINI_MODEL=gemini-3.7-flash
 ARCHBRO_PROVIDER=gemini
 ARCHBRO_ENV=local
 ARCHBRO_AUTH_MODE=local
-ARCHBRO_PERSISTENCE=sqlite
-ARCHBRO_DB=archbro.db
+ARCHBRO_PERSISTENCE=postgres
 FIREBASE_PROJECT_ID=
-FIRESTORE_PROJECT_ID=
-FIRESTORE_DATABASE_ID=(default)
-ARCHBRO_FIRESTORE_PREFIX=archbro
 ARCHBRO_FIREBASE_API_KEY=
 ARCHBRO_FIREBASE_AUTH_DOMAIN=
 ARCHBRO_FIREBASE_APP_ID=
@@ -191,16 +186,6 @@ For deterministic WebMCP acceptance without built-in model calls:
 
 ```env
 ARCHBRO_PROVIDER=fake
-ARCHBRO_PERSISTENCE=sqlite
-```
-
-For cloud persistence:
-
-```env
-ARCHBRO_PERSISTENCE=firestore
-FIRESTORE_PROJECT_ID=<project-id>
-FIRESTORE_DATABASE_ID=(default)
-ARCHBRO_FIRESTORE_PREFIX=archbro
 ```
 
 Production deployment (the `archbro-main` stack) must set `ARCHBRO_ENV=production`
@@ -215,11 +200,10 @@ restricted to Identity Toolkit/Secure Token and the ArchBro public/run hostnames
 the generated local config file is gitignored. This keeps auth independent from
 Firebase Hosting while remaining compatible with Firebase Admin ID-token verification.
 
-The competition Firestore database is the named database `archbro-challenge`.
-Committed Firebase rules deny every direct browser/mobile Firestore read/write;
-privileged project state remains behind FastAPI + Firebase Admin SDK + project
-authorization. Deploy `firebase.json` before a production revision so the cloud
-rules and required activity-history indexes match the repository contract.
+Privileged project state remains behind FastAPI + Firebase Admin ID-token
+verification + project authorization; the browser never reaches the database
+directly. Firebase is used for Authentication only -- Archbro stores no project
+state in Firestore, so there are no client-facing database rules to deploy.
 
 ## Runtime composition
 
@@ -228,7 +212,7 @@ Frontend / WebMCP
     -> backend API
         -> core / agent / governance contracts
             -> ProjectRepositoryPort
-                -> SQLite or Firestore
+                -> PostgreSQL
 
 Firebase Auth / integrations
     -> trusted identity + normalized evidence
@@ -262,9 +246,9 @@ Two deployments exist.
 
 **Current (`magicdala.com`).** `main` and `dev` run as two isolated Compose stacks on one GCE instance, each with its own PostgreSQL. GitHub Actions builds, pushes, and deploys on a push to either branch. [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md) records every resource, why it is set up that way, and how to rebuild it; see also [`deploy/`](deploy/) and `.github/workflows/deploy.yml`. Both are reached only through Cloudflare Tunnels — the instance publishes no HTTP port at all — and `dev` additionally sits behind Cloudflare Access with an email allowlist. `.env` files are placed on the instance by hand and are never written by the workflow.
 
-**WebMCP challenge (`archbro.hoson.xyz`).** The original submission deployment, described below, still runs separately on Cloud Run with Firestore.
+**Development:** `https://archbro-dev.magicdala.com` is live now and maps to the `dev` stack through the dedicated `archbro-dev` Cloudflare Tunnel.
 
-The challenge deployment runs behind `https://archbro.hoson.xyz` on a Cloudflare Worker, with Cloud Run in `us-west1` as the protected origin and a dedicated Firestore Native database (`archbro-challenge`) using the `archbro` collection prefix. Production uses a dedicated runtime service account, Firebase ID-token verification, project authorization before domain mutations, and an edge credential stored in Cloudflare Secrets and Google Secret Manager. Direct requests to the Cloud Run origin are rejected; the public WebMCP path goes through the Cloudflare custom domain.
+**Production:** `https://archbro.magicdala.com` is reserved for the `main` stack and is not live yet. When enabled, it will use the separate `archbro-main` tunnel; the current deployment does not use the retired Worker/Cloud Run challenge route.
 
 ## License
 

@@ -19,7 +19,7 @@ from archbro.backend.core.observation import ObservationMutationPlan
 class ProjectRepositoryPort(Protocol):
     """Backend-owned persistence contract implemented by Platform.
 
-    Jim's backend code depends on this interface, not on SQLite/Cloud SQL details.
+    Jim's backend code depends on this interface, not on PostgreSQL details.
     Max can replace the concrete persistence implementation without changing the
     Agent, API, or domain contracts.
     """

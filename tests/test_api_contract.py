@@ -1,27 +1,27 @@
-from pathlib import Path
-import tempfile
-
 import pytest
 from fastapi.testclient import TestClient
 
 from archbro.platform.runtime.app import build_app
 from archbro.backend.llm.fake import FakeModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def make_client():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "api.db"))
+def make_client(dsn):
+    repo = PostgresProjectRepository(dsn)
     return repo, TestClient(build_app(repo, FakeModelProvider()))
 
 
-def test_goal_is_required_before_project_creation():
-    _, client = make_client()
+def test_goal_is_required_before_project_creation(dsn):
+    _, client = make_client(dsn)
     response = client.post("/projects", json={"name": "Issue Tracker", "goal": "   ", "description": ""})
     assert response.status_code == 422
 
 
-def test_ask_conversation_drafts_goal_before_project_creation():
-    _, client = make_client()
+def test_ask_conversation_drafts_goal_before_project_creation(dsn):
+    _, client = make_client(dsn)
 
     first = client.post("/onboarding/goal", json={
         "messages": [
@@ -63,8 +63,8 @@ def test_ask_conversation_drafts_goal_before_project_creation():
     assert created.json()["architecture_version"] == 0
 
 
-def test_manual_goal_can_be_used_without_ask():
-    _, client = make_client()
+def test_manual_goal_can_be_used_without_ask(dsn):
+    _, client = make_client(dsn)
     goal = (
         "Build an issue tracker for a small engineering team. Users can create, view, and update issues. "
         "Use React, FastAPI, and PostgreSQL for the first local milestone."
@@ -79,8 +79,8 @@ def test_manual_goal_can_be_used_without_ask():
     assert created.json()["goal"] == goal
 
 
-def test_project_list_edit_select_contract_and_goal_boundary():
-    repo, client = make_client()
+def test_project_list_edit_select_contract_and_goal_boundary(dsn):
+    repo, client = make_client(dsn)
     first = client.post("/projects", json={
         "name": "First Project",
         "goal": "Build the first project with React and FastAPI.",
@@ -128,8 +128,8 @@ def test_project_list_edit_select_contract_and_goal_boundary():
     assert "PostgreSQL" in repo.get_project(first["id"]).goal
 
 
-def test_project_delete_removes_project_owned_state():
-    repo, client = make_client()
+def test_project_delete_removes_project_owned_state(dsn):
+    repo, client = make_client(dsn)
     created = client.post("/projects", json={
         "name": "Delete Me",
         "goal": "Build an issue tracker using React, FastAPI, and PostgreSQL.",
@@ -156,8 +156,8 @@ def test_project_delete_removes_project_owned_state():
         repo.get_project(project_id)
 
 
-def test_ask_merges_with_current_goal_instead_of_replacing_it():
-    _, client = make_client()
+def test_ask_merges_with_current_goal_instead_of_replacing_it(dsn):
+    _, client = make_client(dsn)
     current_goal = (
         "Build an issue tracker for a small engineering team. "
         "Users can create and view issues. Use React for the frontend, FastAPI for the backend, "
@@ -178,8 +178,8 @@ def test_ask_merges_with_current_goal_instead_of_replacing_it():
     assert len(merged) > len("Also let users export the issue list to CSV.")
 
 
-def test_initial_architecture_requires_explicit_goal_bootstrap():
-    _, client = make_client()
+def test_initial_architecture_requires_explicit_goal_bootstrap(dsn):
+    _, client = make_client(dsn)
     created = client.post("/projects", json={
         "name": "Issue Tracker",
         "goal": "Build an issue tracker using React, FastAPI, and PostgreSQL.",
@@ -208,8 +208,8 @@ def test_initial_architecture_requires_explicit_goal_bootstrap():
     assert client.get(f"/projects/{project_id}/architecture").json()["version"] == 1
 
 
-def test_minimal_api_contract_end_to_end():
-    _, client = make_client()
+def test_minimal_api_contract_end_to_end(dsn):
+    _, client = make_client(dsn)
 
     created = client.post("/projects", json={
         "name": "Archbro",
@@ -277,8 +277,8 @@ def test_minimal_api_contract_end_to_end():
     assert completed_backend["status"] == "DONE"
 
 
-def test_web_surface_is_served_from_same_app():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "web.db"))
+def test_web_surface_is_served_from_same_app(dsn):
+    repo = PostgresProjectRepository(dsn)
     client = TestClient(build_app(repo, FakeModelProvider()))
 
     page = client.get("/")

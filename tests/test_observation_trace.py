@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from pathlib import Path
 import tempfile
 
@@ -35,8 +34,11 @@ from archbro.backend.core.evaluation import (
 )
 from archbro.backend.core.observation import ObservationMutationPlan
 from archbro.backend.llm.fake import FakeModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import create_app
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
 class _CountingProvider(FakeModelProvider):
@@ -78,8 +80,8 @@ class _ExternalStatusProvider(FakeModelProvider):
         )
 
 
-def _repo_with_architecture() -> tuple[ProjectRepository, Project]:
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "observations.db"))
+def _repo_with_architecture(dsn) -> tuple[PostgresProjectRepository, Project]:
+    repo = PostgresProjectRepository(dsn)
     project = Project(
         name="Observation Trace",
         goal="Keep project reality aligned with a FastAPI and PostgreSQL architecture.",
@@ -125,8 +127,8 @@ def _firestore_change_event(project_id: str, source_event_id: str = "delivery-1"
     )
 
 
-def test_replayed_source_event_returns_same_run_and_applies_effect_once():
-    repo, project = _repo_with_architecture()
+def test_replayed_source_event_returns_same_run_and_applies_effect_once(dsn):
+    repo, project = _repo_with_architecture(dsn)
     provider = _CountingProvider()
     orchestrator = AgentOrchestrator(repo, provider)
 
@@ -148,8 +150,8 @@ def test_replayed_source_event_returns_same_run_and_applies_effect_once():
     assert proposals[0].evidence_event_ids == [repo.list_events(project.id)[0].id]
 
 
-def test_same_source_event_id_with_changed_payload_is_rejected():
-    repo, project = _repo_with_architecture()
+def test_same_source_event_id_with_changed_payload_is_rejected(dsn):
+    repo, project = _repo_with_architecture(dsn)
     first = _firestore_change_event(project.id, "delivery-collision")
     claim = repo.claim_observation(first, run_id="run_first")
     assert claim.state == ObservationClaimState.CLAIMED
@@ -164,8 +166,8 @@ def test_same_source_event_id_with_changed_payload_is_rejected():
         repo.claim_observation(changed, run_id="run_second")
 
 
-def test_legacy_save_event_fails_closed_on_source_and_event_id_collisions():
-    repo, project = _repo_with_architecture()
+def test_legacy_save_event_fails_closed_on_source_and_event_id_collisions(dsn):
+    repo, project = _repo_with_architecture(dsn)
     first = ProjectEvent(
         id="event_fixed",
         project_id=project.id,
@@ -198,8 +200,8 @@ def test_legacy_save_event_fails_closed_on_source_and_event_id_collisions():
     assert repo.list_events(project.id) == [first]
 
 
-def test_legacy_event_can_backfill_source_event_id_once_and_then_becomes_stable():
-    repo, project = _repo_with_architecture()
+def test_legacy_event_can_backfill_source_event_id_once_and_then_becomes_stable(dsn):
+    repo, project = _repo_with_architecture(dsn)
     legacy = ProjectEvent(
         id="event_legacy",
         project_id=project.id,
@@ -223,8 +225,8 @@ def test_legacy_event_can_backfill_source_event_id_once_and_then_becomes_stable(
         )
 
 
-def test_second_concurrent_claim_is_reported_in_progress_without_second_run():
-    repo, project = _repo_with_architecture()
+def test_second_concurrent_claim_is_reported_in_progress_without_second_run(dsn):
+    repo, project = _repo_with_architecture(dsn)
     event = _firestore_change_event(project.id, "delivery-in-flight")
 
     first = repo.claim_observation(event, run_id="run_first")
@@ -240,14 +242,14 @@ def test_second_concurrent_claim_is_reported_in_progress_without_second_run():
     assert repo.list_agent_runs(project.id) == []
 
 
-def test_expired_processing_claim_can_be_recovered_after_worker_loss():
-    repo, project = _repo_with_architecture()
+def test_expired_processing_claim_can_be_recovered_after_worker_loss(dsn):
+    repo, project = _repo_with_architecture(dsn)
     event = _firestore_change_event(project.id, "delivery-stale-claim")
     first = repo.claim_observation(event, run_id="run_lost_worker")
     assert first.state == ObservationClaimState.CLAIMED
     with repo._connect() as conn:
         conn.execute(
-            "UPDATE event_processing SET updated_at='2000-01-01T00:00:00+00:00' WHERE event_id=?",
+            "UPDATE event_processing SET updated_at='2000-01-01T00:00:00+00:00' WHERE event_id=%s",
             (first.event.id,),
         )
 
@@ -260,8 +262,8 @@ def test_expired_processing_claim_can_be_recovered_after_worker_loss():
     assert recovered.run_id == "run_recovered"
 
 
-def test_failed_observation_is_durable_and_retry_can_succeed_once():
-    repo, project = _repo_with_architecture()
+def test_failed_observation_is_durable_and_retry_can_succeed_once(dsn):
+    repo, project = _repo_with_architecture(dsn)
     provider = _FailOnceProvider()
     orchestrator = AgentOrchestrator(repo, provider)
     event = ProjectEvent(
@@ -296,8 +298,8 @@ def test_failed_observation_is_durable_and_retry_can_succeed_once():
     assert repo.snapshot(project.id) == before
 
 
-def test_failed_atomic_effect_leaves_no_partial_proposal_and_retry_succeeds():
-    repo, project = _repo_with_architecture()
+def test_failed_atomic_effect_leaves_no_partial_proposal_and_retry_succeeds(dsn):
+    repo, project = _repo_with_architecture(dsn)
     provider = _CountingProvider()
     orchestrator = AgentOrchestrator(repo, provider)
     event = _firestore_change_event(project.id, "delivery-atomic")
@@ -305,11 +307,14 @@ def test_failed_atomic_effect_leaves_no_partial_proposal_and_retry_succeeds():
     with repo._connect() as conn:
         conn.execute(
             """
+            CREATE FUNCTION fail_observation_proposal_write() RETURNS trigger AS $$
+            BEGIN
+                RAISE EXCEPTION 'injected observation failure';
+            END;
+            $$ LANGUAGE plpgsql;
             CREATE TRIGGER fail_observation_proposal_write
             BEFORE INSERT ON proposals
-            BEGIN
-                SELECT RAISE(ABORT, 'injected observation failure');
-            END;
+            FOR EACH ROW EXECUTE FUNCTION fail_observation_proposal_write();
             """
         )
 
@@ -321,7 +326,7 @@ def test_failed_atomic_effect_leaves_no_partial_proposal_and_retry_succeeds():
     assert [run.result for run in repo.list_agent_runs(project.id)] == ["ERROR"]
 
     with repo._connect() as conn:
-        conn.execute("DROP TRIGGER fail_observation_proposal_write")
+        conn.execute("DROP TRIGGER fail_observation_proposal_write ON proposals")
 
     succeeded = asyncio.run(
         orchestrator.observe_event(event.model_copy(update={"id": "event_atomic_retry"}))
@@ -331,8 +336,8 @@ def test_failed_atomic_effect_leaves_no_partial_proposal_and_retry_succeeds():
     assert [run.result for run in repo.list_agent_runs(project.id)] == ["ERROR", "SUCCESS"]
 
 
-def test_cross_project_evidence_reference_is_rejected_at_atomic_commit():
-    repo, project = _repo_with_architecture()
+def test_cross_project_evidence_reference_is_rejected_at_atomic_commit(dsn):
+    repo, project = _repo_with_architecture(dsn)
     other = Project(name="Other", goal="Other project", architecture_version=1)
     repo.save_project(other)
     repo.save_architecture(other.id, Architecture(version=1))
@@ -390,8 +395,8 @@ def test_cross_project_evidence_reference_is_rejected_at_atomic_commit():
     assert repo.list_proposals(project.id) == []
 
 
-def test_external_provenance_cannot_use_authoritative_task_transition():
-    repo, project = _repo_with_architecture()
+def test_external_provenance_cannot_use_authoritative_task_transition(dsn):
+    repo, project = _repo_with_architecture(dsn)
     task = Task(title="Human work", status=TaskStatus.TODO, related_component="backend")
     repo.save_task(project.id, task)
 
@@ -413,8 +418,8 @@ def test_external_provenance_cannot_use_authoritative_task_transition():
     assert repo.list_agent_runs(project.id)[0].result == "ERROR"
 
 
-def test_external_prompt_injection_shaped_signal_cannot_change_project_status():
-    repo, project = _repo_with_architecture()
+def test_external_prompt_injection_shaped_signal_cannot_change_project_status(dsn):
+    repo, project = _repo_with_architecture(dsn)
     result = asyncio.run(
         AgentOrchestrator(repo, _ExternalStatusProvider()).observe_event(
             ProjectEvent(
@@ -442,8 +447,8 @@ def test_external_prompt_injection_shaped_signal_cannot_change_project_status():
     assert repo.list_agent_runs(project.id)[0].result == "ERROR"
 
 
-def test_task_update_action_cannot_target_another_project_task():
-    repo, project = _repo_with_architecture()
+def test_task_update_action_cannot_target_another_project_task(dsn):
+    repo, project = _repo_with_architecture(dsn)
     other = Project(name="Other", goal="Other", architecture_version=1)
     repo.save_project(other)
     repo.save_architecture(other.id, Architecture(version=1))
@@ -459,8 +464,8 @@ def test_task_update_action_cannot_target_another_project_task():
     assert repo.get_task(foreign_task.id).status == TaskStatus.TODO
 
 
-def test_orchestrator_rejects_noncanonical_github_change_before_durable_claim():
-    repo, project = _repo_with_architecture()
+def test_orchestrator_rejects_noncanonical_github_change_before_durable_claim(dsn):
+    repo, project = _repo_with_architecture(dsn)
     provider = _CountingProvider()
     orchestrator = AgentOrchestrator(repo, provider)
 
@@ -483,8 +488,8 @@ def test_orchestrator_rejects_noncanonical_github_change_before_durable_claim():
     assert repo.list_agent_runs(project.id) == []
 
 
-def test_activity_api_exposes_durable_event_run_link_and_replay():
-    repo, project = _repo_with_architecture()
+def test_activity_api_exposes_durable_event_run_link_and_replay(dsn):
+    repo, project = _repo_with_architecture(dsn)
     provider = _CountingProvider()
     client = TestClient(create_app(repository=repo, provider=provider))
     request = {
@@ -513,39 +518,10 @@ def test_activity_api_exposes_durable_event_run_link_and_replay():
     assert client.get(f"/projects/{project.id}/agent-runs").status_code == 200
 
 
-def test_existing_sqlite_events_table_is_migrated_without_recreating_database():
-    db_path = Path(tempfile.mkdtemp()) / "legacy.db"
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "CREATE TABLE events (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, data TEXT NOT NULL)"
-        )
-
-    repo = ProjectRepository(str(db_path))
-    with repo._connect() as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
-    assert "source_key" in columns
-
-    project = Project(name="Legacy", goal="Preserve legacy DB", architecture_version=1)
-    repo.save_project(project)
-    repo.save_architecture(project.id, Architecture(version=1))
-    claim = repo.claim_observation(
-        ProjectEvent(
-            project_id=project.id,
-            type=ProjectEventType.GITHUB_CHANGE,
-            source=ProjectEventSource.GITHUB,
-            source_event_id="legacy-delivery",
-            payload={"message": "legacy db still works"},
-        ),
-        run_id="run_legacy",
-    )
-    assert claim.state == ObservationClaimState.CLAIMED
-
-
-
-def test_sqlite_observation_commit_rejects_stale_task_plan():
+def test_observation_commit_rejects_stale_task_plan(dsn):
     from datetime import timedelta
 
-    repo, project = _repo_with_architecture()
+    repo, project = _repo_with_architecture(dsn)
     task = Task(title="Human task", status=TaskStatus.TODO, related_component="backend")
     repo.save_task(project.id, task)
     event = ProjectEvent(
@@ -600,8 +576,8 @@ def test_sqlite_observation_commit_rejects_stale_task_plan():
     assert repo.list_agent_runs(project.id) == []
 
 
-def test_public_events_api_rejects_github_provenance_spoof():
-    repo, project = _repo_with_architecture()
+def test_public_events_api_rejects_github_provenance_spoof(dsn):
+    repo, project = _repo_with_architecture(dsn)
     client = TestClient(create_app(repository=repo, provider=_CountingProvider()))
     response = client.post(
         f"/projects/{project.id}/events",

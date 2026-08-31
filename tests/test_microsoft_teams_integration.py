@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -11,21 +9,24 @@ from fastapi.testclient import TestClient
 import archbro.integrations.microsoft_teams as teams_module
 from archbro.backend.mcp.provider_oauth import McpOAuthManager
 from archbro.backend.llm.fake import FakeModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import build_app
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def make_client() -> TestClient:
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "teams.db"))
+def make_client(dsn) -> TestClient:
+    repo = PostgresProjectRepository(dsn)
     return TestClient(build_app(repo, FakeModelProvider()))
 
 
-def test_microsoft_teams_status_fails_closed_without_deployment_identity(monkeypatch):
+def test_microsoft_teams_status_fails_closed_without_deployment_identity(dsn, monkeypatch):
     monkeypatch.delenv("ARCHBRO_MICROSOFT_TEAMS_CLIENT_ID", raising=False)
     monkeypatch.delenv("ARCHBRO_MICROSOFT_TEAMS_TENANT_ID", raising=False)
     monkeypatch.delenv("ARCHBRO_MICROSOFT_TEAMS_CLIENT_SECRET", raising=False)
 
-    response = make_client().get("/mcp/oauth/microsoft-teams/status")
+    response = make_client(dsn).get("/mcp/oauth/microsoft-teams/status")
 
     assert response.status_code == 200
     payload = response.json()
@@ -34,12 +35,12 @@ def test_microsoft_teams_status_fails_closed_without_deployment_identity(monkeyp
     assert "client_secret" not in response.text
 
 
-def test_microsoft_teams_pkce_start_uses_tenant_specific_authority(monkeypatch):
+def test_microsoft_teams_pkce_start_uses_tenant_specific_authority(dsn, monkeypatch):
     monkeypatch.setenv("ARCHBRO_MICROSOFT_TEAMS_CLIENT_ID", "teams-public-client")
     monkeypatch.setenv("ARCHBRO_MICROSOFT_TEAMS_TENANT_ID", "tenant-123")
     monkeypatch.delenv("ARCHBRO_MICROSOFT_TEAMS_CLIENT_SECRET", raising=False)
 
-    client = make_client()
+    client = make_client(dsn)
     status = client.get("/mcp/oauth/microsoft-teams/status")
     started = client.get("/mcp/oauth/microsoft-teams/start", follow_redirects=False)
 
@@ -58,7 +59,7 @@ def test_microsoft_teams_pkce_start_uses_tenant_specific_authority(monkeypatch):
     assert "ChannelMessage.Send" in query["scope"][0]
 
 
-def test_microsoft_teams_callback_creates_local_graph_adapter_without_token_leak(monkeypatch):
+def test_microsoft_teams_callback_creates_local_graph_adapter_without_token_leak(dsn, monkeypatch):
     monkeypatch.setenv("ARCHBRO_MICROSOFT_TEAMS_CLIENT_ID", "teams-public-client")
     monkeypatch.setenv("ARCHBRO_MICROSOFT_TEAMS_TENANT_ID", "tenant-123")
     monkeypatch.delenv("ARCHBRO_MICROSOFT_TEAMS_CLIENT_SECRET", raising=False)
@@ -70,7 +71,7 @@ def test_microsoft_teams_callback_creates_local_graph_adapter_without_token_leak
         return {"access_token": "teams-access-secret", "refresh_token": "teams-refresh-secret", "expires_in": 3600}
 
     monkeypatch.setattr(McpOAuthManager, "_exchange_token", fake_exchange)
-    client = make_client()
+    client = make_client(dsn)
     started = client.get("/mcp/oauth/microsoft-teams/start", follow_redirects=False)
     state = parse_qs(urlparse(started.headers["location"]).query)["state"][0]
 
@@ -95,7 +96,7 @@ def test_microsoft_teams_callback_creates_local_graph_adapter_without_token_leak
     assert probe.json()["tool_count"] == 7
 
 
-def test_microsoft_teams_adapter_maps_graph_requests_and_keeps_token_in_headers(monkeypatch):
+def test_microsoft_teams_adapter_maps_graph_requests_and_keeps_token_in_headers(dsn, monkeypatch):
     calls: list[tuple[str, str, dict[str, str] | None, bytes | None]] = []
 
     class FakeResponse:
@@ -133,7 +134,7 @@ def test_microsoft_teams_adapter_maps_graph_requests_and_keeps_token_in_headers(
     assert json.loads(calls[1][3].decode("utf-8")) == {"body": {"content": "hello"}}
 
 
-def test_microsoft_teams_adapter_rejects_unknown_tools_and_unsafe_arguments():
+def test_microsoft_teams_adapter_rejects_unknown_tools_and_unsafe_arguments(dsn):
     adapter = teams_module.MicrosoftTeamsGraphAdapter("teams-access-secret")
 
     try:

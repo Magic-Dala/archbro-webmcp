@@ -45,7 +45,7 @@ project reality/evidence
 - Proposal validation happens before persistence so a proposal shown to a human is executable if accepted.
 - Explicit human acceptance is required before architecture version changes.
 - Accepted architecture changes reconcile affected tasks and produce executable next work.
-- SQLite is supported locally; Firestore is supported for cloud persistence.
+- PostgreSQL is the persistence backend, locally and in deployment.
 
 ## Demonstrated governance behavior
 
@@ -59,11 +59,11 @@ An operational PostgreSQL health-check failure alone was correctly treated as an
 - [x] Competition README and WebMCP technical documentation exist.
 - [x] Golden governance/execution regression test exists.
 - [x] Container deployment configuration exists.
-- [x] Public HTTPS live URL: https://archbro.hoson.xyz/?mode=webmcp
-- [x] Cloudflare custom domain is the only Worker public route; `workers.dev` is disabled.
-- [x] Direct Cloud Run origin access is rejected while the Cloudflare edge route succeeds.
+- [x] Public HTTPS live URL: https://archbro-dev.magicdala.com/?mode=webmcp
+- [x] The current public host is routed through a dedicated Cloudflare Tunnel; the VM publishes no HTTP/HTTPS application port.
+- [x] Direct VM ingress is closed, so the application is reached through the Cloudflare edge boundary.
 - [x] Public deployment passed page-level WebMCP registration/execution acceptance and the full governance golden flow through the custom domain.
-- [ ] Public deployment passed final ChatGPT-host native Site Tools acceptance on `archbro.hoson.xyz`.
+- [ ] Public deployment passed final ChatGPT-host native Site Tools acceptance on `archbro-dev.magicdala.com`.
 - [x] Public GitHub repository verified: https://github.com/Magic-Dala/archbro
 - [ ] <3 minute public YouTube demo URL recorded here: **TBD**
 - [ ] Devpost form completed with final live/repo/video links.
@@ -72,7 +72,7 @@ An operational PostgreSQL health-check failure alone was correctly treated as an
 
 The real Codex/ChatGPT host acceptance must distinguish **host tool discovery/invocation** from the page JavaScript registration API.
 
-- Open exactly `https://archbro.hoson.xyz/?mode=webmcp` so the competition-safe UI is active.
+- Open exactly `https://archbro-dev.magicdala.com/?mode=webmcp` so the competition-safe UI is active.
 - If the host discovers `archbro_ping`, Phase 1 must invoke `archbro_ping` directly through the host Site Tools surface.
 - `document.modelContext` visibility in page DevTools is **diagnostic only** and must never block a host invocation after Site Tools have already been discovered.
 - `data-webmcp-agent-mode` validates only the explicit `?mode=webmcp` UI mode; it is not evidence for or against host Site Tools transport.
@@ -87,4 +87,4 @@ See `docs/CODEX_WEBMCP_ACCEPTANCE.md` for the exact executable sequence.
 2. Review the current ArchBro project and determine whether the accepted architecture still satisfies the latest project requirements and evidence. If an architecture change is justified, submit the recommendation and take me to human review. Do not approve or reject anything for me.
 3. After the human accepts: re-read the project, summarize Architecture v2, choose the most relevant ready task, and start it. Do not make another architecture decision.
 
-The final recording must use `https://archbro.hoson.xyz/?mode=webmcp`, not localhost or the protected Cloud Run origin.
+The final recording must use `https://archbro-dev.magicdala.com/?mode=webmcp`, not localhost or a direct VM/container path.

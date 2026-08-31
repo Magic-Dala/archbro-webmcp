@@ -8,28 +8,27 @@ timestamp, a message id, or a change token.
 
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
-
 import pytest
 
 from archbro.platform.pipeline.contracts import SyncCursor
-from archbro.platform.pipeline.cursor import SqliteSyncCursorStore
+from archbro.platform.pipeline.cursor import PostgresSyncCursorStore
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def _store() -> tuple[SqliteSyncCursorStore, str]:
-    path = str(Path(tempfile.mkdtemp()) / "cursors.db")
-    return SqliteSyncCursorStore(path), path
+def _store(dsn: str) -> PostgresSyncCursorStore:
+    return PostgresSyncCursorStore(dsn)
 
 
-def test_unknown_connector_has_no_position_yet():
-    store, _ = _store()
+def test_unknown_connector_has_no_position_yet(dsn):
+    store = _store(dsn)
 
     assert store.load("proj_1", "github") is None
 
 
-def test_saved_position_is_returned_for_the_same_connector():
-    store, _ = _store()
+def test_saved_position_is_returned_for_the_same_connector(dsn):
+    store = _store(dsn)
 
     store.save(
         SyncCursor(
@@ -47,8 +46,8 @@ def test_saved_position_is_returned_for_the_same_connector():
     assert loaded.updated_at is not None
 
 
-def test_advancing_the_position_updates_in_place():
-    store, _ = _store()
+def test_advancing_the_position_updates_in_place(dsn):
+    store = _store(dsn)
     cursor = SyncCursor(project_id="proj_1", connector_id="github", position="first")
 
     store.save(cursor)
@@ -60,8 +59,8 @@ def test_advancing_the_position_updates_in_place():
     assert len(store.list_cursors("proj_1")) == 1
 
 
-def test_positions_are_isolated_per_project_and_connector():
-    store, _ = _store()
+def test_positions_are_isolated_per_project_and_connector(dsn):
+    store = _store(dsn)
 
     store.save(SyncCursor(project_id="proj_1", connector_id="github", position="a"))
     store.save(SyncCursor(project_id="proj_1", connector_id="slack", position="b"))
@@ -73,25 +72,25 @@ def test_positions_are_isolated_per_project_and_connector():
     assert len(store.list_cursors("proj_1")) == 2
 
 
-def test_position_survives_reopening_the_database():
-    store, path = _store()
+def test_position_survives_reopening_the_database(dsn):
+    store = _store(dsn)
     store.save(SyncCursor(project_id="proj_1", connector_id="github", position="kept"))
 
-    reopened = SqliteSyncCursorStore(path)
+    reopened = PostgresSyncCursorStore(dsn)
 
     loaded = reopened.load("proj_1", "github")
     assert loaded is not None
     assert loaded.position == "kept"
 
 
-def test_a_stale_writer_cannot_move_the_position_backwards():
+def test_a_stale_writer_cannot_move_the_position_backwards(dsn):
     """Two workers can read the same starting position concurrently.
 
     Whoever commits second must not silently overwrite a newer position with an
     older one; with opaque page or change tokens the store cannot detect that a
     regression happened, so the write has to be conditional.
     """
-    store, _ = _store()
+    store = _store(dsn)
     store.save(SyncCursor(project_id="proj_1", connector_id="github", position="start"))
 
     # Worker B advances first.
@@ -102,8 +101,8 @@ def test_a_stale_writer_cannot_move_the_position_backwards():
     assert store.load("proj_1", "github").position == "20"
 
 
-def test_first_advance_requires_no_existing_position():
-    store, _ = _store()
+def test_first_advance_requires_no_existing_position(dsn):
+    store = _store(dsn)
 
     assert store.advance("proj_1", "github", expected_position=None, position="first") is True
     assert store.advance("proj_1", "github", expected_position=None, position="again") is False

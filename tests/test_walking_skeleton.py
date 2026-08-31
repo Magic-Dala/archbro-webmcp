@@ -1,6 +1,4 @@
 import asyncio
-import tempfile
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -10,12 +8,14 @@ from archbro.backend.core.contracts import AgentAction, AgentActionType, AgentDe
 from archbro.backend.core.action_executor import ActionExecutor
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.backend.llm.provider import ModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def make_repo():
-    path = Path(tempfile.mkdtemp()) / "test.db"
-    repo = ProjectRepository(str(path))
+def make_repo(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(name="Archbro", goal="Build a collaborative project-management app using React, FastAPI, and PostgreSQL where an AI agent maintains architecture and actionable human tasks.")
     repo.save_project(project)
     repo.save_architecture(project.id, Architecture())
@@ -30,15 +30,15 @@ def bootstrap_event(project_id: str) -> ProjectEvent:
     )
 
 
-def test_agent_decision_and_action_validation():
+def test_agent_decision_and_action_validation(dsn):
     with pytest.raises(ValidationError):
         AgentAction(type=AgentActionType.UPDATE_TASK, payload={})
     with pytest.raises(ValidationError):
         AgentDecision(summary="bad", actions=[AgentAction(type=AgentActionType.PROPOSE_ARCHITECTURE_CHANGE, payload={"proposal": {}})])
 
 
-def test_scenario_a_and_b():
-    repo, project = make_repo()
+def test_scenario_a_and_b(dsn):
+    repo, project = make_repo(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
 
     r1 = asyncio.run(orchestrator.observe_event(bootstrap_event(project.id)))
@@ -77,8 +77,8 @@ def test_scenario_a_and_b():
     assert db_task.status == TaskStatus.BLOCKED
 
 
-def test_reject_does_not_version_architecture():
-    repo, project = make_repo()
+def test_reject_does_not_version_architecture(dsn):
+    repo, project = make_repo(dsn)
     orchestrator = AgentOrchestrator(repo, FakeModelProvider())
     asyncio.run(orchestrator.observe_event(bootstrap_event(project.id)))
     result = asyncio.run(orchestrator.observe_event(ProjectEvent(project_id=project.id, type=ProjectEventType.USER_MESSAGE, payload={"message": "We decided to replace PostgreSQL with Firestore."})))
@@ -96,8 +96,8 @@ class BrokenProvider(ModelProvider):
         raise RuntimeError("invalid structured output")
 
 
-def test_explicit_human_task_status_does_not_call_model():
-    repo, project = make_repo()
+def test_explicit_human_task_status_does_not_call_model(dsn):
+    repo, project = make_repo(dsn)
     repo.save_architecture(project.id, Architecture(version=1, summary="accepted"))
     task = Task(title="Human-owned task")
     repo.save_task(project.id, task)
@@ -118,8 +118,8 @@ def test_explicit_human_task_status_does_not_call_model():
     assert repo.get_task(task.id).status == TaskStatus.IN_PROGRESS
 
 
-def test_provider_failure_does_not_mutate_state():
-    repo, project = make_repo()
+def test_provider_failure_does_not_mutate_state(dsn):
+    repo, project = make_repo(dsn)
     before = repo.snapshot(project.id)
     result = asyncio.run(AgentOrchestrator(repo, BrokenProvider()).observe_event(bootstrap_event(project.id)))
     assert result.result == "ERROR"
@@ -127,12 +127,12 @@ def test_provider_failure_does_not_mutate_state():
     assert repo.snapshot(project.id) == before
 
 
-def test_provider_abstraction():
+def test_provider_abstraction(dsn):
     assert issubclass(FakeModelProvider, ModelProvider)
 
 
-def test_hierarchical_architecture_contract_and_recursive_replacement():
-    repo, project = make_repo()
+def test_hierarchical_architecture_contract_and_recursive_replacement(dsn):
+    repo, project = make_repo(dsn)
     project.architecture_version = 1
     repo.save_project(project)
     architecture = Architecture(
@@ -186,8 +186,8 @@ def test_hierarchical_architecture_contract_and_recursive_replacement():
     assert accepted.root_component_id_for("primary_db") == "data"
 
 
-def test_accepts_rich_webmcp_architecture_change_operations():
-    repo, project = make_repo()
+def test_accepts_rich_webmcp_architecture_change_operations(dsn):
+    repo, project = make_repo(dsn)
     architecture = Architecture(
         version=1,
         summary="Issue tracking v1",
@@ -277,7 +277,7 @@ def test_accepts_rich_webmcp_architecture_change_operations():
     assert saved_realtime_task.status == TaskStatus.BLOCKED
 
 
-def test_architecture_rejects_duplicate_ids_and_depth_over_three():
+def test_architecture_rejects_duplicate_ids_and_depth_over_three(dsn):
     with pytest.raises(ValidationError, match="duplicate architecture node id"):
         Architecture(
             version=1,

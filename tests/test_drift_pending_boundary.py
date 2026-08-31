@@ -1,6 +1,3 @@
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from archbro.backend.agent.evaluation import DriftPolicy
@@ -19,11 +16,14 @@ from archbro.backend.core.evaluation import (
     DriftEvaluation,
     DriftRecommendedAction,
 )
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def _context_and_proposal():
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "pending-boundary.db"))
+def _context_and_proposal(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(name="Pending Boundary", goal="Build a project workspace.", architecture_version=1)
     repo.save_project(project)
     repo.save_architecture(
@@ -68,8 +68,8 @@ def _context_and_proposal():
     return repo.load_context(project.id), evaluation, proposal_action
 
 
-def test_architecture_drift_cannot_create_future_architecture_task_before_acceptance():
-    context, evaluation, proposal_action = _context_and_proposal()
+def test_architecture_drift_cannot_create_future_architecture_task_before_acceptance(dsn):
+    context, evaluation, proposal_action = _context_and_proposal(dsn)
     decision = AgentDecision(
         summary="Drift plus speculative task.",
         actions=[
@@ -93,8 +93,8 @@ def test_architecture_drift_cannot_create_future_architecture_task_before_accept
         DriftPolicy.validate(context, decision)
 
 
-def test_architecture_drift_cannot_relink_existing_task_before_acceptance():
-    context, evaluation, proposal_action = _context_and_proposal()
+def test_architecture_drift_cannot_relink_existing_task_before_acceptance(dsn):
+    context, evaluation, proposal_action = _context_and_proposal(dsn)
     decision = AgentDecision(
         summary="Drift plus speculative relink.",
         actions=[

@@ -26,14 +26,12 @@ from archbro.backend.core.observation import (
 
 _OBSERVATION_CLAIM_TTL = timedelta(minutes=2)
 
-# SQLite orders history by rowid, which is insertion order. Postgres has no such
-# implicit column, so every table that the SQLite repository reads back in
-# insertion order carries an explicit `seq` fed by one shared sequence.
+# Activity history reads back in insertion order, and Postgres offers no implicit
+# per-row ordering to lean on, so every table that history is read from carries
+# an explicit `seq` fed by one shared sequence.
 #
-# `INSERT OR REPLACE` in SQLite deletes the conflicting row and inserts a new
-# one, which hands the row a fresh rowid and moves it to the end of the
-# ordering. Every upsert below therefore re-stamps `seq` as well, so a re-saved
-# row sorts exactly where SQLite would sort it.
+# Re-saving a row makes it the most recent write, so every upsert below
+# re-stamps `seq` as well and the row sorts at the end of the history again.
 _SEQUENCE = "archbro_row_seq"
 
 _SCHEMA = f"""
@@ -96,11 +94,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_event ON agent_runs(event_id);
 class PostgresProjectRepository:
     """PostgreSQL implementation of Jim's ProjectRepositoryPort.
 
-    Behaviourally equivalent to the SQLite repository: same document-store
-    shape, same errors, same ordering. The difference is the concurrency
-    mechanism. SQLite serializes every writer with `BEGIN IMMEDIATE` because it
-    has a single database-wide write lock; Postgres instead takes the row locks
-    the transition actually needs, so unrelated projects never block each other.
+    A document store: every row is an id plus the serialised model. Writers are
+    serialised per project rather than database-wide, by taking the row locks a
+    transition actually needs, so unrelated projects never block each other.
     """
 
     def __init__(self, dsn: str) -> None:
@@ -115,11 +111,11 @@ class PostgresProjectRepository:
             conn.execute(_SCHEMA)
 
     # A project row is the coordination point for every project-scoped
-    # transition. Taking it FOR UPDATE gives the same "one writer at a time per
-    # project" guarantee that BEGIN IMMEDIATE gives SQLite per database, and
-    # every atomic method below acquires it first so the lock order is uniform
-    # and deadlock-free. A missing project is not an error here: callers that
-    # care raise their own KeyError afterwards, preserving SQLite's error order.
+    # transition. Taking it FOR UPDATE gives one writer at a time per project,
+    # and every atomic method below acquires it first so the lock order is
+    # uniform and deadlock-free. A missing project is not an error here: callers
+    # that care raise their own KeyError afterwards, so the error a caller sees
+    # still describes what it asked for rather than the lock that failed.
     @staticmethod
     def _lock_project(conn: psycopg.Connection, project_id: str) -> bool:
         row = conn.execute(

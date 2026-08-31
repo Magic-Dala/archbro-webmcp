@@ -10,6 +10,10 @@ import subprocess
 import sys
 import time
 import unittest
+import uuid
+from urllib.parse import urlsplit, urlunsplit
+
+import psycopg
 from urllib.error import URLError
 from urllib.request import urlopen
 import webbrowser
@@ -218,6 +222,48 @@ def generate_report(test_exit_code: int, stdout: str, stderr: str) -> dict:
     return combined
 
 
+def _redacted(dsn: str) -> str:
+    parts = urlsplit(dsn)
+    if not parts.password:
+        return dsn
+    netloc = parts.netloc.replace(f":{parts.password}@", ":***@")
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _provision_schema() -> tuple[str, str]:
+    """Give this run its own PostgreSQL schema.
+
+    PostgreSQL is the only backend now, so acceptance needs a real database.
+    A private schema keeps the previous guarantee that this entry point cannot
+    disturb -- or be disturbed by -- whatever is already in the developer's
+    database, which is what the isolated-runtime contract was protecting.
+    """
+
+    base = (os.getenv("DATABASE_URL") or "postgresql://archbro:archbro@127.0.0.1:5432/archbro").strip()
+    schema = f"acceptance_{uuid.uuid4().hex}"
+    try:
+        with psycopg.connect(base, autocommit=True) as connection:
+            connection.execute(f'CREATE SCHEMA "{schema}"')
+    except Exception as exc:  # noqa: BLE001 - surfaced to the operator verbatim
+        raise SystemExit(
+            f"frontend acceptance needs PostgreSQL and could not reach "
+            f"{_redacted(base)}: {exc}\n"
+            f"Start one with:  docker compose up -d db\n"
+            f"Or point DATABASE_URL at an existing instance."
+        ) from exc
+    separator = "&" if "?" in base else "?"
+    return base, f"{base}{separator}options=-csearch_path%3D{schema}"
+
+
+def _drop_schema(base_dsn: str, run_dsn: str) -> None:
+    schema = run_dsn.rsplit("search_path%3D", 1)[-1]
+    try:
+        with psycopg.connect(base_dsn, autocommit=True) as connection:
+            connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    except Exception:  # noqa: BLE001 - cleanup must not mask the real result
+        pass
+
+
 def run(open_report: bool = False) -> int:
     ART.mkdir(parents=True, exist_ok=True)
     SWEEP_REPORT.unlink(missing_ok=True)
@@ -229,7 +275,9 @@ def run(open_report: bool = False) -> int:
     env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["ARCHBRO_PROVIDER"] = "fake"
     env["ARCHBRO_AUTH_MODE"] = "local"
-    env["ARCHBRO_PERSISTENCE"] = "sqlite"
+    env["ARCHBRO_PERSISTENCE"] = "postgres"
+    base_dsn, run_dsn = _provision_schema()
+    env["DATABASE_URL"] = run_dsn
 
     server = subprocess.Popen(
         [
@@ -279,6 +327,7 @@ def run(open_report: bool = False) -> int:
         except subprocess.TimeoutExpired:
             server.kill()
             server.communicate()
+        _drop_schema(base_dsn, run_dsn)
 
     report = generate_report(test_exit_code, test_stdout, test_stderr)
     failures = [surface for surface in report.get("surfaces", []) if surface.get("status") == "FAIL"]

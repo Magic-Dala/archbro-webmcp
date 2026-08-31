@@ -1,8 +1,6 @@
 import asyncio
-import sqlite3
-import tempfile
-from pathlib import Path
 
+import psycopg
 import pytest
 
 from archbro.backend.agent.evaluation import DriftPolicy
@@ -27,12 +25,14 @@ from archbro.backend.core.evaluation import (
 )
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.backend.llm.provider import ModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def _repo_with_backend():
-    db_path = Path(tempfile.mkdtemp()) / "m4-safety.db"
-    repo = ProjectRepository(str(db_path))
+def _repo_with_backend(dsn):
+    repo = PostgresProjectRepository(dsn)
     project = Project(name="M4 Safety", goal="Build a project workspace.", architecture_version=1)
     repo.save_project(project)
     repo.save_architecture(
@@ -49,7 +49,7 @@ def _repo_with_backend():
             ],
         ),
     )
-    return repo, project, db_path
+    return repo, project
 
 
 def _proposal(project_id: str, *, operation: str = "replace_component", component_id: str = "backend", new_name: str = "Backend v2"):
@@ -116,16 +116,16 @@ class _ContradictoryProvider(ModelProvider):
         )
 
 
-def _event_count(db_path: Path, project_id: str) -> int:
-    with sqlite3.connect(db_path) as conn:
+def _event_count(dsn: str, project_id: str) -> int:
+    with psycopg.connect(dsn) as conn:
         return conn.execute(
-            "SELECT COUNT(*) FROM events WHERE project_id=?",
+            "SELECT COUNT(*) FROM events WHERE project_id=%s",
             (project_id,),
         ).fetchone()[0]
 
 
-def test_failed_drift_validation_preserves_observation_and_run_without_product_mutation():
-    repo, project, db_path = _repo_with_backend()
+def test_failed_drift_validation_preserves_observation_and_run_without_product_mutation(dsn):
+    repo, project = _repo_with_backend(dsn)
     before = repo.snapshot(project.id)
 
     result = asyncio.run(
@@ -140,7 +140,7 @@ def test_failed_drift_validation_preserves_observation_and_run_without_product_m
 
     assert result.result == "ERROR"
     assert repo.snapshot(project.id) == before
-    assert _event_count(db_path, project.id) == 1
+    assert _event_count(dsn, project.id) == 1
     events = repo.list_events(project.id)
     assert len(events) == 1
     runs = repo.list_agent_runs(project.id)
@@ -150,8 +150,8 @@ def test_failed_drift_validation_preserves_observation_and_run_without_product_m
     assert repo.list_proposals(project.id) == []
 
 
-def test_successful_post_architecture_run_persists_observed_event():
-    repo, project, db_path = _repo_with_backend()
+def test_successful_post_architecture_run_persists_observed_event(dsn):
+    repo, project = _repo_with_backend(dsn)
 
     result = asyncio.run(
         AgentOrchestrator(repo, FakeModelProvider()).observe_event(
@@ -166,11 +166,11 @@ def test_successful_post_architecture_run_persists_observed_event():
     assert result.result == "SUCCESS"
     assert result.evaluation is not None
     assert result.evaluation.classification == DriftClassification.ALIGNED
-    assert _event_count(db_path, project.id) == 1
+    assert _event_count(dsn, project.id) == 1
 
 
-def test_drift_policy_rejects_unknown_changed_component_before_proposal_is_saved():
-    repo, project, _ = _repo_with_backend()
+def test_drift_policy_rejects_unknown_changed_component_before_proposal_is_saved(dsn):
+    repo, project = _repo_with_backend(dsn)
     context = repo.load_context(project.id)
     decision = _drift_decision(
         project.id,
@@ -181,8 +181,8 @@ def test_drift_policy_rejects_unknown_changed_component_before_proposal_is_saved
         DriftPolicy.validate(context, decision)
 
 
-def test_drift_policy_rejects_change_operation_executor_cannot_apply():
-    repo, project, _ = _repo_with_backend()
+def test_drift_policy_rejects_change_operation_executor_cannot_apply(dsn):
+    repo, project = _repo_with_backend(dsn)
     context = repo.load_context(project.id)
     decision = _drift_decision(
         project.id,
@@ -193,8 +193,8 @@ def test_drift_policy_rejects_change_operation_executor_cannot_apply():
         DriftPolicy.validate(context, decision)
 
 
-def test_drift_policy_rejects_empty_or_unexecutable_replacement():
-    repo, project, _ = _repo_with_backend()
+def test_drift_policy_rejects_empty_or_unexecutable_replacement(dsn):
+    repo, project = _repo_with_backend(dsn)
     context = repo.load_context(project.id)
 
     empty_change_proposal = _proposal(project.id)
@@ -207,11 +207,11 @@ def test_drift_policy_rejects_empty_or_unexecutable_replacement():
         DriftPolicy.validate(context, _drift_decision(project.id, missing_name))
 
 
-def test_update_task_rejects_cross_project_target_and_identity_rewrite():
+def test_update_task_rejects_cross_project_target_and_identity_rewrite(dsn):
     from archbro.backend.core.action_executor import ActionExecutor
     from archbro.backend.core.contracts import Task
 
-    repo, project, _ = _repo_with_backend()
+    repo, project = _repo_with_backend(dsn)
     other = Project(name="Other", goal="Other goal", architecture_version=1)
     repo.save_project(other)
     foreign_task = Task(title="Foreign", description="Must stay foreign")
@@ -238,10 +238,10 @@ def test_update_task_rejects_cross_project_target_and_identity_rewrite():
     assert repo.get_task(local_task.id).id == local_task.id
 
 
-def test_event_and_actions_roll_back_together_when_later_write_fails():
+def test_event_and_actions_roll_back_together_when_later_write_fails(dsn):
     from archbro.backend.core.contracts import Task
 
-    repo, project, db_path = _repo_with_backend()
+    repo, project = _repo_with_backend(dsn)
     task = Task(title="Observed task")
     repo.save_task(project.id, task)
 
@@ -275,10 +275,17 @@ def test_event_and_actions_roll_back_together_when_later_write_fails():
                 ),
             )
 
-    with sqlite3.connect(db_path) as conn:
+    with psycopg.connect(dsn) as conn:
         conn.execute(
-            "CREATE TRIGGER fail_proposal_insert BEFORE INSERT ON proposals "
-            "BEGIN SELECT RAISE(ABORT, 'forced proposal failure'); END"
+            """
+            CREATE FUNCTION fail_proposal_insert() RETURNS trigger AS $$
+            BEGIN
+                RAISE EXCEPTION 'forced proposal failure';
+            END;
+            $$ LANGUAGE plpgsql;
+            CREATE TRIGGER fail_proposal_insert BEFORE INSERT ON proposals
+            FOR EACH ROW EXECUTE FUNCTION fail_proposal_insert();
+            """
         )
 
     before = repo.snapshot(project.id)
@@ -297,7 +304,7 @@ def test_event_and_actions_roll_back_together_when_later_write_fails():
     assert repo.snapshot(project.id) == before
     # PR3 intentionally retains the claimed event and failed AgentRun as audit history;
     # the derived project mutation still rolls back atomically.
-    assert _event_count(db_path, project.id) == 1
+    assert _event_count(dsn, project.id) == 1
     assert [run.result for run in repo.list_agent_runs(project.id)] == ["ERROR"]
     assert repo.get_task(task.id).status.value == "TODO"
     assert repo.list_proposals(project.id) == []

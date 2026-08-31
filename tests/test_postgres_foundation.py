@@ -1,16 +1,13 @@
 """Acceptance tests for the PostgreSQL persistence backend.
 
-These run against a real PostgreSQL server -- there is no fake. Each test gets
-its own schema so the tests are isolated from each other and repeatable without
-a manual database reset. Without DATABASE_URL the whole module skips, following
-the same convention tests/test_real_gemini.py uses for a missing API key.
+These run against a real PostgreSQL server -- there is no fake. The `dsn` and
+`repo` fixtures come from tests/conftest.py, which gives every test its own
+schema. Without DATABASE_URL the whole module skips.
 """
 
 from __future__ import annotations
 
-import os
 import threading
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import psycopg
@@ -40,33 +37,9 @@ from archbro.backend.core.repository import ProjectRepositoryPort
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import create_app
+from conftest import requires_database
 
-DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
-
-pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL not set")
-
-
-def _schema_dsn(schema: str) -> str:
-    separator = "&" if "?" in DATABASE_URL else "?"
-    return f"{DATABASE_URL}{separator}options=-csearch_path%3D{schema}"
-
-
-@pytest.fixture
-def dsn():
-    """Give every test a private, empty schema and drop it afterwards."""
-    schema = f"test_{uuid.uuid4().hex}"
-    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-        conn.execute(f'CREATE SCHEMA "{schema}"')
-    try:
-        yield _schema_dsn(schema)
-    finally:
-        with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-            conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
-
-
-@pytest.fixture
-def repo(dsn):
-    return PostgresProjectRepository(dsn)
+pytestmark = requires_database
 
 
 def _proposal(project_id: str, new_name: str = "Firestore") -> ArchitectureChangeProposal:
@@ -157,7 +130,7 @@ def test_postgres_repository_implements_archbro_project_state_contract(repo):
     assert repo.list_notes(project.id) == []
 
 
-def test_postgres_missing_rows_match_sqlite_defaults_and_errors(repo):
+def test_postgres_missing_rows_return_defaults_and_errors(repo):
     assert repo.get_architecture("project_absent").version == 0
     assert repo.list_projects() == []
     assert repo.list_tasks("project_absent") == []
@@ -188,6 +161,47 @@ def test_postgres_history_is_ordered_oldest_first_and_bounded(repo):
     assert [item.id for item in repo.list_events(project.id)] == [event.id for event in events]
     assert repo.list_notes(project.id, limit=3) == ["note-22", "note-23", "note-24"]
     assert len(repo.list_notes(project.id)) == 20
+
+
+def test_postgres_agent_run_history_is_ordered_oldest_first_and_bounded(repo):
+    project = Project(name="Bounded runs", goal="Bound agent run history")
+    repo.save_project(project)
+    repo.save_architecture(project.id, _architecture())
+
+    runs = []
+    for index in range(25):
+        event = ProjectEvent(
+            project_id=project.id,
+            type=ProjectEventType.GITHUB_CHANGE,
+            source="GITHUB",
+            source_event_id=f"delivery-{index}",
+            payload={"message": f"change-{index}"},
+        )
+        claim = repo.claim_observation(event, run_id=f"run_{index}")
+        run = AgentRunResult(
+            project_id=project.id,
+            event_id=claim.event.id,
+            agent_run_id=claim.run_id,
+            summary=f"run-{index}",
+            actions=[],
+            architecture_review_required=False,
+            provider="fake",
+            model="fake",
+            result="SUCCESS",
+        )
+        repo.commit_observation_result(
+            event=claim.event,
+            run_id=claim.run_id,
+            plan=ObservationMutationPlan(),
+            result=run,
+        )
+        runs.append(run)
+
+    listed = repo.list_agent_runs(project.id, limit=4)
+    assert [item.agent_run_id for item in listed] == [run.agent_run_id for run in runs[-4:]]
+    assert [item.agent_run_id for item in repo.list_agent_runs(project.id)] == [
+        run.agent_run_id for run in runs
+    ]
 
 
 def test_postgres_save_event_deduplicates_on_source_key(repo):
@@ -835,5 +849,5 @@ def test_runtime_rejects_postgres_without_a_database_url(monkeypatch):
 def test_runtime_rejects_an_unknown_persistence_mode(monkeypatch):
     monkeypatch.setenv("ARCHBRO_PERSISTENCE", "cassandra")
 
-    with pytest.raises(ValueError, match="'sqlite', 'postgres', or 'firestore'"):
+    with pytest.raises(ValueError, match="must be 'postgres'"):
         create_app(provider=FakeModelProvider())

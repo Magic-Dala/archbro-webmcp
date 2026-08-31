@@ -1,20 +1,20 @@
-from pathlib import Path
-import tempfile
-
 from fastapi.testclient import TestClient
 
 from archbro.backend.llm.fake import FakeModelProvider
-from archbro.platform.persistence.repository import ProjectRepository
+from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import build_app
+from conftest import requires_database
+
+pytestmark = requires_database
 
 
-def make_client() -> TestClient:
-    repo = ProjectRepository(str(Path(tempfile.mkdtemp()) / "golden-webmcp.db"))
+def make_client(dsn) -> TestClient:
+    repo = PostgresProjectRepository(dsn)
     return TestClient(build_app(repo, FakeModelProvider()))
 
 
-def test_webmcp_golden_governance_and_execution_loop():
-    client = make_client()
+def test_webmcp_golden_governance_and_execution_loop(dsn):
+    client = make_client(dsn)
 
     project = client.post(
         "/projects",

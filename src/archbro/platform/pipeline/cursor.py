@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
+
+import psycopg
+from psycopg.rows import dict_row
 
 from archbro.platform.pipeline.contracts import SyncCursor
 
 
-class SqliteSyncCursorStore:
+class PostgresSyncCursorStore:
     """Local durable sync positions.
 
     Kept in its own table rather than inside the project repository: a cursor is
@@ -14,14 +16,12 @@ class SqliteSyncCursorStore:
     for evidence the Agent can reason about.
     """
 
-    def __init__(self, db_path: str) -> None:
-        self._db_path = db_path
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
         self._ensure_schema()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self) -> psycopg.Connection:
+        return psycopg.connect(self._dsn, row_factory=dict_row)
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
@@ -40,7 +40,7 @@ class SqliteSyncCursorStore:
             )
 
     @staticmethod
-    def _row_to_cursor(row: sqlite3.Row) -> SyncCursor:
+    def _row_to_cursor(row: dict) -> SyncCursor:
         updated_at = row["updated_at"]
         return SyncCursor(
             project_id=row["project_id"],
@@ -54,7 +54,7 @@ class SqliteSyncCursorStore:
     def load(self, project_id: str, connector_id: str) -> SyncCursor | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM sync_cursors WHERE project_id=? AND connector_id=?",
+                "SELECT * FROM sync_cursors WHERE project_id=%s AND connector_id=%s",
                 (project_id, connector_id),
             ).fetchone()
         return self._row_to_cursor(row) if row is not None else None
@@ -67,7 +67,7 @@ class SqliteSyncCursorStore:
                 INSERT INTO sync_cursors(
                     project_id, connector_id, position, owner_user_id, stalled_attempts, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT(project_id, connector_id) DO UPDATE SET
                     position=excluded.position,
                     owner_user_id=excluded.owner_user_id,
@@ -103,7 +103,7 @@ class SqliteSyncCursorStore:
                     INSERT INTO sync_cursors(
                         project_id, connector_id, position, owner_user_id, stalled_attempts, updated_at
                     )
-                    VALUES (?, ?, ?, ?, 0, ?)
+                    VALUES (%s, %s, %s, %s, 0, %s)
                     ON CONFLICT(project_id, connector_id) DO UPDATE SET
                         position=excluded.position,
                         owner_user_id=excluded.owner_user_id,
@@ -117,11 +117,11 @@ class SqliteSyncCursorStore:
                 cursor = conn.execute(
                     """
                     UPDATE sync_cursors
-                       SET position=?,
-                           owner_user_id=COALESCE(?, owner_user_id),
+                       SET position=%s,
+                           owner_user_id=COALESCE(%s, owner_user_id),
                            stalled_attempts=0,
-                           updated_at=?
-                     WHERE project_id=? AND connector_id=? AND position=?
+                           updated_at=%s
+                     WHERE project_id=%s AND connector_id=%s AND position=%s
                     """,
                     (position, owner_user_id, now, project_id, connector_id, expected_position),
                 )
@@ -135,7 +135,7 @@ class SqliteSyncCursorStore:
                 INSERT INTO sync_cursors(
                     project_id, connector_id, position, owner_user_id, stalled_attempts, updated_at
                 )
-                VALUES (?, ?, NULL, NULL, ?, ?)
+                VALUES (%s, %s, NULL, NULL, %s, %s)
                 ON CONFLICT(project_id, connector_id) DO UPDATE SET
                     stalled_attempts=excluded.stalled_attempts,
                     updated_at=excluded.updated_at
@@ -146,7 +146,7 @@ class SqliteSyncCursorStore:
     def list_cursors(self, project_id: str) -> list[SyncCursor]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM sync_cursors WHERE project_id=? ORDER BY connector_id",
+                "SELECT * FROM sync_cursors WHERE project_id=%s ORDER BY connector_id",
                 (project_id,),
             ).fetchall()
         return [self._row_to_cursor(row) for row in rows]
