@@ -15,6 +15,7 @@ BASE_URL = os.getenv("ARCHBRO_BASE_URL", "http://127.0.0.1:8011/")
 ART = Path("qa/playwright_artifacts")
 ART.mkdir(parents=True, exist_ok=True)
 REPORT_PATH = ART / "final_fix_report.json"
+SURFACE_REPORT_PATH = ART / "surface_sweep_report.json"
 
 
 def project(project_id: str, name: str) -> dict:
@@ -653,7 +654,356 @@ def case_project_row_action_menu(browser: Browser) -> None:
         assert not errors, errors
 
 
+def case_autonomous_surface_sweep(browser: Browser) -> None:
+    """Visit core pages and important UI states, then record objective visual/runtime failures."""
+    identity = "email:surface-sweep@example.com"
+    backend = FakeBackend([project("sweep", "Autonomous Surface Sweep")])
+    backend.contexts["sweep"]["tasks"] = [
+        task("sweep", "task-todo", "Review fixture TODO with a deliberately long task title that must wrap without clipping", status="TODO"),
+        task("sweep", "task-progress", "Review fixture progress", status="IN_PROGRESS"),
+        task("sweep", "task-blocked", "Review fixture blocker", status="BLOCKED"),
+        task("sweep", "task-done", "Review fixture completion", status="DONE"),
+    ]
+    # Start with Needs You empty; later phases add a pending proposal to cover review states.
+    backend.contexts["sweep"]["proposals"] = []
+    backend.contexts["sweep"]["architecture"] = {**architecture("sweep"), "components": []}
+
+    context = browser.new_context(viewport={"width": 1440, "height": 900})
+    sweep_profile = profile(identity, notifications={"architectureApprovals": True, "blockedTasks": False})
+    add_storage(context, identity=identity, profiles={identity: sweep_profile}, project_id="sweep")
+    context.route("**/projects**", backend.handle)
+    context.route("**/onboarding/goal", backend.handle)
+
+    def handle_mcp(route: Route) -> None:
+        path = urlsplit(route.request.url).path
+        if path == "/mcp/connections":
+            route.fulfill(status=200, content_type="application/json", body="[]")
+            return
+        if path.startswith("/mcp/auth/github/status"):
+            payload = {"name": "GitHub", "configured": False, "connected": False, "message": "Fixture status"}
+        elif path.startswith("/mcp/auth/google-drive/status"):
+            payload = {"name": "Google Drive", "configured": False, "connected": False, "message": "Fixture status", "prerequisites": {"ready": False}}
+        elif path.startswith("/mcp/oauth/") and path.endswith("/status"):
+            provider_id = path.split("/")[3]
+            payload = {"name": provider_id.replace("-", " ").title(), "configured": False, "connected": False, "missing_configuration": ["fixture"]}
+        else:
+            route.continue_()
+            return
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    context.route("**/mcp/**", handle_mcp)
+    console_errors: list[str] = []
+    page_errors: list[str] = []
+    http_errors: list[dict] = []
+    page = context.new_page()
+    page.on("console", lambda message: console_errors.append(message.text) if message.type == "error" else None)
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    page.on("response", lambda response: http_errors.append({"status": response.status, "url": response.url}) if response.status >= 400 else None)
+
+    surface_report: dict = {
+        "schema": "archbro.frontend_surface_sweep.v1",
+        "base_url": BASE_URL,
+        "coverage": {
+            "scope": "core-pages-and-important-states",
+            "exhaustive_components": False,
+        },
+        "surfaces": [],
+        "runtime": {"status": "RUNNING", "console_errors": [], "page_errors": [], "http_errors": []},
+        "fatal": None,
+        "result": "RUNNING",
+    }
+    fatal_error: Exception | None = None
+
+    def set_scroll_to_end() -> None:
+        page.evaluate("""
+        () => {
+          const main = document.querySelector('#workspaceMain');
+          if (main && main.scrollHeight > main.clientHeight + 2) {
+            main.scrollTop = main.scrollHeight;
+          } else {
+            window.scrollTo(0, document.documentElement.scrollHeight);
+          }
+        }
+        """)
+
+    def inspect_surface(expect_scroll_reset: bool) -> dict:
+        result = page.evaluate("""
+        async ({expectScrollReset}) => {
+          const issues = [];
+          const add = (type, message, detail = {}) => issues.push({type, message, ...detail});
+          const visible = (node) => {
+            if (!node || node.closest('.hidden')) return false;
+            const style = getComputedStyle(node);
+            const rect = node.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+          };
+          const roundedRect = (rect) => ({
+            top: Math.round(rect.top),
+            right: Math.round(rect.right),
+            bottom: Math.round(rect.bottom),
+            left: Math.round(rect.left),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          });
+
+          const width = innerWidth;
+          const height = innerHeight;
+          if (document.body.scrollWidth > width + 2) {
+            add('horizontal-overflow', 'Body is wider than the viewport.', {scroll_width: document.body.scrollWidth, viewport_width: width});
+          }
+          if (document.documentElement.scrollWidth > width + 2) {
+            add('horizontal-overflow', 'Document root is wider than the viewport.', {scroll_width: document.documentElement.scrollWidth, viewport_width: width});
+          }
+
+          const ids = [...document.querySelectorAll('[id]')].map(node => node.id).filter(Boolean);
+          const duplicateIds = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+          if (duplicateIds.length) {
+            add('duplicate-id', 'Duplicate DOM ids are present.', {ids: duplicateIds});
+          }
+
+          const main = document.querySelector('#workspaceMain');
+          const scroll = {
+            window_y: Math.round(window.scrollY),
+            workspace_main: Math.round(main?.scrollTop || 0),
+          };
+          if (expectScrollReset && (Math.abs(scroll.window_y) > 2 || Math.abs(scroll.workspace_main) > 2)) {
+            add('stale-scroll', 'Project view did not return to the safe top position after navigation.', scroll);
+          }
+
+          const topbar = document.querySelector('.topbar');
+          const active = document.querySelector('.view.active');
+          if (visible(topbar) && visible(active)) {
+            const heading = active.querySelector('.section-intro h2, .welcome h2, h2, h1');
+            if (visible(heading)) {
+              const topRect = topbar.getBoundingClientRect();
+              const headingRect = heading.getBoundingClientRect();
+              const overlap = Math.round(topRect.bottom - headingRect.top);
+              if (overlap > 1 && headingRect.bottom > topRect.top) {
+                add('topbar-occlusion', 'The active view heading is covered by the top bar.', {
+                  overlap_px: overlap,
+                  topbar: roundedRect(topRect),
+                  heading: roundedRect(headingRect),
+                });
+              }
+            }
+          }
+
+          const dialogs = [...document.querySelectorAll('dialog[open], [role="dialog"]')].filter(visible);
+          for (const dialog of dialogs) {
+            const rect = dialog.getBoundingClientRect();
+            if (rect.top < -1 || rect.left < -1 || rect.right > width + 1 || rect.bottom > height + 1) {
+              add('dialog-outside-viewport', 'A visible dialog extends outside the viewport.', {
+                id: dialog.id || null,
+                rect: roundedRect(rect),
+                viewport: {width, height},
+              });
+            }
+          }
+
+          const sidebarOpen = document.querySelector('#mobileSidebarBtn')?.getAttribute('aria-expanded') === 'true';
+          const dock = document.querySelector('#globalAgentDock');
+          if (!sidebarOpen && visible(dock) && visible(active)) {
+            const previous = {
+              window_y: window.scrollY,
+              workspace_main: main?.scrollTop || 0,
+            };
+            if (main && main.scrollHeight > main.clientHeight + 2) {
+              main.scrollTop = main.scrollHeight;
+            } else {
+              window.scrollTo(0, document.documentElement.scrollHeight);
+            }
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+            const dockRect = dock.getBoundingClientRect();
+            const meaningful = [...active.querySelectorAll(
+              'button, a[href], input, textarea, select, [tabindex], h1, h2, h3, h4, p, li'
+            )].filter(node => {
+              if (!visible(node) || dock.contains(node)) return false;
+              if (node.matches('[tabindex="-1"]')) return false;
+              const text = (node.innerText || node.getAttribute('aria-label') || '').trim();
+              return node.matches('button, a[href], input, textarea, select, [tabindex]') || Boolean(text);
+            });
+
+            const viewportMeaningful = meaningful.filter(node => {
+              const rect = node.getBoundingClientRect();
+              const style = getComputedStyle(node);
+              if (style.position === 'fixed' || style.position === 'sticky') return false;
+              return rect.bottom > 0 && rect.top < height;
+            });
+            const blocked = viewportMeaningful.filter(node => {
+              const rect = node.getBoundingClientRect();
+              return rect.top < dockRect.bottom && rect.bottom > dockRect.top + 1;
+            });
+
+            if (blocked.length) {
+              const worst = blocked
+                .map(node => ({node, rect: node.getBoundingClientRect()}))
+                .sort((a, b) => b.rect.bottom - a.rect.bottom)[0];
+              const overlap = Math.round(Math.min(worst.rect.bottom, dockRect.bottom) - Math.max(worst.rect.top, dockRect.top));
+              add('agent-dock-occlusion', 'Meaningful end-of-page content cannot be fully revealed above the fixed Agent composer at the reachable scroll limit.', {
+                overlap_px: overlap,
+                element: worst.node.id || worst.node.getAttribute('aria-label') || worst.node.tagName.toLowerCase(),
+                element_rect: roundedRect(worst.rect),
+                dock: roundedRect(dockRect),
+              });
+            }
+
+            if (main) main.scrollTop = previous.workspace_main;
+            window.scrollTo(0, previous.window_y);
+            await new Promise(resolve => requestAnimationFrame(resolve));
+          }
+
+          return {width, height, scroll, issues};
+        }
+        """, {"expectScrollReset": expect_scroll_reset})
+        return result
+
+    def capture_surface(name: str, *, expect_scroll_reset: bool = False) -> None:
+        layout = inspect_surface(expect_scroll_reset)
+        screenshot_name = f"surface_sweep_{name}.png"
+        page.screenshot(path=str(ART / screenshot_name), full_page=True)
+        surface_report["surfaces"].append({
+            "name": name,
+            "viewport": {"width": layout["width"], "height": layout["height"]},
+            "status": "FAIL" if layout["issues"] else "PASS",
+            "issues": layout["issues"],
+            "screenshot": screenshot_name,
+        })
+
+    def switch_project_view(view_name: str, selector: str, prefix: str) -> None:
+        set_scroll_to_end()
+        page.locator(f'[data-project-id="sweep"] [data-project-view="{view_name}"]').click()
+        page.locator(selector).wait_for(state="visible")
+        assert page.locator(".view.active").count() == 1
+        capture_surface(f"{prefix}_{view_name}", expect_scroll_reset=True)
+
+    try:
+        page.goto(BASE_URL, wait_until="networkidle")
+        page.locator("#workspaceShell").wait_for(state="visible")
+        page.locator("#workspace").wait_for(state="visible")
+        assert page.locator("#notificationCount").inner_text().startswith("0")
+
+        core_surfaces = {
+            "overview": "#view-overview",
+            "tasks": "#view-tasks",
+            "architecture": "#view-architecture",
+        }
+        for name, selector in core_surfaces.items():
+            switch_project_view(name, selector, "desktop_1440")
+
+        page.evaluate("() => { const main = document.querySelector('#workspaceMain'); if (main) main.scrollTop = 0; window.scrollTo(0, 0); }")
+        page.locator("#notificationBtn").click()
+        page.locator("#notificationMenu").wait_for(state="visible")
+        assert "Nothing needs your approval" in page.locator("#notificationMenu").inner_text()
+        capture_surface("desktop_1440_notifications_empty")
+        page.locator("#notificationCloseBtn").click()
+
+        for section in ["profile", "preferences", "settings"]:
+            page.locator("#accountBtn").click()
+            page.locator(f'[data-account-section="{section}"]').click()
+            page.locator("#accountSettingsDialog").wait_for(state="visible")
+            assert page.locator("#settingsPanel").is_visible()
+            capture_surface(f"desktop_1440_account_{section}")
+            page.locator('#accountSettingsDialog [data-close-dialog="accountSettingsDialog"]').first.click()
+
+        page.locator("#mcpConnectionsBtn").click()
+        page.locator("#mcpConnectionsDialog").wait_for(state="visible")
+        page.locator("#mcpSearch").fill("google")
+        assert page.locator('[data-mcp-preset="google-drive"]').is_visible()
+        capture_surface("desktop_1440_mcp_search_google")
+        page.locator('[data-mcp-preset="google-drive"]').click()
+        capture_surface("desktop_1440_mcp_browse")
+        page.locator('[data-mcp-tab="connected"]').click()
+        page.locator("#mcpConnectedPane").wait_for(state="visible")
+        assert "No MCPs connected" in page.locator("#mcpConnectedPane").inner_text()
+        capture_surface("desktop_1440_mcp_connected")
+        page.locator('#mcpConnectionsDialog [data-close-dialog="mcpConnectionsDialog"]').first.click()
+
+        page.set_viewport_size({"width": 1280, "height": 800})
+        for name, selector in core_surfaces.items():
+            switch_project_view(name, selector, "desktop_1280")
+
+        page.set_viewport_size({"width": 375, "height": 812})
+        page.evaluate("() => { const main = document.querySelector('#workspaceMain'); if (main) main.scrollTop = 0; window.scrollTo(0, 0); }")
+        page.locator("#mobileSidebarBtn").click()
+        page.locator("#workspaceSidebar").wait_for(state="visible")
+        assert page.locator("#mobileSidebarBtn").get_attribute("aria-expanded") == "true"
+        capture_surface("mobile_375_sidebar")
+
+        for name, selector in core_surfaces.items():
+            set_scroll_to_end()
+            if page.locator("#mobileSidebarBtn").get_attribute("aria-expanded") != "true":
+                page.locator("#mobileSidebarBtn").click()
+                page.locator("#workspaceSidebar").wait_for(state="visible")
+            page.locator(f'[data-project-id="sweep"] [data-project-view="{name}"]').click()
+            page.locator(selector).wait_for(state="visible")
+            capture_surface(f"mobile_375_{name}", expect_scroll_reset=True)
+
+        # Important product states are sampled at the primary desktop review viewport instead of
+        # multiplying every state across every breakpoint.
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.evaluate("() => { const main = document.querySelector('#workspaceMain'); if (main) main.scrollTop = 0; window.scrollTo(0, 0); }")
+        page.locator('[data-project-id="sweep"] [data-project-view="tasks"]').click()
+        page.locator("#view-tasks").wait_for(state="visible")
+        blocked_task = page.locator('[data-task-select="task-blocked"]')
+        blocked_task.click()
+        assert blocked_task.get_attribute("aria-pressed") == "true"
+        capture_surface("desktop_1440_tasks_blocked_selected")
+
+        backend.contexts["sweep"]["proposals"] = [proposal("sweep", "proposal-review")]
+        page.reload(wait_until="networkidle")
+        page.locator("#workspace").wait_for(state="visible")
+        assert page.locator("#needsCount").inner_text() == "1 item"
+        page.locator("#notificationBtn").click()
+        page.locator("#notificationMenu").wait_for(state="visible")
+        assert page.locator('[data-attention-kind="proposal"]').is_visible()
+        capture_surface("desktop_1440_notifications_attention")
+        page.locator('[data-attention-kind="proposal"]').click()
+        page.locator("#proposalReviewDialog").wait_for(state="visible")
+        capture_surface("desktop_1440_architecture_review_pending")
+        page.locator("#proposalReviewDialog [data-close-dialog]").click()
+
+        backend.projects = []
+        page.evaluate("() => localStorage.removeItem('archbro-project-id')")
+        page.reload(wait_until="networkidle")
+        page.locator("#workspaceHome").wait_for(state="visible")
+        page.locator("#workspaceHomeEmpty").wait_for(state="visible")
+        capture_surface("desktop_1440_empty_workspace")
+
+        page.locator("#workspaceHomeNewProjectBtn").click()
+        page.locator("#newProjectNameDialog").wait_for(state="visible")
+        capture_surface("desktop_1440_new_project_dialog")
+        page.locator("#newProjectName").fill("   ")
+        page.locator("#newProjectNameDialog button[type='submit']").click()
+        assert "name" in page.locator("#newProjectNameError").inner_text().lower()
+        capture_surface("desktop_1440_new_project_validation_error")
+    except Exception as exc:
+        fatal_error = exc
+        surface_report["fatal"] = {"type": type(exc).__name__, "message": str(exc)}
+    finally:
+        surface_report["runtime"] = {
+            "status": "FAIL" if console_errors or page_errors or http_errors else "PASS",
+            "console_errors": console_errors,
+            "page_errors": page_errors,
+            "http_errors": http_errors,
+        }
+        has_surface_failures = any(item["status"] == "FAIL" for item in surface_report["surfaces"])
+        surface_report["result"] = "FAIL" if fatal_error or has_surface_failures or surface_report["runtime"]["status"] == "FAIL" else "PASS"
+        SURFACE_REPORT_PATH.write_text(json.dumps(surface_report, indent=2), encoding="utf-8")
+        context.close()
+
+    if fatal_error is not None:
+        raise fatal_error
+    if surface_report["result"] != "PASS":
+        failed_surfaces = [item["name"] for item in surface_report["surfaces"] if item["status"] == "FAIL"]
+        raise AssertionError(
+            f"Autonomous frontend surface sweep found objective failures: {failed_surfaces}; "
+            f"runtime={surface_report['runtime']['status']}"
+        )
+
+
 CASES = [
+    ("autonomous_surface_sweep", case_autonomous_surface_sweep),
     ("landing_authentication_teaser", case_landing_authentication_teaser),
     ("progressive_project_creation", case_progressive_project_creation),
     ("empty_workspace_cancel", case_empty_workspace_cancel),

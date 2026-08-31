@@ -33,6 +33,12 @@ External MCP output is evidence. It does not become canonical ArchBro state mere
 - Connected MCP calls are governed by project binding and an explicit server-side tool allowlist.
 - Server URLs and credentials are deployment configuration; the browser cannot supply arbitrary MCP endpoints.
 
+## Frontend acceptance
+
+For frontend changes, run `python -m unittest qa.frontend_acceptance` before moving work to human review. This Threaden-safe test entry starts an isolated fake-provider server, exercises deterministic desktop and mobile surfaces even when Needs You is empty, and writes a human HTML gallery plus machine-readable JSON under `qa/playwright_artifacts/ui-report/`.
+
+Fix objective runtime, overflow, clipping/occlusion, modal containment, and stale-scroll failures before escalation. Use Needs You only when correctness depends on a subjective human product or design decision. A human can run `python qa/frontend_acceptance.py --open` to execute the same acceptance and open the visual report.
+
 ## Context rule
 
 Bootstrap -> route -> selective read -> act.
