@@ -13,6 +13,10 @@ from archbro.backend.llm.gemini import (
     GeminiComponentWire,
     GeminiDecisionWire,
     GeminiProvider,
+    GeminiPlannerRootWire,
+    GeminiScopeDeltaWire,
+    GeminiSystemMapWire,
+    InitialArchitecturePlannerSnapshot,
 )
 
 
@@ -41,6 +45,7 @@ def _provider_with_chain() -> GeminiProvider:
     )
     provider.routine_model_timeout_seconds = 0.5
     provider.architecture_model_timeout_seconds = 0.5
+    provider.architecture_phase_timeout_seconds = 1.0
     provider.architecture_total_timeout_seconds = 2.0
     provider.bootstrap_fallback_model_ids = (
         "gemini-3.5-flash-lite",
@@ -178,78 +183,35 @@ def test_user_message_stays_on_architecture_chain():
     assert provider.last_model_id == "gemini-3.7-flash"
 
 
-def test_bootstrap_uses_slim_wire_and_fast_rescue_chain():
-    from archbro.backend.core.contracts import Relationship, TaskProposal
-
+def test_bootstrap_phase_uses_fast_rescue_chain():
     provider = _provider_with_chain()
     attempts: list[str] = []
 
-    async def fake_bootstrap(self, model_id: str, prompt: str):
+    async def fake_system_map(self, model_id: str, prompt: str):
         attempts.append(model_id)
         if model_id == "gemini-3.7-flash":
             raise RuntimeError("503 UNAVAILABLE: model currently experiencing high demand")
-        return GeminiBootstrapWire(
-            summary="Initial V0 architecture created.",
-            architecture=GeminiArchitectureWire(
-                version=1,
-                summary="Small V0",
-                components=[
-                    GeminiComponentWire(id="frontend", name="Frontend", type="web", responsibility="UI"),
-                    GeminiComponentWire(id="backend", name="Backend", type="service", responsibility="API"),
-                    GeminiComponentWire(id="database", name="Database", type="database", responsibility="Persistence"),
-                ],
-                relationships=[
-                    Relationship(source="frontend", target="backend", relationship_type="calls"),
-                    Relationship(source="backend", target="database", relationship_type="reads_writes"),
-                ],
-            ),
-            tasks=[TaskProposal(title="Build backend", related_component="backend")],
+        return GeminiSystemMapWire(
+            summary="Initial system map.",
+            roots=[GeminiPlannerRootWire(id="product", name="Product", type="system", responsibility="Own the product boundary")],
         )
 
-    provider._invoke_bootstrap = MethodType(fake_bootstrap, provider)
-    project = Project(name="bootstrap", goal="Build a small web product")
-    context = ProjectContext(project=project, architecture=Architecture(), tasks=[], pending_proposals=[])
-    event = ProjectEvent(
-        project_id=project.id,
-        type=ProjectEventType.USER_MESSAGE,
-        payload={"intent": "INITIAL_ARCHITECTURE", "message": project.goal},
+    provider._invoke_system_map = MethodType(fake_system_map, provider)
+    wire = asyncio.run(
+        provider._run_planner_phase(
+            "_invoke_system_map",
+            "system map prompt",
+            global_deadline=__import__("time").perf_counter() + 2,
+        )
     )
-    decision = asyncio.run(provider.generate(event=event, context=context, system_prompt="unused for slim bootstrap"))
 
     assert attempts == ["gemini-3.7-flash", "gemini-3.5-flash-lite"]
     assert provider.last_model_id == "gemini-3.5-flash-lite"
-    assert decision.architecture_review_required is False
-    assert [action.type for action in decision.actions] == [AgentActionType.ADD_PROJECT_NOTE, AgentActionType.CREATE_TASK]
+    assert [root.id for root in wire.roots] == ["product"]
 
 
-def test_bootstrap_prompt_requests_meaningful_decomposition_without_forcing_component_count():
-    from archbro.backend.core.contracts import Relationship, TaskProposal
-
+def test_bootstrap_prompt_requests_outside_in_decomposition_without_hardcoded_taxonomy():
     provider = _provider_with_chain()
-    captured_prompt = ""
-
-    async def fake_bootstrap(self, model_id: str, prompt: str):
-        nonlocal captured_prompt
-        captured_prompt = prompt
-        return GeminiBootstrapWire(
-            summary="Initial architecture.",
-            architecture=GeminiArchitectureWire(
-                version=1,
-                summary="V0",
-                components=[
-                    GeminiComponentWire(id="frontend", name="Frontend", type="web", responsibility="User experience"),
-                    GeminiComponentWire(id="agent", name="Agent", type="agent", responsibility="Agent orchestration"),
-                    GeminiComponentWire(id="data", name="Data", type="database", responsibility="Persistence"),
-                ],
-                relationships=[
-                    Relationship(source="frontend", target="agent", relationship_type="calls"),
-                    Relationship(source="agent", target="data", relationship_type="reads_writes"),
-                ],
-            ),
-            tasks=[TaskProposal(title="Build agent", related_component="agent")],
-        )
-
-    provider._invoke_bootstrap = MethodType(fake_bootstrap, provider)
     project = Project(
         name="rental",
         goal="Build an agentic rental site with user UI, recommendations, search, and managed data on Google Cloud.",
@@ -260,16 +222,24 @@ def test_bootstrap_prompt_requests_meaningful_decomposition_without_forcing_comp
         type=ProjectEventType.USER_MESSAGE,
         payload={"intent": "INITIAL_ARCHITECTURE", "message": project.goal},
     )
+    system_prompt = provider._system_map_prompt(event=event, context=context)
+    snapshot = InitialArchitecturePlannerSnapshot(
+        roots=("experience",),
+        components=(GeminiComponentWire(id="experience", name="Experience", type="system", responsibility="Own user interaction"),),
+    )
+    scope_prompt = provider._scope_prompt(
+        event=event,
+        context=context,
+        snapshot=snapshot,
+        scope_id="experience",
+    )
 
-    asyncio.run(provider.generate(event=event, context=context, system_prompt="unused"))
-
-    assert "distinct responsibility" in captured_prompt
-    assert "parent_id" in captured_prompt
-    assert "Do not output nested children arrays" in captured_prompt
-    assert "do not leave the entire architecture flat" in captured_prompt
-    assert "independently implementable capabilities" in captured_prompt
-    assert "external search/recommendation/data integrations" in captured_prompt
-    assert "prefer a domain-specific component name" in captured_prompt
-    assert "Agent orchestration should coordinate domain capabilities" in captured_prompt
-    assert "Prefer 4-6 components for a multi-capability product" in captured_prompt
-    assert "3 is valid for a genuinely simple product" in captured_prompt
+    assert "SYSTEM_MAP phase" in system_prompt
+    assert "ONLY root system boundaries" in system_prompt
+    assert "Normally use 3-6 truthful major boundaries" in system_prompt
+    assert "allow 1-2 for a genuinely simple system" in system_prompt
+    assert "do not hardcode a category taxonomy" in system_prompt.lower()
+    assert "EXPAND_SCOPE phase" in scope_prompt
+    assert "only NEW descendants" in scope_prompt
+    assert "never regenerate or edit accepted nodes" in scope_prompt
+    assert "files, classes, functions, methods" in scope_prompt

@@ -16,10 +16,18 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 import sqlite3
 import sys
 
 import psycopg
+
+# This file is also a documented direct CLI entrypoint (`python qa/...`).
+# Add the src-layout package root before importing ArchBro so direct execution
+# behaves the same way as pytest/module execution without requiring PYTHONPATH.
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from archbro.platform.persistence.postgres import PostgresProjectRepository
 

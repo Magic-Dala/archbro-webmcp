@@ -191,7 +191,7 @@ main {{ width:min(1480px, calc(100% - 32px)); margin:0 auto; padding:32px 0 64px
 """
 
 
-def generate_report(test_exit_code: int, stdout: str, stderr: str) -> dict:
+def generate_report(test_exit_code: int, stdout: str, stderr: str, hierarchy_drill: dict | None = None) -> dict:
     if SWEEP_REPORT.exists():
         sweep = json.loads(SWEEP_REPORT.read_text(encoding="utf-8"))
     else:
@@ -212,8 +212,9 @@ def generate_report(test_exit_code: int, stdout: str, stderr: str) -> dict:
             "stdout_tail": stdout[-4000:],
             "stderr_tail": stderr[-4000:],
         },
+        "hierarchy_drill": hierarchy_drill or {"status": "FAIL", "detail": "Hierarchy drill probe did not run."},
     }
-    if test_exit_code != 0:
+    if test_exit_code != 0 or combined["hierarchy_drill"].get("status") != "PASS":
         combined["result"] = "FAIL"
 
     UI_REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -302,6 +303,7 @@ def run(open_report: bool = False) -> int:
     test_exit_code = 1
     test_stdout = ""
     test_stderr = ""
+    hierarchy_drill: dict = {"status": "FAIL", "detail": "Hierarchy drill probe did not run."}
     try:
         wait_for_health(server, base_url)
         test_env = env.copy()
@@ -318,6 +320,33 @@ def run(open_report: bool = False) -> int:
         test_exit_code = completed.returncode
         test_stdout = completed.stdout
         test_stderr = completed.stderr
+
+        drill_env = env.copy()
+        drill_env["ARCHBRO_BASE_URL"] = base_url
+        drill = subprocess.run(
+            [sys.executable, str(ROOT / "qa" / "probe_browser_hierarchy_drill.py")],
+            cwd=ROOT,
+            env=drill_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        test_exit_code = test_exit_code or drill.returncode
+        test_stdout += f"\n\nHIERARCHY_DRILL_STDOUT\n{drill.stdout}"
+        test_stderr += f"\n\nHIERARCHY_DRILL_STDERR\n{drill.stderr}"
+        if drill.returncode == 0:
+            try:
+                hierarchy_drill = {"status": "PASS", **json.loads(drill.stdout)}
+            except json.JSONDecodeError as exc:
+                hierarchy_drill = {"status": "FAIL", "detail": f"Invalid hierarchy drill JSON: {exc}", "stdout": drill.stdout[-2000:]}
+                test_exit_code = 1
+        else:
+            hierarchy_drill = {
+                "status": "FAIL",
+                "detail": "Real browser hierarchy drill failed.",
+                "stdout_tail": drill.stdout[-2000:],
+                "stderr_tail": drill.stderr[-2000:],
+            }
     except Exception as exc:
         test_stderr = f"{type(exc).__name__}: {exc}"
     finally:
@@ -329,7 +358,7 @@ def run(open_report: bool = False) -> int:
             server.communicate()
         _drop_schema(base_dsn, run_dsn)
 
-    report = generate_report(test_exit_code, test_stdout, test_stderr)
+    report = generate_report(test_exit_code, test_stdout, test_stderr, hierarchy_drill)
     failures = [surface for surface in report.get("surfaces", []) if surface.get("status") == "FAIL"]
     print(
         "FRONTEND_ACCEPTANCE",

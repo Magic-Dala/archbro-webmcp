@@ -63,6 +63,7 @@ def test_webmcp_golden_governance_and_execution_loop(dsn):
         f"/projects/{project_id}/agent-recommendations",
         json={
             "recommendation": "KEEP_CURRENT",
+            "expected_architecture_version": 1,
             "reasoning": "The PostgreSQL connection-pool health check is an operational incident and does not invalidate the accepted persistence boundary.",
             "evidence": ["PostgreSQL staging connection pool is failing health checks."],
             "observed_change": "Staging connectivity is degraded.",
@@ -81,6 +82,7 @@ def test_webmcp_golden_governance_and_execution_loop(dsn):
         f"/projects/{project_id}/agent-recommendations",
         json={
             "recommendation": "ACCEPT_PROPOSED_CHANGE",
+            "expected_architecture_version": 1,
             "reasoning": "The approved release now requires offline-first clients and managed Firebase persistence, so PostgreSQL plus a custom WebSocket channel no longer satisfies the accepted requirements.",
             "evidence": [
                 "Approved release requirement: offline-first clients with automatic background synchronization.",

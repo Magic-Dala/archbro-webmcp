@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from archbro.backend.agent.orchestration import AgentOrchestrator
 from archbro.backend.api.agent_surface import build_agent_surface_router
@@ -37,7 +37,10 @@ from archbro.backend.core.contracts import (
     utcnow,
 )
 from archbro.backend.core.observation import ObservationInProgressError
-from archbro.backend.core.diagram import project_diagram
+from archbro.backend.core.diagram import (
+    ArchitectureNodeNotFoundError,
+    project_scoped_diagram,
+)
 from archbro.backend.core.diagram_layout import layout_diagram
 from archbro.backend.core.repository import ProjectRepositoryPort
 from archbro.backend.llm.provider import GoalConversationMessage, GoalDraft, ModelProvider
@@ -123,10 +126,56 @@ class EventRequest(BaseModel):
         return self
 
 
+class InitialScopePlanningTrace(BaseModel):
+    scope_component_id: str
+    descendant_ids: list[str] = Field(default_factory=list, max_length=40)
+
+    @field_validator("scope_component_id")
+    @classmethod
+    def normalize_scope_component_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+    @field_validator("descendant_ids")
+    @classmethod
+    def normalize_descendant_ids(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("descendant ids must not be empty")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("descendant ids must be unique")
+        return normalized
+
+
+class InitialArchitecturePlanningTrace(BaseModel):
+    system_map_root_ids: list[str] = Field(min_length=1, max_length=8)
+    scope_expansions: list[InitialScopePlanningTrace] = Field(min_length=1, max_length=8)
+    reconciled: bool
+
+    @field_validator("system_map_root_ids")
+    @classmethod
+    def normalize_system_map_root_ids(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("system map root ids must not be empty")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("system map root ids must be unique")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_reconcile_phase(self) -> "InitialArchitecturePlanningTrace":
+        if self.reconciled is not True:
+            raise ValueError("outside-in initial planning must complete RECONCILE before commit")
+        return self
+
+
 class InteractiveInitialArchitectureRequest(BaseModel):
     architecture: Architecture
     tasks: list[TaskProposal]
     reasoning: str
+    planning_trace: InitialArchitecturePlanningTrace | None = None
 
     @field_validator("reasoning")
     @classmethod
@@ -150,11 +199,44 @@ class InteractiveInitialArchitectureRequest(BaseModel):
         })
         if unknown_task_components:
             raise ValueError(f"initial tasks reference unknown architecture component ids: {unknown_task_components}")
+        if self.planning_trace is not None:
+            root_ids = [component.id for component in self.architecture.components]
+            if self.planning_trace.system_map_root_ids != root_ids:
+                raise ValueError(
+                    "planning_trace.system_map_root_ids must exactly match final architecture roots in order"
+                )
+            expansion_scope_ids = [
+                expansion.scope_component_id for expansion in self.planning_trace.scope_expansions
+            ]
+            if expansion_scope_ids != root_ids:
+                raise ValueError(
+                    "planning_trace.scope_expansions must cover every SYSTEM_MAP root exactly once in order"
+                )
+
+            def descendant_ids(component) -> list[str]:
+                result: list[str] = []
+                for child in component.children:
+                    result.append(child.id)
+                    result.extend(descendant_ids(child))
+                return result
+
+            for root, expansion in zip(
+                self.architecture.components,
+                self.planning_trace.scope_expansions,
+                strict=True,
+            ):
+                expected_descendants = descendant_ids(root)
+                if expansion.descendant_ids != expected_descendants:
+                    raise ValueError(
+                        "planning_trace descendant ids must exactly match the final hierarchy for scope "
+                        f"{root.id}"
+                    )
         return self
 
 
 class AgentRecommendationRequest(BaseModel):
     recommendation: ArchitectureOption
+    expected_architecture_version: int = Field(ge=0)
     reasoning: str
     evidence: list[str]
     observed_change: str
@@ -367,15 +449,47 @@ def build_router(
         return repository.get_architecture(project_id)
 
     @router.get("/projects/{project_id}/architecture/diagram")
-    async def get_architecture_diagram(project_id: str, http_request: Request):
+    async def get_architecture_diagram(
+        project_id: str,
+        http_request: Request,
+        scope: str | None = Query(default=None),
+        expected_architecture_version: int | None = Query(default=None, ge=0),
+    ):
         await authorized_project(http_request, project_id, ProjectPermission.READ)
         architecture = repository.get_architecture(project_id)
-        diagram = project_diagram(
-            architecture,
-            tasks=repository.list_tasks(project_id),
-            proposals=repository.list_proposals(project_id),
-        )
+        if (
+            expected_architecture_version is not None
+            and expected_architecture_version != architecture.version
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "stale_architecture_version",
+                    "expected_architecture_version": expected_architecture_version,
+                    "current_architecture_version": architecture.version,
+                },
+            )
+        try:
+            projection = project_scoped_diagram(
+                architecture,
+                scope_component_id=scope,
+                tasks=repository.list_tasks(project_id),
+                proposals=repository.list_proposals(project_id),
+            )
+        except ArchitectureNodeNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "architecture_node_not_found",
+                    "component_id": scope,
+                },
+            )
+        diagram = projection.diagram
         return {
+            "schema": projection.schema,
+            "project_id": project_id,
+            "architecture_version": projection.architecture_version,
+            "scope": projection.scope.model_dump(mode="json"),
             "diagram": diagram.model_dump(mode="json"),
             "positioned_graph": asdict(layout_diagram(diagram)),
         }
@@ -408,6 +522,11 @@ def build_router(
                 "intent": "INITIAL_ARCHITECTURE",
                 "summary": request.reasoning,
                 "provider": "webmcp-agent",
+                "planning_trace": (
+                    request.planning_trace.model_dump(mode="json")
+                    if request.planning_trace is not None
+                    else None
+                ),
             },
         )
         actions = [
@@ -451,6 +570,15 @@ def build_router(
             raise HTTPException(status_code=404, detail="project not found")
         if architecture.version == 0:
             raise HTTPException(status_code=409, detail="initial architecture must exist before submitting an agent recommendation")
+        if request.expected_architecture_version != architecture.version:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "stale_architecture_version",
+                    "expected_architecture_version": request.expected_architecture_version,
+                    "current_architecture_version": architecture.version,
+                },
+            )
 
         component_ids: set[str] = set()
 

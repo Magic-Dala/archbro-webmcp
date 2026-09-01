@@ -9,7 +9,7 @@ from archbro.backend.core.authorization import (
     ProjectPermission,
     TrustedPrincipal,
 )
-from archbro.backend.core.contracts import Architecture, Project
+from archbro.backend.core.contracts import Architecture, Component, Project
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import build_app
@@ -149,6 +149,31 @@ def test_owner_identity_is_server_trusted_and_other_user_is_denied(dsn):
     assert spoofed.status_code == 403
 
 
+def test_node_context_and_path_preserve_project_read_authorization(dsn):
+    repo = _repo(dsn)
+    alice = _client(repo, TrustedPrincipal(user_id="alice"))
+    bob = _client(repo, TrustedPrincipal(user_id="bob"))
+    project = _create_project(alice)
+    project_id = project["id"]
+    repo.save_architecture(
+        project_id,
+        Architecture(
+            version=1,
+            components=[
+                Component(id="a", name="A", type="service", responsibility="A"),
+                Component(id="b", name="B", type="service", responsibility="B"),
+            ],
+        ),
+    )
+
+    assert alice.get(f"/projects/{project_id}/architecture/nodes/node:a/context").status_code == 200
+    assert bob.get(f"/projects/{project_id}/architecture/nodes/node:a/context").status_code == 403
+    assert bob.get(
+        f"/projects/{project_id}/architecture/path",
+        params={"source_id": "node:a", "target_id": "node:b"},
+    ).status_code == 403
+
+
 def test_trusted_team_member_can_work_and_review_but_not_manage_project(dsn):
     repo = _repo(dsn)
     alice_principal = TrustedPrincipal(user_id="alice", team_ids=["team-1"])
@@ -283,7 +308,7 @@ def test_runtime_config_is_no_store_and_security_headers_are_present(dsn):
     client = TestClient(build_app(_repo(dsn), FakeModelProvider()))
     response = client.get("/runtime-config.js")
     assert response.status_code == 200
-    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["cache-control"] == "no-store, max-age=0"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
     assert "default-src 'self'" in response.headers["content-security-policy"]

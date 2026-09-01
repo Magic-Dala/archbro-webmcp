@@ -1,4 +1,4 @@
-# Platform / Infra — Max
+# Platform / Infrastructure
 
 Owns concrete runtime and operational infrastructure:
 
@@ -6,6 +6,6 @@ Owns concrete runtime and operational infrastructure:
 - `runtime/` — FastAPI composition root and dependency wiring.
 - `pipeline/` — normalized event delivery / buffering boundary.
 - `observability/` — logs, metrics, telemetry.
-- `deploy/` — deployment-facing helpers. The deployment assets themselves live in the repository root `deploy/`.
+- `deploy/` — deployment-facing helpers; repository-level deployment assets live under `deploy/`.
 
-This intentionally reuses KBF's Google Cloud/Firebase direction rather than introducing an AWS platform path. Platform composes concrete dependencies but should not absorb Agent/domain semantics. `runtime/app.py` is the only layer expected to know the concrete frontend, repository, and model provider at the same time.
+Platform composes concrete dependencies but must not absorb agent/domain semantics. `runtime/app.py` is the composition root expected to know the concrete frontend, repository, identity, and model-provider implementations at the same time.

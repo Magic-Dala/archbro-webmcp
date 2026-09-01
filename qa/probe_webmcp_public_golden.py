@@ -31,10 +31,10 @@ with sync_playwright() as playwright:
           goal: 'Build a collaborative issue tracker with React, FastAPI, PostgreSQL, and realtime collaboration.',
           architecture_summary: 'React uses FastAPI, PostgreSQL, and a custom realtime collaboration channel.',
           components: [
-            {name: 'React Web Client', type: 'Frontend SPA', responsibility: 'Collaborative issue tracking UI'},
-            {name: 'FastAPI Application', type: 'Backend API', responsibility: 'Application API and privileged operations'},
-            {name: 'PostgreSQL Database', type: 'Relational persistence', responsibility: 'Durable issue-tracking state'},
-            {name: 'Realtime Collaboration Channel', type: 'WebSocket service', responsibility: 'Custom realtime collaboration'}
+            {id: 'react-web-client', name: 'React Web Client', type: 'Frontend SPA', responsibility: 'Collaborative issue tracking UI'},
+            {id: 'fastapi-application', name: 'FastAPI Application', type: 'Backend API', responsibility: 'Application API and privileged operations'},
+            {id: 'postgresql-database', name: 'PostgreSQL Database', type: 'Relational persistence', responsibility: 'Durable issue-tracking state'},
+            {id: 'realtime-collaboration-channel', name: 'Realtime Collaboration Channel', type: 'WebSocket service', responsibility: 'Custom realtime collaboration'}
           ],
           relationships: [
             {source: 'React Web Client', target: 'FastAPI Application', type: 'HTTPS JSON REST', description: 'Application requests'},
@@ -46,28 +46,49 @@ with sync_playwright() as playwright:
             {title: 'Define PostgreSQL schema and migrations', component: 'PostgreSQL Database'},
             {title: 'Add custom realtime updates', component: 'Realtime Collaboration Channel'}
           ],
-          reasoning: 'The host agent generated the initial architecture directly from the project goal.'
+          planning_trace: {
+            system_map_root_ids: ['react-web-client', 'fastapi-application', 'postgresql-database', 'realtime-collaboration-channel'],
+            scope_expansions: [
+              {scope_component_id: 'react-web-client', descendant_ids: []},
+              {scope_component_id: 'fastapi-application', descendant_ids: []},
+              {scope_component_id: 'postgresql-database', descendant_ids: []},
+              {scope_component_id: 'realtime-collaboration-channel', descendant_ids: []}
+            ],
+            reconciled: true
+          },
+          reasoning: 'The host agent planned the system map first, evaluated each root scope, then reconciled relationships and tasks before committing Architecture v1.'
         })"""
     ))
     project_id = bootstrap["project"]["id"]
 
     try:
+        observation = json.loads(page.evaluate(
+            """async () => await window.__archbroRegisteredTools.archbro_record_project_observation.execute({
+              summary: 'PostgreSQL staging connection-pool health checks are failing.',
+              evidence: ['Staging health check reports connection-pool failure.'],
+              related_components: ['postgresql-database']
+            })"""
+        ))
+        assert observation["canonical_architecture_mutated"] is False
+        assert observation["built_in_model_called"] is False
+
         keep = json.loads(page.evaluate(
-            """async () => await window.__archbroRegisteredTools.archbro_submit_agent_recommendation.execute({
+            """async () => await window.__archbroRegisteredTools.archbro_submit_architecture_recommendation.execute({
               recommendation: 'KEEP_CURRENT',
               reasoning: 'A PostgreSQL staging connection-pool health failure is operational and does not by itself invalidate the accepted persistence boundary.',
               evidence: ['PostgreSQL staging connection pool is failing health checks.'],
               observed_change: 'Staging database connectivity is degraded.',
               affected_components: ['postgresql-database'],
               proposed_changes: [],
-              impact: ''
+              impact: '',
+              expected_architecture_version: 1
             })"""
         ))
         assert keep["architecture_review_required"] is False
         assert keep["proposal"] is None
 
         recommendation = json.loads(page.evaluate(
-            """async () => await window.__archbroRegisteredTools.archbro_submit_agent_recommendation.execute({
+            """async () => await window.__archbroRegisteredTools.archbro_submit_architecture_recommendation.execute({
               recommendation: 'ACCEPT_PROPOSED_CHANGE',
               reasoning: 'The approved release now requires offline-first clients, managed Firebase persistence, and no custom realtime persistence channel, so Architecture v1 no longer satisfies the accepted requirements.',
               evidence: [
@@ -107,16 +128,12 @@ with sync_playwright() as playwright:
                   ]
                 }
               ],
-              impact: 'Persistence, realtime synchronization, client state handling, and privileged backend access change.'
+              impact: 'Persistence, realtime synchronization, client state handling, and privileged backend access change.',
+              expected_architecture_version: 1
             })"""
         ))
         proposal = recommendation["proposal"]
         assert proposal["status"] == "PENDING"
-
-        focus = json.loads(page.evaluate(
-            "async () => await window.__archbroRegisteredTools.archbro_focus_pending_review.execute({})"
-        ))
-        assert focus["focused"] is True
 
         accepted = page.evaluate(
             """async ({projectId, proposalId}) => {
@@ -134,9 +151,10 @@ with sync_playwright() as playwright:
         )
         assert accepted["status"] == "ACCEPTED"
 
-        brief = json.loads(page.evaluate(
-            "async () => await window.__archbroRegisteredTools.archbro_get_project_brief.execute({})"
+        decision = json.loads(page.evaluate(
+            "async () => await window.__archbroRegisteredTools.archbro_get_architecture_decision_context.execute({})"
         ))
+        brief = decision["project_brief"]
         assert brief["architecture"]["version"] == 2
         ready = [
             task for task in brief["execution"]["ready"]
@@ -153,14 +171,39 @@ with sync_playwright() as playwright:
         ))
         assert started["task"]["status"] == "IN_PROGRESS"
 
-        final_brief = json.loads(page.evaluate(
-            "async () => await window.__archbroRegisteredTools.archbro_get_project_brief.execute({})"
+        created = json.loads(page.evaluate(
+            """async () => await window.__archbroRegisteredTools.archbro_create_task.execute({
+              request_id: 'golden-idempotent-create',
+              title: 'Verify semantic create retry safety',
+              related_component: 'firebase-managed-data-platform',
+              acceptance_criteria: ['Retry returns the original task and event.']
+            })"""
         ))
+        retried = json.loads(page.evaluate(
+            """async () => await window.__archbroRegisteredTools.archbro_create_task.execute({
+              request_id: 'golden-idempotent-create',
+              title: 'Verify semantic create retry safety',
+              related_component: 'firebase-managed-data-platform',
+              acceptance_criteria: ['Retry returns the original task and event.']
+            })"""
+        ))
+        assert retried["task"]["id"] == created["task"]["id"]
+        assert retried["event_id"] == created["event_id"]
+
+        final_decision = json.loads(page.evaluate(
+            "async () => await window.__archbroRegisteredTools.archbro_get_architecture_decision_context.execute({})"
+        ))
+        final_brief = final_decision["project_brief"]
         assert final_brief["architecture"]["version"] == 2
         assert any(
             task["id"] == ready[0]["id"] and task["status"] == "IN_PROGRESS"
             for task in final_brief["execution"]["in_progress"]
         )
+        created_matches = [
+            task for task in final_brief["execution"]["ready"]
+            if task["id"] == created["task"]["id"]
+        ]
+        assert len(created_matches) == 1
 
         print(json.dumps({
             "project_id": project_id,
@@ -168,6 +211,8 @@ with sync_playwright() as playwright:
             "proposal_status": accepted["status"],
             "started_task": started["task"]["title"],
             "started_task_status": started["task"]["status"],
+            "idempotent_create_task_id": created["task"]["id"],
+            "idempotent_create_event_id": created["event_id"],
             "built_in_model_called": bootstrap["built_in_model_called"],
             "result": "PASS",
         }, indent=2))

@@ -26,12 +26,17 @@ const state = {
   architecture: null,
   diagram: null,
   diagramError: null,
-  graphFocusMode: 'connected',
+  codeArchitecture: null,
+  codeDiagram: null,
+  architectureGraphKind: 'living',
+  selectedCodeNodeId: null,
+  scopeComponentId: null,
+  readingMode: 'MAP',
+  selectedComponentId: null,
+  graphFocusMode: 'all',
   proposals: [],
   activity: [],
   lastRun: null,
-  selectedNode: null,
-  drillNodeId: null,
   selectedTaskId: null,
   selectedProposalId: null,
   currentView: 'overview',
@@ -76,7 +81,7 @@ const $ = (id) => document.getElementById(id);
 const views = {
   overview: {title: 'Project Overview', subtitle: 'Keep project reality aligned with the accepted architecture.'},
   tasks: {title: 'Tasks', subtitle: 'Concrete, actionable work shared by humans and the agent.'},
-  architecture: {title: 'Living Graph', subtitle: 'Machine-readable architecture rendered as a living project graph.'},
+  architecture: {title: 'Architecture', subtitle: 'Compare accepted design intent with revision-pinned implementation evidence.'},
 };
 
 function showExperience(phase) {
@@ -297,47 +302,32 @@ async function loadProjectSnapshots() {
   const snapshots = new Map();
   await Promise.all(state.projects.map(async (project) => {
     try {
-      snapshots.set(project.id, await api(`/projects/${project.id}/architecture`));
-    } catch {
-      snapshots.set(project.id, null);
-    }
+      const architecture = await api(`/projects/${project.id}/architecture`);
+      let rootDiagram = null;
+      if (Number(architecture?.version || 0) > 0 && architecture?.components?.length) {
+        try { rootDiagram = await loadArchitectureDiagram(project.id, architecture, null); } catch { rootDiagram = null; }
+      }
+      snapshots.set(project.id, {architecture, rootDiagram});
+    } catch { snapshots.set(project.id, null); }
   }));
   state.projectSnapshots = snapshots;
   return snapshots;
 }
 
-function snapshotNodes(architecture) {
-  const nodes = [];
-  const visit = (items = [], depth = 0) => {
-    items.forEach((component) => {
-      if (nodes.length < 5) nodes.push({...component, depth});
-      if (nodes.length < 5) visit(component.children || [], depth + 1);
-    });
-  };
-  visit(architecture?.components || []);
-  return nodes;
+function graphPathData(points = []) {
+  if (!points.length) return '';
+  return `M ${points[0].x} ${points[0].y} ${points.slice(1).map((point) => `L ${point.x} ${point.y}`).join(' ')}`;
 }
 
-function renderArchitectureSnapshot(architecture) {
-  const nodes = snapshotNodes(architecture);
-  if (!architecture || Number(architecture.version || 0) < 1 || !nodes.length) {
+function renderArchitectureSnapshot(snapshot) {
+  const architecture = snapshot?.architecture || null;
+  const graph = snapshot?.rootDiagram || null;
+  if (!architecture || Number(architecture.version || 0) < 1 || !graph?.nodes?.length) {
     return '<div class="project-snapshot project-snapshot-pending"><span class="snapshot-icon" aria-hidden="true">⌁</span><strong>Architecture snapshot pending</strong><small>Generate Living Architecture to see the system map here.</small></div>';
   }
-  const positions = nodes.map((node, index) => ({
-    node,
-    x: 36 + (index % 3) * 86,
-    y: 48 + Math.floor(index / 3) * 39,
-  }));
-  const edges = positions.slice(1).map((position, index) => {
-    const source = positions[index];
-    return `<line x1="${source.x}" y1="${source.y}" x2="${position.x}" y2="${position.y}" />`;
-  }).join('');
-  const circles = positions.map(({node, x, y}, index) => {
-    const colors = ['#4D416F', '#8B5CF6', '#3B82F6', '#22B96B', '#FF7A66'];
-    const label = escapeHtml(String(node.name || 'Area').slice(0, 10));
-    return `<g class="snapshot-node"><circle cx="${x}" cy="${y}" r="14" fill="${colors[index % colors.length]}"/><text x="${x}" y="${y + 3}" text-anchor="middle">${label.slice(0, 5)}</text></g>`;
-  }).join('');
-  return `<div class="project-snapshot project-snapshot-architecture" role="img" aria-label="Living Architecture snapshot version ${escapeHtml(architecture.version)}"><span class="snapshot-label">LIVING ARCHITECTURE · v${escapeHtml(architecture.version)}</span><svg viewBox="0 0 236 132" aria-hidden="true"><g class="snapshot-edges">${edges}</g>${circles}</svg></div>`;
+  const edges = graph.edges.map((edge) => `<path data-snapshot-edge="${escapeHtml(edge.id)}" d="${graphPathData(edge.points)}"/>`).join('');
+  const nodes = graph.nodes.map((node) => `<g class="snapshot-node" data-snapshot-node="${escapeHtml(node.id)}"><rect x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="12"/><text x="${node.x + node.width / 2}" y="${node.y + node.height / 2 + 3}" text-anchor="middle">${escapeHtml(node.label || node.component_id || 'Area')}</text></g>`).join('');
+  return `<div class="project-snapshot project-snapshot-architecture" role="img" aria-label="Living Architecture root snapshot version ${escapeHtml(architecture.version)}"><span class="snapshot-label">LIVING ARCHITECTURE · v${escapeHtml(architecture.version)}</span><svg viewBox="0 0 ${graph.width} ${graph.height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true"><g class="snapshot-edges">${edges}</g>${nodes}</svg></div>`;
 }
 
 function projectCardStatus(project, architecture) {
@@ -350,12 +340,13 @@ function renderProjectCards() {
   const cards = $('projectCards');
   if (!cards) return;
   cards.innerHTML = state.projects.map((project) => {
-    const architecture = state.projectSnapshots.get(project.id);
+    const snapshot = state.projectSnapshots.get(project.id);
+    const architecture = snapshot?.architecture || null;
     const status = projectCardStatus(project, architecture);
     const snapshotMeta = architecture?.version > 0
       ? `Architecture v${architecture.version} · click to open Living Graph`
       : 'Goal saved · architecture pending';
-    return `<article class="project-card" data-project-card="${escapeHtml(project.id)}"><button class="project-card-open" type="button" data-project-card-open="${escapeHtml(project.id)}"><div class="project-card-preview">${renderArchitectureSnapshot(architecture)}</div><div class="project-card-body"><div class="project-card-heading"><strong>${escapeHtml(project.name)}</strong><span class="project-card-status ${status.className}">${status.label}</span></div><p>${escapeHtml(snapshotMeta)}</p><span class="project-card-link">Open project <span aria-hidden="true">→</span></span></div></button></article>`;
+    return `<article class="project-card" data-project-card="${escapeHtml(project.id)}"><button class="project-card-open" type="button" data-project-card-open="${escapeHtml(project.id)}"><div class="project-card-preview">${renderArchitectureSnapshot(snapshot)}</div><div class="project-card-body"><div class="project-card-heading"><strong>${escapeHtml(project.name)}</strong><span class="project-card-status ${status.className}">${status.label}</span></div><p>${escapeHtml(snapshotMeta)}</p><span class="project-card-link">Open project <span aria-hidden="true">→</span></span></div></button></article>`;
   }).join('');
   cards.querySelectorAll('[data-project-card-open]').forEach((button) => button.addEventListener('click', async () => {
     if (await selectProject(button.dataset.projectCardOpen)) closeMobileSidebar();
@@ -388,11 +379,16 @@ async function openPersonalWorkspace() {
   state.architecture = null;
   state.diagram = null;
   state.diagramError = null;
-  state.graphFocusMode = 'connected';
+  state.codeArchitecture = null;
+  state.codeDiagram = null;
+  state.architectureGraphKind = 'living';
+  state.selectedCodeNodeId = null;
+  state.graphFocusMode = 'all';
   state.proposals = [];
   state.lastRun = null;
-  state.selectedNode = null;
-  state.drillNodeId = null;
+  state.selectedComponentId = null;
+  state.scopeComponentId = null;
+  state.readingMode = 'MAP';
   state.selectedTaskId = null;
   state.selectedProposalId = null;
   state.currentView = 'overview';
@@ -644,77 +640,130 @@ function normalizeDiagramGraph(payload) {
   if (diagram.diagram_version !== 'archbro.diagram.v1') throw new Error(`Unsupported diagram contract: ${diagram.diagram_version || 'missing'}`);
   if (layout.layout_version !== 'archbro.layout.v1') throw new Error(`Unsupported layout contract: ${layout.layout_version || 'missing'}`);
   if (Number(diagram.architecture_version) !== Number(layout.architecture_version)) throw new Error('Diagram and layout architecture versions do not match.');
-
   const positionedById = new Map((layout.nodes || []).map((node) => [node.node_id, node]));
   const nodes = (diagram.nodes || []).map((node) => {
     const positioned = positionedById.get(node.id);
     if (!positioned) throw new Error(`PositionedGraph is missing node ${node.id}.`);
     const numbers = [positioned.x, positioned.y, positioned.width, positioned.height].map(Number);
     if (numbers.some((value) => !Number.isFinite(value)) || numbers[2] <= 0 || numbers[3] <= 0) throw new Error(`Invalid positioned node ${node.id}.`);
-    return {
-      ...node,
-      x: numbers[0],
-      y: numbers[1],
-      width: numbers[2],
-      height: numbers[3],
-      layer: Number(positioned.layer || 0),
-      order: Number(positioned.order || 0),
-      hierarchyPath: positioned.hierarchy_path || [],
-    };
+    const childCount = Number(node.child_count || 0);
+    if (!Number.isInteger(childCount) || childCount < 0) throw new Error(`Invalid child_count for ${node.id}.`);
+    const projectionRole = node.projection_role || 'PRIMARY';
+    if (!['PRIMARY','CONTEXT'].includes(projectionRole)) throw new Error(`Invalid projection_role for ${node.id}.`);
+    return {...node, projectionRole, childCount, x:numbers[0], y:numbers[1], width:numbers[2], height:numbers[3], layer:Number(positioned.layer || 0), order:Number(positioned.order || 0), hierarchyPath:positioned.hierarchy_path || []};
   });
   if (nodes.length !== positionedById.size) throw new Error('DiagramView and PositionedGraph node sets do not match.');
-
   const routesById = new Map((layout.edges || []).map((edge) => [edge.edge_id, edge]));
   const edges = (diagram.edges || []).map((edge) => {
     const route = routesById.get(edge.id);
     if (!route) throw new Error(`PositionedGraph is missing edge ${edge.id}.`);
     if (route.source !== edge.source || route.target !== edge.target) throw new Error(`Edge route endpoints do not match DiagramView for ${edge.id}.`);
-    const points = (route.points || []).map((point) => ({x: Number(point.x), y: Number(point.y)}));
+    const points = (route.points || []).map((point) => ({x:Number(point.x), y:Number(point.y)}));
     if (points.length < 2 || points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) throw new Error(`Invalid route points for ${edge.id}.`);
-    return {...edge, points, routing: route.routing || '', order: Number(route.order || 0)};
+    return {...edge, points, routing:route.routing || '', order:Number(route.order || 0)};
   });
   if (edges.length !== routesById.size) throw new Error('DiagramView and PositionedGraph edge sets do not match.');
-
-  const width = Number(layout.width);
-  const height = Number(layout.height);
+  const width=Number(layout.width), height=Number(layout.height);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('PositionedGraph requires positive graph dimensions.');
+  return {diagramVersion:diagram.diagram_version, layoutVersion:layout.layout_version, architectureVersion:Number(diagram.architecture_version), summary:diagram.summary || '', width, height, nodes:nodes.sort((a,b)=>a.order-b.order || a.id.localeCompare(b.id)), edges:edges.sort((a,b)=>a.order-b.order || a.id.localeCompare(b.id))};
+}
+
+function normalizeScopedDiagramResponse(payload, requestedScopeComponentId = null) {
+  if (payload?.schema && payload.schema !== 'archbro.scoped_diagram.v1') throw new Error(`Unsupported scoped diagram envelope: ${payload.schema}`);
+  const graph = normalizeDiagramGraph(payload);
+  const raw = payload?.scope || null;
+  if (requestedScopeComponentId && !raw) throw new Error('Scoped diagram response is missing scope metadata.');
+  const componentId = raw?.component_id ?? null;
+  if (requestedScopeComponentId && componentId !== requestedScopeComponentId) throw new Error(`Scoped diagram response returned ${componentId || 'ROOT'} instead of ${requestedScopeComponentId}.`);
+  const ancestorPath = Array.isArray(raw?.ancestor_path) ? raw.ancestor_path.map((item) => ({componentId:item.component_id ?? null,nodeId:item.node_id ?? null,label:String(item.label || item.component_id || 'Overview')})).filter((item) => item.componentId) : [];
+  return {...graph, scope:{componentId,nodeId:raw?.node_id ?? (componentId ? `node:${componentId}` : null),label:String(raw?.label || (componentId ? componentId : 'Overview')),isLeaf:Boolean(raw?.is_leaf),ancestorPath,directRelationships:Array.isArray(raw?.direct_relationships) ? raw.direct_relationships : []}};
+}
+
+function normalizeCodeArchitectureSnapshot(payload) {
+  if (!payload || payload.schema !== 'archbro.code_architecture.v1') throw new Error(`Unsupported code architecture envelope: ${payload?.schema || 'missing'}`);
+  const repository = payload.repository || {};
+  const revision = String(repository.revision || '').toLowerCase();
+  if (repository.provider !== 'github' || repository.revision_pinned !== true || !/^[0-9a-f]{40}$/.test(revision)) throw new Error('Code architecture requires an exact pinned GitHub commit SHA.');
+  const diagram = payload.diagram;
+  const layout = payload.positioned_graph;
+  if (!diagram || !layout) throw new Error('Code architecture must include a diagram and positioned graph.');
+  if (diagram.diagram_version !== 'archbro.code_diagram.v1') throw new Error(`Unsupported code diagram contract: ${diagram.diagram_version || 'missing'}`);
+  if (layout.layout_version !== 'archbro.layout.v1') throw new Error(`Unsupported code layout contract: ${layout.layout_version || 'missing'}`);
+  const positionedById = new Map((layout.nodes || []).map((node) => [node.node_id, node]));
+  const nodes = (diagram.nodes || []).map((node) => {
+    const positioned = positionedById.get(node.id);
+    if (!positioned) throw new Error(`Code PositionedGraph is missing node ${node.id}.`);
+    if (!String(node.id || '').startsWith('code-node:')) throw new Error(`Code graph node must use the code-node namespace: ${node.id}.`);
+    const numbers = [positioned.x, positioned.y, positioned.width, positioned.height].map(Number);
+    if (numbers.some((value) => !Number.isFinite(value)) || numbers[2] <= 0 || numbers[3] <= 0) throw new Error(`Invalid positioned code node ${node.id}.`);
+    const sources = Array.isArray(node.sources) ? node.sources.map((source) => {
+      const href = String(source.href || '');
+      const expectedPrefix = `https://github.com/${repository.slug}/blob/${revision}/`;
+      if (!href.startsWith(expectedPrefix)) throw new Error(`Code evidence for ${node.id} is not pinned to the snapshot revision.`);
+      return {...source, href};
+    }) : [];
+    return {
+      ...node,
+      childCount:Number(node.child_count || 0),
+      sources,
+      x:numbers[0], y:numbers[1], width:numbers[2], height:numbers[3],
+      layer:Number(positioned.layer || 0), order:Number(positioned.order || 0),
+      hierarchyPath:positioned.hierarchy_path || [],
+    };
+  });
+  if (nodes.length !== positionedById.size) throw new Error('Code Diagram and PositionedGraph node sets do not match.');
+  const routesById = new Map((layout.edges || []).map((edge) => [edge.edge_id, edge]));
+  const edges = (diagram.edges || []).map((edge) => {
+    const route = routesById.get(edge.id);
+    if (!route || route.source !== edge.source || route.target !== edge.target) throw new Error(`Code edge route does not match ${edge.id}.`);
+    const points = (route.points || []).map((point) => ({x:Number(point.x), y:Number(point.y)}));
+    if (points.length < 2 || points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) throw new Error(`Invalid code edge route ${edge.id}.`);
+    return {...edge, points, routing:route.routing || '', order:Number(route.order || 0)};
+  });
+  if (edges.length !== routesById.size) throw new Error('Code Diagram and PositionedGraph edge sets do not match.');
+  const width=Number(layout.width), height=Number(layout.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('Code PositionedGraph requires positive dimensions.');
   return {
-    diagramVersion: diagram.diagram_version,
-    layoutVersion: layout.layout_version,
-    architectureVersion: Number(diagram.architecture_version),
-    summary: diagram.summary || '',
-    width,
-    height,
-    nodes: nodes.sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)),
-    edges: edges.sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)),
+    schema:payload.schema,
+    classification:payload.classification,
+    canonicalStateMutated:Boolean(payload.canonical_state_mutated),
+    repository:{...repository, revision},
+    evidenceVerification:payload.evidence_verification || {},
+    summary:payload.summary || diagram.summary || '',
+    eventId:payload.event_id || null,
+    publishedAt:payload.published_at || null,
+    width, height,
+    nodes:nodes.sort((a,b)=>a.order-b.order || a.id.localeCompare(b.id)),
+    edges:edges.sort((a,b)=>a.order-b.order || a.id.localeCompare(b.id)),
   };
 }
 
-async function loadArchitectureDiagram(projectId, architecture) {
-  if (!architecture?.components?.length) return null;
-  const embedded = architecture.diagram && (architecture.positioned_graph || architecture.layout)
-    ? architecture
-    : null;
-  const payload = embedded || await api(`/projects/${projectId}/architecture/diagram`);
-  return normalizeDiagramGraph(payload);
+function architectureDiagramPath(projectId, architectureVersion, scopeComponentId = null) {
+  const params = new URLSearchParams();
+  if (scopeComponentId) params.set('scope', scopeComponentId);
+  if (Number(architectureVersion) > 0) params.set('expected_architecture_version', String(Number(architectureVersion)));
+  const query=params.toString();
+  return `/projects/${projectId}/architecture/diagram${query ? `?${query}` : ''}`;
 }
 
-async function loadProjectContext(projectId) {
-  const [project, tasks, architecture, proposals, activity] = await Promise.all([
-    api(`/projects/${projectId}`),
-    api(`/projects/${projectId}/tasks`),
-    api(`/projects/${projectId}/architecture`),
-    api(`/projects/${projectId}/architecture/proposals`),
-    api(`/projects/${projectId}/events?limit=12`),
+async function loadArchitectureDiagram(projectId, architecture, scopeComponentId = null) {
+  if (!architecture?.components?.length) return null;
+  const payload = await api(architectureDiagramPath(projectId, architecture.version, scopeComponentId));
+  return normalizeScopedDiagramResponse(payload, scopeComponentId);
+}
+
+async function loadLatestCodeArchitecture(projectId) {
+  return api(`/projects/${projectId}/code-architecture/latest`);
+}
+
+async function loadProjectContext(projectId, {scopeComponentId = null} = {}) {
+  const [project,tasks,architecture,proposals,activity,codeArchitecture] = await Promise.all([
+    api(`/projects/${projectId}`), api(`/projects/${projectId}/tasks`), api(`/projects/${projectId}/architecture`), api(`/projects/${projectId}/architecture/proposals`), api(`/projects/${projectId}/events?limit=12`), loadLatestCodeArchitecture(projectId),
   ]);
-  let diagram = null;
-  let diagramError = null;
-  try {
-    diagram = await loadArchitectureDiagram(projectId, architecture);
-  } catch (err) {
-    diagramError = err?.message || String(err);
-  }
-  return {project, tasks, architecture, diagram, diagramError, proposals, activity};
+  let diagram=null, diagramError=null, codeDiagram=null;
+  try { diagram = await loadArchitectureDiagram(projectId, architecture, scopeComponentId); } catch (err) { diagramError=err?.message || String(err); }
+  if (codeArchitecture) codeDiagram = normalizeCodeArchitectureSnapshot(codeArchitecture);
+  return {project,tasks,architecture,diagram,diagramError,proposals,activity,codeArchitecture,codeDiagram};
 }
 
 async function selectProject(projectId) {
@@ -732,9 +781,12 @@ async function selectProject(projectId) {
     Object.assign(state, context, {
       projectId,
       lastRun: null,
-      selectedNode: null,
-      drillNodeId: null,
-      graphFocusMode: 'connected',
+      scopeComponentId: null,
+      readingMode: 'MAP',
+      selectedComponentId: null,
+      selectedCodeNodeId: null,
+      architectureGraphKind: 'living',
+      graphFocusMode: 'all',
       selectedTaskId: null,
       selectedProposalId: null,
       currentView: 'overview',
@@ -764,7 +816,7 @@ async function refresh() {
     return true;
   }
   try {
-    Object.assign(state, await loadProjectContext(state.projectId));
+    Object.assign(state, await loadProjectContext(state.projectId, {scopeComponentId: state.scopeComponentId}));
     render();
     return true;
   } catch (err) {
@@ -806,8 +858,11 @@ function startOnboarding() {
   };
   state.selectedTaskId = null;
   state.selectedProposalId = null;
-  state.selectedNode = null;
-  state.drillNodeId = null;
+  state.selectedComponentId = null;
+  state.selectedCodeNodeId = null;
+  state.architectureGraphKind = 'living';
+  state.scopeComponentId = null;
+  state.readingMode = 'MAP';
   renderOnboarding();
   openNewProjectNameDialog();
 }
@@ -1179,13 +1234,18 @@ async function deleteCurrentProject() {
     state.project = null;
     state.tasks = [];
     state.architecture = null;
-  state.diagram = null;
-  state.diagramError = null;
-  state.graphFocusMode = 'connected';
+    state.diagram = null;
+    state.diagramError = null;
+    state.codeArchitecture = null;
+    state.codeDiagram = null;
+    state.architectureGraphKind = 'living';
+    state.selectedCodeNodeId = null;
+    state.graphFocusMode = 'all';
     state.proposals = [];
     state.lastRun = null;
-    state.selectedNode = null;
-    state.drillNodeId = null;
+    state.selectedComponentId = null;
+    state.scopeComponentId = null;
+    state.readingMode = 'MAP';
     state.projectSnapshots.delete(deletedId);
     state.expandedProjectIds.delete(deletedId);
     persistExpandedProjectIds();
@@ -1352,8 +1412,11 @@ function resetEphemeralSessionState() {
   $('preferenceContinueBtn').disabled = true;
   state.currentView = 'overview';
   state.renamingProjectId = null;
-  state.selectedNode = null;
-  state.drillNodeId = null;
+  state.selectedComponentId = null;
+  state.selectedCodeNodeId = null;
+  state.architectureGraphKind = 'living';
+  state.scopeComponentId = null;
+  state.readingMode = 'MAP';
   state.selectedTaskId = null;
   state.selectedProposalId = null;
   state.lastRun = null;
@@ -1363,7 +1426,9 @@ function resetEphemeralSessionState() {
   state.architecture = null;
   state.diagram = null;
   state.diagramError = null;
-  state.graphFocusMode = 'connected';
+  state.codeArchitecture = null;
+  state.codeDiagram = null;
+  state.graphFocusMode = 'all';
   state.proposals = [];
   state.projectSnapshots = new Map();
   state.taskUpdating.clear();
@@ -1520,7 +1585,7 @@ function renderTasks() {
 function selectTaskContext(taskId) {
   state.selectedTaskId = taskId;
   state.selectedProposalId = null;
-  state.selectedNode = null;
+  state.selectedComponentId = null;
   renderTasks();
   updateInstructionContext();
   setTimeout(() => document.querySelector(`[data-task-select="${CSS.escape(taskId)}"]`)?.focus(), 0);
@@ -1573,7 +1638,7 @@ function renderProposals() {
   document.querySelectorAll('[data-proposal-select]').forEach((button) => button.addEventListener('click', () => {
     state.selectedProposalId = button.dataset.proposalSelect;
     state.selectedTaskId = null;
-    state.selectedNode = null;
+    state.selectedComponentId = null;
     renderProposals();
     updateInstructionContext();
     setTimeout(() => document.querySelector(`[data-proposal-select="${CSS.escape(state.selectedProposalId)}"]`)?.focus(), 0);
@@ -1609,26 +1674,13 @@ function findArchitectureNode(id) {
   return flattenArchitectureNodes().find((node) => node.id === id) || null;
 }
 
-function architectureLineage(id) {
-  const result = [];
-  const visit = (nodes, trail) => {
-    for (const node of nodes || []) {
-      const next = [...trail, node];
-      if (node.id === id) {
-        result.push(...next);
-        return true;
-      }
-      if (visit(node.children || [], next)) return true;
-    }
-    return false;
-  };
-  visit(state.architecture?.components || [], []);
-  return result;
-}
-
-function parentArchitectureNodeId(id) {
-  const lineage = architectureLineage(id);
-  return lineage.length > 1 ? lineage[lineage.length - 2].id : null;
+function findArchitectureParentId(id, nodes = state.architecture?.components || [], parentId = null) {
+  for (const node of nodes) {
+    if (node.id === id) return parentId;
+    const nestedParent = findArchitectureParentId(id, node.children || [], node.id);
+    if (nestedParent !== undefined) return nestedParent;
+  }
+  return undefined;
 }
 
 function descendantArchitectureIds(node) {
@@ -1676,64 +1728,6 @@ function healthVisual(health, base) {
   return base;
 }
 
-function renderArchitectureDrilldown(parent) {
-  const canvas = $('graphCanvas');
-  const children = parent.children || [];
-  const parentHealth = architectureHealth(parent);
-  const lineage = architectureLineage(parent.id);
-  const breadcrumb = ['Overview', ...lineage.map((node) => node.name)].map((label, index) => `<span class="drill-crumb ${index === lineage.length ? 'current' : ''}">${escapeHtml(label)}</span>`).join('<span class="drill-sep">/</span>');
-  const cards = children.map((child) => {
-    const health = architectureHealth(child);
-    const nestedCount = (child.children || []).length;
-    const clickable = health.needsAttention || nestedCount > 0;
-    const selected = state.selectedNode === child.id;
-    const cta = health.needsAttention ? 'Inspect issue' : nestedCount ? `Open ${nestedCount} detail${nestedCount === 1 ? '' : 's'}` : 'No action needed';
-    return `<button type="button" class="drill-card health-${health.key}${selected ? ' selected' : ''}" data-detail-node="${escapeHtml(child.id)}" data-clickable="${clickable}">
-      <span class="drill-card-top"><small>${escapeHtml(child.kind || child.type || 'COMPONENT')}</small><span class="health-pill health-${health.key}">${escapeHtml(health.label)}</span></span>
-      <strong>${escapeHtml(child.name)}</strong>
-      <p>${escapeHtml(child.responsibility)}</p>
-      <span class="drill-card-footer"><span>${escapeHtml(health.detail)}</span><b>${escapeHtml(cta)}</b></span>
-    </button>`;
-  }).join('');
-  const childCarriesReview = children.some((child) => architectureHealth(child).pendingReviews.length);
-  const ownIssue = parentHealth.pendingReviews.length && !childCarriesReview
-    ? `<div class="drill-boundary-alert"><strong>This boundary itself needs review.</strong><span>The pending proposal is attached to ${escapeHtml(parent.name)}, not a specific child.</span></div>`
-    : '';
-  canvas.innerHTML = `<div class="graph-drilldown">
-    <div class="drill-toolbar"><div><div class="drill-breadcrumb">${breadcrumb}</div><h4>${escapeHtml(parent.name)}</h4><p>${escapeHtml(parent.responsibility)}</p></div><button type="button" class="btn secondary drill-back">← ${parentArchitectureNodeId(parent.id) ? 'Back one level' : 'Back to overview'}</button></div>
-    ${ownIssue}
-    <div class="drill-grid">${cards || '<div class="drill-empty">No deeper architecture is needed for this component.</div>'}</div>
-  </div>`;
-  canvas.querySelector('.drill-back')?.addEventListener('click', () => {
-    const nextDrillNodeId = parentArchitectureNodeId(parent.id);
-    state.selectedNode = null;
-    state.drillNodeId = nextDrillNodeId;
-    renderGraph();
-    setTimeout(() => {
-      const target = nextDrillNodeId
-        ? document.querySelector('.drill-back')
-        : document.querySelector(`[data-graph-drill="${CSS.escape(parent.id)}"]`);
-      target?.focus();
-    }, 0);
-  });
-  canvas.querySelectorAll('[data-detail-node]').forEach((el) => el.addEventListener('click', () => {
-    const node = findArchitectureNode(el.dataset.detailNode);
-    if (!node) return;
-    state.selectedNode = node.id;
-    state.selectedTaskId = null;
-    state.selectedProposalId = null;
-    const drilling = Boolean((node.children || []).length);
-    if (drilling) state.drillNodeId = node.id;
-    renderGraph();
-    setTimeout(() => (drilling
-      ? document.querySelector('.drill-back')
-      : document.querySelector(`[data-detail-node="${CSS.escape(node.id)}"]`))?.focus(), 0);
-  }));
-  renderSelectedNode();
-  renderLists();
-  updateInstructionContext();
-}
-
 function diagramNodeByComponentId(componentId) {
   return (state.diagram?.nodes || []).find((node) => node.component_id === componentId) || null;
 }
@@ -1753,10 +1747,7 @@ function diagramNodeHealth(node) {
     PLANNED: {key:'planned', label:'Planned', needsAttention:false},
     UNKNOWN: {key:'planned', label:'Unknown', needsAttention:false},
   }[value] || {key:'planned', label:String(value), needsAttention:false};
-  return {
-    ...visual,
-    detail: (node?.supporting_text || []).join(' · ') || node?.status?.canonical_status || 'No additional status evidence.',
-  };
+  return {...visual, detail:(node?.supporting_text || []).join(' · ') || node?.status?.canonical_status || 'No additional status evidence.'};
 }
 
 function wrapGraphText(text, maxChars, maxLines = 2) {
@@ -1766,12 +1757,7 @@ function wrapGraphText(text, maxChars, maxLines = 2) {
   for (const word of words) {
     if (lines.length >= maxLines) break;
     const next = line ? `${line} ${word}` : word;
-    if (line && next.length > maxChars) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = next;
-    }
+    if (line && next.length > maxChars) { lines.push(line); line = word; } else line = next;
   }
   if (line && lines.length < maxLines) lines.push(line);
   if (lines.length === maxLines && lines.join(' ').length < String(text || '').length - 2) lines[maxLines - 1] = `${lines[maxLines - 1].replace(/[.…]+$/, '')}…`;
@@ -1782,163 +1768,297 @@ function graphFocusState(selectedNode) {
   if (!selectedNode || state.graphFocusMode === 'all') return null;
   const nodes = new Set([selectedNode.id]);
   const edges = new Set();
-  const authoredEdges = state.diagram?.edges || [];
+  const projectedEdges = state.diagram?.edges || [];
   if (state.graphFocusMode === 'connected') {
-    authoredEdges.forEach((edge) => {
-      if (edge.source === selectedNode.id || edge.target === selectedNode.id) {
-        edges.add(edge.id);
-        nodes.add(edge.source);
-        nodes.add(edge.target);
-      }
+    projectedEdges.forEach((edge) => {
+      if (edge.source === selectedNode.id || edge.target === selectedNode.id) { edges.add(edge.id); nodes.add(edge.source); nodes.add(edge.target); }
     });
     return {nodes, edges};
   }
-
   const upstream = state.graphFocusMode === 'upstream';
   const visited = new Set([selectedNode.id]);
   const queue = [selectedNode.id];
   while (queue.length) {
     const current = queue.shift();
-    authoredEdges.forEach((edge) => {
+    projectedEdges.forEach((edge) => {
       const matches = upstream ? edge.target === current : edge.source === current;
       if (!matches) return;
       const peer = upstream ? edge.source : edge.target;
-      edges.add(edge.id);
-      nodes.add(peer);
-      if (!visited.has(peer)) {
-        visited.add(peer);
-        queue.push(peer);
-      }
+      edges.add(edge.id); nodes.add(peer);
+      if (!visited.has(peer)) { visited.add(peer); queue.push(peer); }
     });
   }
   return {nodes, edges};
 }
 
+function graphScopeTrail(diagram = state.diagram) {
+  const scope = diagram?.scope;
+  if (!scope) return [];
+  const trail = [...(scope.ancestorPath || [])];
+  if (scope.componentId && !trail.some((item) => item.componentId === scope.componentId)) trail.push({componentId:scope.componentId,nodeId:scope.nodeId,label:scope.label});
+  return trail;
+}
+
+function parentGraphScopeComponentId(diagram = state.diagram) {
+  const scope = diagram?.scope;
+  if (!scope?.componentId) return null;
+  const trail = graphScopeTrail(diagram);
+  const index = trail.findIndex((item) => item.componentId === scope.componentId);
+  return index > 0 ? trail[index - 1].componentId : null;
+}
+
+function nextReadingModeForScope(currentMode, nextScopeComponentId) {
+  if (!nextScopeComponentId) return currentMode === 'FULL' ? 'FULL' : 'MAP';
+  return currentMode === 'MAP' ? 'READ' : currentMode;
+}
+
+function graphNodeAction(node) {
+  return node?.projectionRole === 'PRIMARY' && node.childCount > 0 ? 'drill' : 'inspect';
+}
+
+async function navigateGraphScope(scopeComponentId, {focusComponentId = state.scopeComponentId, loader = loadArchitectureDiagram, render = renderGraph, notify = toast} = {}) {
+  if (!state.projectId || !state.architecture) return false;
+  const targetScope = scopeComponentId || null;
+  try {
+    const nextDiagram = await loader(state.projectId, state.architecture, targetScope);
+    if (!nextDiagram) throw new Error('Scoped diagram is unavailable.');
+    state.scopeComponentId = targetScope;
+    state.readingMode = nextReadingModeForScope(state.readingMode, targetScope);
+    state.selectedComponentId = null;
+    state.graphFocusMode = 'all';
+    state.diagram = nextDiagram;
+    state.diagramError = null;
+    render();
+    if (focusComponentId && typeof document !== 'undefined') setTimeout(() => document.querySelector(`[data-component="${CSS.escape(focusComponentId)}"]`)?.focus(), 0);
+    return true;
+  } catch (err) {
+    state.diagramError = err?.message || String(err);
+    notify(`Could not open that architecture scope. ${state.diagramError}`, true);
+    return false;
+  }
+}
+
+function setGraphReadingMode(mode, {render = renderGraph} = {}) {
+  if (!['MAP','READ','FULL'].includes(mode)) return false;
+  state.readingMode = mode;
+  render();
+  return true;
+}
+
+async function activateGraphNode(node, {navigate = navigateGraphScope, render = renderGraph} = {}) {
+  if (!node) return false;
+  if (graphNodeAction(node) === 'drill') return navigate(node.component_id, {focusComponentId:node.component_id});
+  state.selectedComponentId = node.component_id;
+  state.graphFocusMode = 'connected';
+  render();
+  return true;
+}
+
+function graphBreadcrumbMarkup(diagram) {
+  const scope = diagram?.scope || {componentId:null};
+  const trail = graphScopeTrail(diagram);
+  const overview = scope.componentId ? '<button type="button" data-scope-target="">Overview</button>' : '<span aria-current="page">Overview</span>';
+  const rest = trail.map((item) => item.componentId === scope.componentId ? `<span aria-current="page">${escapeHtml(item.label)}</span>` : `<button type="button" data-scope-target="${escapeHtml(item.componentId)}">${escapeHtml(item.label)}</button>`).join('<span class="graph-crumb-sep">/</span>');
+  return `<nav class="graph-breadcrumb" aria-label="Architecture scope">${overview}${rest ? `<span class="graph-crumb-sep">/</span>${rest}` : ''}</nav>`;
+}
+
+function graphScopeToolbar(diagram) {
+  const scope = diagram.scope || {componentId:null,label:'Overview',directRelationships:[]};
+  const back = scope.componentId ? '<button class="graph-back" type="button" data-graph-back>← Back</button>' : '';
+  const modes = ['MAP','READ','FULL'].map((mode) => `<button type="button" data-reading-mode="${mode}" class="${state.readingMode === mode ? 'active' : ''}" aria-pressed="${state.readingMode === mode}">${mode}</button>`).join('');
+  const directCount = scope.directRelationships?.length || 0;
+  return `<div class="graph-scope-bar"><div class="graph-scope-copy">${graphBreadcrumbMarkup(diagram)}<div><strong>${escapeHtml(scope.label || 'Overview')}</strong><span>${scope.componentId ? 'Canonical subsystem scope' : 'Canonical root system map'}${directCount ? ` · ${directCount} direct boundary relationship${directCount === 1 ? '' : 's'}` : ''}</span></div></div><div class="graph-scope-actions">${back}<div class="graph-reading-modes" role="group" aria-label="Graph information level">${modes}</div></div></div>`;
+}
+
+function setArchitectureGraphKind(kind, {render = renderGraph} = {}) {
+  if (!['living','code'].includes(kind)) return false;
+  state.architectureGraphKind = kind;
+  state.selectedComponentId = null;
+  state.selectedCodeNodeId = null;
+  state.graphFocusMode = 'all';
+  render();
+  updateInstructionContext();
+  return true;
+}
+
+function renderArchitectureChrome() {
+  const codeMode = state.architectureGraphKind === 'code';
+  document.querySelectorAll('[data-architecture-graph-kind]').forEach((button) => {
+    const active = button.dataset.architectureGraphKind === state.architectureGraphKind;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  if ($('architectureViewTitle')) $('architectureViewTitle').textContent = codeMode ? 'Code Graph' : 'Living Graph';
+  if ($('architectureViewSubtitle')) $('architectureViewSubtitle').textContent = codeMode
+    ? 'Implementation evidence generated from source inspected at one exact GitHub commit.'
+    : 'Start with the system health map, then open canonical subsystems one level at a time.';
+  if ($('graphPanelTitle')) $('graphPanelTitle').textContent = codeMode ? 'Implementation map' : 'System health map';
+  if ($('graphPanelSubtitle')) $('graphPanelSubtitle').textContent = codeMode
+    ? 'Derived evidence only. This graph never overwrites accepted Living Architecture.'
+    : 'Red or amber areas need attention. Healthy areas require no inspection.';
+  if ($('graphHealthLegend')) $('graphHealthLegend').classList.toggle('hidden', codeMode);
+  if ($('graphEvidenceTitle')) $('graphEvidenceTitle').textContent = codeMode ? 'Source evidence' : 'Why this status?';
+  if ($('graphDecisionTitle')) $('graphDecisionTitle').textContent = codeMode ? 'Repository snapshot' : 'Architecture decisions';
+  if ($('graphRiskTitle')) $('graphRiskTitle').textContent = codeMode ? 'Evidence boundary' : 'Risks & assumptions';
+  if (state.currentView === 'architecture') {
+    $('pageTitle').textContent = codeMode ? 'Code Architecture' : 'Living Architecture';
+    $('pageSubtitle').textContent = codeMode
+      ? 'Revision-pinned implementation evidence from connected repository analysis.'
+      : 'Human-approved design intent with backend-authored hierarchical drilldown.';
+  }
+}
+
+function codeNodeById(nodeId) {
+  return (state.codeDiagram?.nodes || []).find((node) => node.id === nodeId) || null;
+}
+
+function codeEvidenceLink(source) {
+  const label = `${source.path || 'source'}:${source.line_start || '?'}${source.line_end && source.line_end !== source.line_start ? `-${source.line_end}` : ''}`;
+  return `<a class="code-evidence-link" href="${escapeHtml(source.href)}" target="_blank" rel="noreferrer">${escapeHtml(label)} ↗</a>`;
+}
+
+function renderCodeSelectedNode() {
+  const diagram = state.codeDiagram;
+  const node = codeNodeById(state.selectedCodeNodeId);
+  if (!diagram || !node) {
+    $('selectedNode').innerHTML = diagram
+      ? `<small>IMPLEMENTATION EVIDENCE</small><h3>${escapeHtml(diagram.repository.slug)}</h3><p>Select a code node to inspect the exact source excerpts that support it.</p>`
+      : '<small>IMPLEMENTATION EVIDENCE</small><h3>No code snapshot yet</h3><p>Connect GitHub, let the agent inspect an exact commit, then publish a revision-pinned Code Architecture snapshot.</p>';
+    $('nodeEvidence').innerHTML = diagram
+      ? `<p><strong>Revision pinned</strong></p><p class="muted"><code>${escapeHtml(diagram.repository.revision)}</code></p><p><strong>Evidence mode</strong></p><p class="muted">${escapeHtml(diagram.evidenceVerification.mode || 'REVISION_PINNED_AGENT_SUPPLIED')}</p>`
+      : '<p><strong>How this is created</strong></p><p class="muted">The agent must first inspect the connected GitHub repository, resolve a full commit SHA, and cite repository-relative source lines. File names alone are not accepted as architecture evidence.</p>';
+    return;
+  }
+  const incoming = diagram.edges.filter((edge) => edge.target === node.id);
+  const outgoing = diagram.edges.filter((edge) => edge.source === node.id);
+  const connection = (edge, direction) => {
+    const peer = codeNodeById(direction === 'in' ? edge.source : edge.target);
+    return `<li><strong>${direction === 'in' ? 'From' : 'To'} ${escapeHtml(peer?.label || (direction === 'in' ? edge.source : edge.target))}</strong><span>${escapeHtml(edge.semantic_type || edge.label || 'relationship')}${edge.supporting_text ? ` · ${escapeHtml(edge.supporting_text)}` : ''}</span></li>`;
+  };
+  $('selectedNode').innerHTML = `<small>CODE COMPONENT · ${escapeHtml(String(node.semantic_kind || 'COMPONENT'))}</small><div class="selected-node-title"><h3>${escapeHtml(node.label)}</h3><span class="code-evidence-pill">PINNED</span></div><p>${escapeHtml(node.responsibility)}</p><div class="component-children-summary"><strong>Implementation facts</strong><span>Snapshot ID · ${escapeHtml(node.id)}</span><span>Children · ${node.childCount}</span><span>Commit · ${escapeHtml(diagram.repository.revision.slice(0, 12))}</span></div><div class="component-connections">${incoming.length || outgoing.length ? `<ul>${incoming.map((edge) => connection(edge, 'in')).join('')}${outgoing.map((edge) => connection(edge, 'out')).join('')}</ul>` : '<p class="muted">No evidence-backed runtime relationship is attached to this node.</p>'}</div>`;
+  $('nodeEvidence').innerHTML = node.sources.length
+    ? node.sources.map((source) => `<div class="code-evidence-item">${codeEvidenceLink(source)}${source.symbol ? `<span class="code-evidence-symbol">${escapeHtml(source.symbol)}</span>` : ''}<pre>${escapeHtml(source.excerpt || '')}</pre></div>`).join('')
+    : '<p class="muted">No source excerpt is attached to this node.</p>';
+}
+
+function renderCodeGraph() {
+  const canvas = $('graphCanvas');
+  const diagram = state.codeDiagram;
+  if (!diagram) {
+    $('graphVersion').textContent = 'No snapshot';
+    $('graphReviewState').textContent = 'Awaiting GitHub evidence';
+    canvas.innerHTML = '<div class="graph-empty code-graph-empty"><div><strong>No Code Architecture snapshot yet</strong><p class="muted">Connect GitHub and ask the agent to inspect the repository at an exact commit, then publish evidence-backed implementation architecture.</p></div></div>';
+    renderCodeSelectedNode();
+    $('decisionList').innerHTML = '<p class="muted">No repository snapshot has been published for this project.</p>';
+    $('riskList').innerHTML = '<p class="muted">Code Architecture is derived evidence. It never becomes accepted Living Architecture without a separate human-reviewed architecture proposal.</p>';
+    return;
+  }
+  const selected = codeNodeById(state.selectedCodeNodeId);
+  if (state.selectedCodeNodeId && !selected) state.selectedCodeNodeId = null;
+  const byId = new Map(diagram.nodes.map((node) => [node.id, node]));
+  const hierarchy = diagram.nodes.map((node) => {
+    if (!node.parent_id) return '';
+    const parent = byId.get(node.parent_id);
+    if (!parent) return '';
+    return `<line class="graph-hierarchy code-hierarchy" x1="${parent.x+parent.width/2}" y1="${parent.y+parent.height/2}" x2="${node.x+node.width/2}" y2="${node.y+node.height/2}"/>`;
+  }).join('');
+  const edges = diagram.edges.map((edge) => {
+    const anchor = edge.points[Math.floor((edge.points.length - 1) / 2)];
+    return `<g class="graph-edge code-edge" data-code-edge="${escapeHtml(edge.id)}"><path d="${graphPathData(edge.points)}" marker-end="url(#code-arrow)"/><text x="${anchor.x}" y="${anchor.y-7}" text-anchor="middle">${escapeHtml(edge.semantic_type || edge.label || '')}</text></g>`;
+  }).join('');
+  const nodes = diagram.nodes.map((node) => {
+    const active = state.selectedCodeNodeId === node.id;
+    const names = wrapGraphText(node.label, Math.max(14, Math.floor((node.width-34)/8)), 2).map((line,index) => `<text class="node-name" x="${node.x+18}" y="${node.y+55+index*17}">${escapeHtml(line)}</text>`).join('');
+    const responsibility = wrapGraphText(node.responsibility, Math.max(20, Math.floor((node.width-34)/6.5)), 2).map((line,index) => `<text class="node-responsibility" x="${node.x+18}" y="${node.y+96+index*14}">${escapeHtml(line)}</text>`).join('');
+    return `<g class="node-card code-node-card${active ? ' selected' : ''}" data-code-node="${escapeHtml(node.id)}" role="button" tabindex="0" aria-label="Inspect code evidence for ${escapeHtml(node.label)}"><rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/><text class="node-kind" x="${node.x+18}" y="${node.y+25}">${escapeHtml(String(node.semantic_kind || 'COMPONENT'))} · ${escapeHtml(node.semantic_type || 'component')}</text>${names}${responsibility}<text class="code-node-evidence-count" x="${node.x+18}" y="${node.y+node.height-13}">${node.sources.length} source${node.sources.length === 1 ? '' : 's'} · depth ${node.depth}</text></g>`;
+  }).join('');
+  $('graphVersion').textContent = `@${diagram.repository.revision.slice(0, 8)}`;
+  $('graphReviewState').textContent = `${diagram.nodes.length} implementation node${diagram.nodes.length === 1 ? '' : 's'}`;
+  const meta = `<div class="graph-meta code-graph-meta"><span>${escapeHtml(diagram.repository.slug)}</span><span>${diagram.nodes.length} nodes</span><span>${diagram.edges.length} evidence-backed relationship${diagram.edges.length === 1 ? '' : 's'}</span><span>Exact commit · ${escapeHtml(diagram.repository.revision.slice(0, 12))}</span><span class="graph-meta-ok">Living architecture unchanged</span></div>`;
+  canvas.innerHTML = `<div class="code-snapshot-bar"><div><strong>${escapeHtml(diagram.repository.slug)}</strong><span>Implementation evidence at exact Git revision</span></div><a href="${escapeHtml(`${diagram.repository.url}/tree/${diagram.repository.revision}`)}" target="_blank" rel="noreferrer"><code>${escapeHtml(diagram.repository.revision)}</code> ↗</a></div><div class="graph-stage">${meta}<svg class="living-graph-svg code-graph-svg" viewBox="0 0 ${diagram.width} ${diagram.height}" role="img" aria-label="Revision-pinned code architecture graph"><defs><marker id="code-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8 Z"/></marker></defs>${hierarchy}${edges}${nodes}</svg></div>`;
+  const activate = (element) => {
+    state.selectedCodeNodeId = element.dataset.codeNode;
+    renderCodeGraph();
+    setTimeout(() => document.querySelector(`[data-code-node="${CSS.escape(state.selectedCodeNodeId)}"]`)?.focus(), 0);
+  };
+  canvas.querySelectorAll('[data-code-node]').forEach((element) => {
+    element.addEventListener('click', () => activate(element));
+    element.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      activate(element);
+    });
+  });
+  renderCodeSelectedNode();
+  $('decisionList').innerHTML = `<ul><li><strong>${escapeHtml(diagram.repository.slug)}</strong></li><li><code>${escapeHtml(diagram.repository.revision)}</code></li><li>${escapeHtml(diagram.summary || 'No implementation summary.')}</li></ul>`;
+  $('riskList').innerHTML = `<ul><li>Classification: ${escapeHtml(diagram.classification || 'IMPLEMENTATION_EVIDENCE')}</li><li>Canonical state mutated: ${diagram.canonicalStateMutated ? 'YES' : 'NO'}</li><li>${escapeHtml(diagram.evidenceVerification.note || 'Evidence is pinned to the supplied Git revision.')}</li></ul>`;
+}
+
 function renderGraph() {
+  renderArchitectureChrome();
+  if (state.architectureGraphKind === 'code') {
+    renderCodeGraph();
+    return;
+  }
   const canvas = $('graphCanvas');
   if (!state.architecture?.components?.length) {
     canvas.innerHTML = '<div class="graph-empty"><div><strong>No architecture yet</strong><p class="muted">Architecture v1 has not completed.</p></div></div>';
-    renderSelectedNode();
-    renderLists();
-    return;
+    renderSelectedNode(); renderLists(); return;
   }
   if (!state.diagram) {
-    canvas.innerHTML = `<div class="graph-empty"><div><strong>Positioned diagram unavailable</strong><p class="muted">${escapeHtml(state.diagramError || 'The backend has not published the positioned Diagram View for this architecture version.')}</p></div></div>`;
-    $('graphReviewState').textContent = 'Diagram unavailable';
-    renderSelectedNode();
-    renderLists();
-    return;
+    canvas.innerHTML = `<div class="graph-empty"><div><strong>Positioned diagram unavailable</strong><p class="muted">${escapeHtml(state.diagramError || 'The backend has not published the scoped positioned Diagram View for this architecture version.')}</p></div></div>`;
+    $('graphReviewState').textContent = 'Diagram unavailable'; renderSelectedNode(); renderLists(); return;
   }
-
   const diagram = state.diagram;
-  const selected = diagramNodeByComponentId(state.selectedNode);
-  if (state.selectedNode && !selected) state.selectedNode = null;
+  const selected = diagramNodeByComponentId(state.selectedComponentId);
+  if (state.selectedComponentId && !selected) state.selectedComponentId = null;
   const focus = graphFocusState(selected);
-  const nodeById = new Map(diagram.nodes.map((node) => [node.id, node]));
+  const nodeById = new Map(diagram.nodes.map((node) => [node.id,node]));
   const attentionNodes = diagram.nodes.filter((node) => diagramNodeHealth(node).needsAttention);
   const activeTaskCount = state.tasks.filter((task) => task.status === 'IN_PROGRESS').length;
-
   const hierarchy = diagram.nodes.map((node) => {
     if (!node.parent_id) return '';
-    const parent = nodeById.get(node.parent_id);
-    if (!parent) return '';
-    return `<line class="graph-hierarchy" x1="${parent.x + parent.width / 2}" y1="${parent.y + parent.height / 2}" x2="${node.x + node.width / 2}" y2="${node.y + node.height / 2}"/>`;
+    const parent=nodeById.get(node.parent_id); if (!parent) return '';
+    return `<line class="graph-hierarchy" x1="${parent.x+parent.width/2}" y1="${parent.y+parent.height/2}" x2="${node.x+node.width/2}" y2="${node.y+node.height/2}"/>`;
   }).join('');
-
   const edges = diagram.edges.map((edge) => {
-    const points = edge.points;
-    const d = `M ${points[0].x} ${points[0].y} ${points.slice(1).map((point) => `L ${point.x} ${point.y}`).join(' ')}`;
-    const highlighted = !focus || focus.edges.has(edge.id);
-    const anchor = points[Math.floor((points.length - 1) / 2)];
-    const label = edge.label || edge.semantic_type || '';
-    return `<g class="graph-edge${highlighted ? ' is-focused' : ' is-dimmed'}" data-edge="${escapeHtml(edge.id)}"><path d="${d}" marker-end="url(#arrow)"/>${label ? `<text x="${anchor.x}" y="${anchor.y - 7}" text-anchor="middle">${escapeHtml(label)}</text>` : ''}</g>`;
+    const highlighted=!focus || focus.edges.has(edge.id); const anchor=edge.points[Math.floor((edge.points.length-1)/2)]; const label=edge.label || edge.semantic_type || '';
+    return `<g class="graph-edge projection-${escapeHtml(String(edge.projection_kind || 'AUTHORED').toLowerCase())}${highlighted ? ' is-focused' : ' is-dimmed'}" data-edge="${escapeHtml(edge.id)}"><path d="${graphPathData(edge.points)}" marker-end="url(#arrow)"/>${label ? `<text class="graph-detail-read" x="${anchor.x}" y="${anchor.y-7}" text-anchor="middle">${escapeHtml(label)}</text>` : ''}</g>`;
   }).join('');
-
   const nodes = diagram.nodes.map((node) => {
-    const health = diagramNodeHealth(node);
-    const isSelected = state.selectedNode === node.component_id;
-    const highlighted = !focus || focus.nodes.has(node.id);
-    const nameLines = wrapGraphText(node.label, Math.max(14, Math.floor((node.width - 34) / 8)), 2);
-    const responsibilityLines = wrapGraphText(node.responsibility, Math.max(20, Math.floor((node.width - 34) / 6.5)), 2);
-    const nameText = nameLines.map((line, index) => `<text class="node-name" x="${node.x + 18}" y="${node.y + 55 + index * 17}">${escapeHtml(line)}</text>`).join('');
-    const responsibilityText = responsibilityLines.map((line, index) => `<text class="node-responsibility" x="${node.x + 18}" y="${node.y + 96 + index * 14}">${escapeHtml(line)}</text>`).join('');
-    const kind = escapeHtml(String(node.semantic_kind || 'COMPONENT'));
-    const type = escapeHtml(node.semantic_type || 'component');
-    return `<g class="node-card health-${health.key}${isSelected ? ' selected' : ''}${highlighted ? ' is-focused' : ' is-dimmed'}" data-node="${escapeHtml(node.id)}" data-component="${escapeHtml(node.component_id)}" role="button" tabindex="0">
-      <rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/>
-      <text class="node-kind" x="${node.x + 18}" y="${node.y + 25}">${kind} · ${type}</text>
-      <circle class="node-health-dot" cx="${node.x + node.width - 20}" cy="${node.y + 21}" r="4.5"/>
-      ${nameText}${responsibilityText}
-      <text class="node-status" x="${node.x + 18}" y="${node.y + node.height - 13}">${escapeHtml(health.label)} · depth ${node.depth}</text>
-    </g>`;
+    const health=diagramNodeHealth(node), selectedNode=state.selectedComponentId===node.component_id, highlighted=!focus || focus.nodes.has(node.id);
+    const names=wrapGraphText(node.label,Math.max(14,Math.floor((node.width-34)/8)),2).map((line,index)=>`<text class="node-name" x="${node.x+18}" y="${node.y+55+index*17}">${escapeHtml(line)}</text>`).join('');
+    const responsibility=wrapGraphText(node.responsibility,Math.max(20,Math.floor((node.width-34)/6.5)),2).map((line,index)=>`<text class="node-responsibility graph-detail-read" x="${node.x+18}" y="${node.y+96+index*14}">${escapeHtml(line)}</text>`).join('');
+    const drillable=graphNodeAction(node)==='drill', role=node.projectionRole || 'PRIMARY', action=drillable ? 'drill' : 'inspect';
+    const cue=drillable ? `<g class="node-drill-action" aria-hidden="true"><rect x="${node.x+node.width-126}" y="${node.y+node.height-31}" width="110" height="22" rx="11"/><text class="node-drill-cue" x="${node.x+node.width-25}" y="${node.y+node.height-16}" text-anchor="end">OPEN · ${node.childCount} CHILD${node.childCount===1?'':'REN'} ›</text></g>` : role==='CONTEXT' ? `<text class="node-context-cue" x="${node.x+node.width-16}" y="${node.y+node.height-13}" text-anchor="end">CONTEXT</text>` : '';
+    return `<g class="node-card projection-${role.toLowerCase()} health-${health.key} is-${action}${selectedNode ? ' selected' : ''}${highlighted ? ' is-focused' : ' is-dimmed'}" data-node="${escapeHtml(node.id)}" data-component="${escapeHtml(node.component_id)}" data-child-count="${node.childCount}" data-projection-role="${role}" data-node-action="${action}" role="button" aria-label="${escapeHtml(drillable ? `Open ${node.label} subsystem with ${node.childCount} child${node.childCount===1?'':'ren'}` : `Inspect ${node.label}`)}" tabindex="0"><rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/><text class="node-kind" x="${node.x+18}" y="${node.y+25}">${escapeHtml(String(node.semantic_kind || 'COMPONENT'))} · ${escapeHtml(node.semantic_type || 'component')}</text><circle class="node-health-dot" cx="${node.x+node.width-20}" cy="${node.y+21}" r="4.5"/>${names}${responsibility}<text class="node-status graph-detail-full" x="${node.x+18}" y="${node.y+node.height-13}">${escapeHtml(health.label)} · depth ${node.depth}</text>${cue}</g>`;
   }).join('');
-
-  $('graphReviewState').textContent = attentionNodes.length
-    ? `${attentionNodes.length} node${attentionNodes.length === 1 ? '' : 's'} need attention`
-    : 'All projected nodes aligned';
-  canvas.innerHTML = `<div class="graph-meta"><span>${diagram.nodes.length} nodes</span><span>${diagram.edges.length} authored relationships</span><span>${activeTaskCount} task${activeTaskCount === 1 ? '' : 's'} active</span><span>Accepted v${diagram.architectureVersion}</span>${attentionNodes.length ? `<span class="graph-meta-attention">${attentionNodes.length} need attention</span>` : '<span class="graph-meta-ok">No action needed</span>'}</div><svg class="living-graph-svg" viewBox="0 0 ${diagram.width} ${diagram.height}" role="img" aria-label="Accepted project architecture graph"><defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8 Z"/></marker></defs>${hierarchy}${edges}${nodes}</svg>`;
-
-  const focusNode = (el) => {
-    state.selectedNode = el.dataset.component;
-    state.drillNodeId = null;
-    state.graphFocusMode = 'connected';
-    renderGraph();
-  };
-  canvas.querySelectorAll('[data-node]').forEach((el) => {
-    el.addEventListener('click', () => focusNode(el));
-    el.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        focusNode(el);
-      }
-    });
-  });
-  renderSelectedNode();
-  renderLists();
-  updateInstructionContext();
+  $('graphReviewState').textContent=attentionNodes.length ? `${attentionNodes.length} node${attentionNodes.length===1?'':'s'} need attention` : 'All projected nodes aligned';
+  const meta=`<div class="graph-meta"><span>${diagram.nodes.length} visible nodes</span><span>${diagram.edges.length} projected relationship${diagram.edges.length===1?'':'s'}</span><span>${activeTaskCount} task${activeTaskCount===1?'':'s'} active</span><span>Accepted v${diagram.architectureVersion}</span>${attentionNodes.length ? `<span class="graph-meta-attention">${attentionNodes.length} need attention</span>` : '<span class="graph-meta-ok">No action needed</span>'}</div>`;
+  canvas.innerHTML=`${graphScopeToolbar(diagram)}<div class="graph-stage" data-reading-mode="${state.readingMode}">${meta}<svg class="living-graph-svg" viewBox="0 0 ${diagram.width} ${diagram.height}" role="img" aria-label="Accepted scoped project architecture graph"><defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8 Z"/></marker></defs>${hierarchy}${edges}${nodes}</svg></div>`;
+  canvas.querySelectorAll('[data-reading-mode]').forEach((button)=>button.addEventListener('click',()=>setGraphReadingMode(button.dataset.readingMode)));
+  canvas.querySelector('[data-graph-back]')?.addEventListener('click',()=>navigateGraphScope(parentGraphScopeComponentId(diagram),{focusComponentId:state.scopeComponentId}));
+  canvas.querySelectorAll('[data-scope-target]').forEach((button)=>button.addEventListener('click',()=>navigateGraphScope(button.dataset.scopeTarget || null,{focusComponentId:state.scopeComponentId})));
+  const focusNode=async(el)=>{ const node=diagramNodeById(el.dataset.node); await activateGraphNode(node); if (graphNodeAction(node)==='inspect') setTimeout(()=>document.querySelector(`[data-component="${CSS.escape(node.component_id)}"]`)?.focus(),0); };
+  canvas.querySelectorAll('[data-node]').forEach((el)=>{ el.addEventListener('click',()=>{focusNode(el);}); el.addEventListener('keydown',(event)=>{ if(event.key==='Enter'||event.key===' '){event.preventDefault();focusNode(el);} }); });
+  renderSelectedNode(); renderLists(); updateInstructionContext();
 }
 
 function renderSelectedNode() {
-  const c = diagramNodeByComponentId(state.selectedNode);
-  const diagram = state.diagram;
+  const c=diagramNodeByComponentId(state.selectedComponentId), diagram=state.diagram;
   if (!c || !diagram) {
-    const attentionNodes = (diagram?.nodes || []).filter((node) => diagramNodeHealth(node).needsAttention);
-    $('selectedNode').innerHTML = attentionNodes.length
-      ? `<small>SYSTEM HEALTH</small><h3>${attentionNodes.length} node${attentionNodes.length === 1 ? '' : 's'} need attention</h3><p>Select a node to inspect its authored relationships, hierarchy, responsibility, and projected health.</p>`
-      : '<small>SYSTEM HEALTH</small><h3>Everything is aligned</h3><p>Select any node to focus the graph. Upstream and downstream views follow authored relationships only.</p>';
-    $('nodeEvidence').innerHTML = state.diagramError
-      ? `<p><strong>Diagram unavailable</strong></p><p class="muted">${escapeHtml(state.diagramError)}</p>`
-      : attentionNodes.length
-      ? `<p><strong>What should I inspect?</strong></p><p class="muted">${attentionNodes.map((node) => `${escapeHtml(node.label)} — ${escapeHtml(diagramNodeHealth(node).detail)}`).join('<br>')}</p>`
-      : '<p><strong>No action needed</strong></p><p class="muted">Health is projected by the backend Diagram View; the renderer does not infer architecture semantics.</p>';
+    const attention=(diagram?.nodes || []).filter((node)=>diagramNodeHealth(node).needsAttention), direct=diagram?.scope?.directRelationships || [];
+    $('selectedNode').innerHTML=attention.length ? `<small>CURRENT SCOPE · ${escapeHtml(state.readingMode)}</small><h3>${attention.length} node${attention.length===1?'':'s'} need attention</h3><p>Select a node to inspect exact projected facts. Non-leaf primary nodes open their canonical backend scope.</p>` : `<small>CURRENT SCOPE · ${escapeHtml(state.readingMode)}</small><h3>${escapeHtml(diagram?.scope?.label || 'Overview')}</h3><p>Select a node to inspect it. Upstream/downstream focus follows only the currently returned projected edges.</p>`;
+    $('nodeEvidence').innerHTML=state.diagramError ? `<p><strong>Diagram unavailable</strong></p><p class="muted">${escapeHtml(state.diagramError)}</p>` : direct.length ? `<p><strong>${direct.length} direct scope relationship${direct.length===1?'':'s'}</strong></p><p class="muted">These authored relationships touch this scope directly and are not converted into fake child edges.</p>` : '<p><strong>Canonical projection</strong></p><p class="muted">Backend owns scope, topology, geometry, and routes. MAP/READ/FULL only changes disclosure.</p>';
     return;
   }
-
-  const health = diagramNodeHealth(c);
-  const incoming = diagram.edges.filter((edge) => edge.target === c.id);
-  const outgoing = diagram.edges.filter((edge) => edge.source === c.id);
-  const children = diagram.nodes.filter((node) => node.parent_id === c.id);
-  const parent = c.parent_id ? diagramNodeById(c.parent_id) : null;
-  const linkedTasks = state.tasks.filter((task) => task.related_component === c.component_id);
-  const connectionLine = (edge, direction) => {
-    const peerId = direction === 'in' ? edge.source : edge.target;
-    const peer = diagramNodeById(peerId);
-    return `<li><strong>${direction === 'in' ? 'From' : 'To'} ${escapeHtml(peer?.label || peerId)}</strong><span>${escapeHtml(edge.semantic_type)}${edge.supporting_text ? ` · ${escapeHtml(edge.supporting_text)}` : ''}</span></li>`;
-  };
-  const hierarchySummary = `<div class="component-children-summary"><strong>Hierarchy</strong><span>${parent ? `Parent · ${escapeHtml(parent.label)}` : 'Root node'}</span>${children.map((child) => `<span>Child · ${escapeHtml(child.label)}</span>`).join('')}</div>`;
-  const focusControls = `<div class="graph-focus-controls" role="group" aria-label="Graph focus"><button type="button" data-graph-focus="connected" class="${state.graphFocusMode === 'connected' ? 'active' : ''}">Connected</button><button type="button" data-graph-focus="upstream" class="${state.graphFocusMode === 'upstream' ? 'active' : ''}">Upstream</button><button type="button" data-graph-focus="downstream" class="${state.graphFocusMode === 'downstream' ? 'active' : ''}">Downstream</button><button type="button" data-graph-focus="all" class="${state.graphFocusMode === 'all' ? 'active' : ''}">All</button><button type="button" data-graph-focus="clear">Clear</button></div>`;
-  $('selectedNode').innerHTML = `<small>SELECTED COMPONENT · ${escapeHtml(String(c.semantic_kind))}</small><div class="selected-node-title"><h3>${escapeHtml(c.label)}</h3><span class="health-pill health-${health.key}">${escapeHtml(health.label)}</span></div><p>${escapeHtml(c.responsibility)}</p>${focusControls}${hierarchySummary}<div class="component-task-summary"><strong>${linkedTasks.length} linked task${linkedTasks.length === 1 ? '' : 's'}</strong>${linkedTasks.length ? linkedTasks.map((task) => `<span><i class="status-dot ${statusClass(task.status)}"></i>${escapeHtml(task.title)} · ${escapeHtml(task.status.replace('_', ' '))}</span>`).join('') : '<span class="muted">No execution task is linked to this component.</span>'}</div><div class="component-connections">${incoming.length || outgoing.length ? `<ul>${incoming.map((edge) => connectionLine(edge, 'in')).join('')}${outgoing.map((edge) => connectionLine(edge, 'out')).join('')}</ul>` : '<p class="muted">No authored relationships for this node.</p>'}</div>`;
-  $('nodeEvidence').innerHTML = `<p><strong>${escapeHtml(health.label)}</strong></p><p class="muted">${escapeHtml(health.detail)}</p><p><strong>Accepted responsibility</strong></p><p class="muted">${escapeHtml(c.responsibility)}</p><p><strong>Semantic type</strong></p><p class="muted">${escapeHtml(String(c.semantic_kind))} · ${escapeHtml(c.semantic_type)}</p><p><strong>Stable Diagram ID</strong></p><p class="muted">${escapeHtml(c.id)}</p><p><strong>Canonical component ID</strong></p><p class="muted">${escapeHtml(c.component_id)}</p><p><strong>Architecture status</strong></p><p class="muted">${escapeHtml(c.status?.canonical_status || 'UNKNOWN')} — projected from Architecture v${diagram.architectureVersion}.</p>`;
-  $('selectedNode').querySelectorAll('[data-graph-focus]').forEach((button) => button.addEventListener('click', () => {
-    const mode = button.dataset.graphFocus;
-    if (mode === 'clear') {
-      state.selectedNode = null;
-      state.graphFocusMode = 'connected';
-    } else {
-      state.graphFocusMode = mode;
-    }
-    renderGraph();
-  }));
+  const health=diagramNodeHealth(c), incoming=diagram.edges.filter((edge)=>edge.target===c.id), outgoing=diagram.edges.filter((edge)=>edge.source===c.id), linkedTasks=state.tasks.filter((task)=>task.related_component===c.component_id);
+  const connectionLine=(edge,direction)=>{ const peerId=direction==='in'?edge.source:edge.target, peer=diagramNodeById(peerId), count=Array.isArray(edge.provenance)?edge.provenance.length:0; return `<li><strong>${direction==='in'?'From':'To'} ${escapeHtml(peer?.label || peerId)}</strong><span>${escapeHtml(edge.semantic_type || edge.label || 'relationship')}${edge.supporting_text ? ` · ${escapeHtml(edge.supporting_text)}` : ''}${count ? ` · ${count} canonical source${count===1?'':'s'}` : ''}</span></li>`; };
+  const controls=`<div class="graph-focus-controls" role="group" aria-label="Graph focus">${['connected','upstream','downstream','all'].map((mode)=>`<button type="button" data-graph-focus="${mode}" class="${state.graphFocusMode===mode?'active':''}">${mode[0].toUpperCase()+mode.slice(1)}</button>`).join('')}<button type="button" data-graph-focus="clear">Clear</button></div>`;
+  const provenance=[...incoming,...outgoing].flatMap((edge)=>(edge.provenance || []).map((item)=>({edge,item})));
+  $('selectedNode').innerHTML=`<small>SELECTED COMPONENT · ${escapeHtml(String(c.semantic_kind))} · ${escapeHtml(state.readingMode)}</small><div class="selected-node-title"><h3>${escapeHtml(c.label)}</h3><span class="health-pill health-${health.key}">${escapeHtml(health.label)}</span></div><p>${escapeHtml(c.responsibility)}</p>${controls}<div class="component-children-summary"><strong>Scope facts</strong><span>Projection role · ${escapeHtml(c.projectionRole)}</span><span>Canonical children · ${c.childCount}</span><span>Current scope · ${escapeHtml(diagram.scope?.label || 'Overview')}</span></div><div class="component-task-summary"><strong>${linkedTasks.length} linked task${linkedTasks.length===1?'':'s'}</strong>${linkedTasks.length ? linkedTasks.map((task)=>`<span><i class="status-dot ${statusClass(task.status)}"></i>${escapeHtml(task.title)} · ${escapeHtml(task.status.replace('_',' '))}</span>`).join('') : '<span class="muted">No execution task is linked to this component.</span>'}</div><div class="component-connections">${incoming.length||outgoing.length ? `<ul>${incoming.map((edge)=>connectionLine(edge,'in')).join('')}${outgoing.map((edge)=>connectionLine(edge,'out')).join('')}</ul>` : '<p class="muted">No projected relationships for this node in the current scope.</p>'}</div>`;
+  $('nodeEvidence').innerHTML=`<p><strong>${escapeHtml(health.label)}</strong></p><p class="muted">${escapeHtml(health.detail)}</p><p><strong>Accepted responsibility</strong></p><p class="muted">${escapeHtml(c.responsibility)}</p><p><strong>Stable Diagram ID</strong></p><p class="muted">${escapeHtml(c.id)}</p><p><strong>Canonical component ID</strong></p><p class="muted">${escapeHtml(c.component_id)}</p><p><strong>Projection role</strong></p><p class="muted">${escapeHtml(c.projectionRole)} · ${c.childCount} canonical child${c.childCount===1?'':'ren'}</p>${provenance.length ? `<p><strong>Relationship provenance</strong></p><p class="muted">${provenance.map(({edge,item})=>`${escapeHtml(edge.id)} ← ${escapeHtml(item.relationship_id || 'canonical relationship')} · ${escapeHtml(item.semantic_type || edge.semantic_type || '')}`).join('<br>')}</p>` : ''}<p><strong>Architecture status</strong></p><p class="muted">${escapeHtml(c.status?.canonical_status || 'UNKNOWN')} — projected from Architecture v${diagram.architectureVersion}.</p>`;
+  $('selectedNode').querySelectorAll('[data-graph-focus]').forEach((button)=>button.addEventListener('click',()=>{ const mode=button.dataset.graphFocus; if(mode==='clear'){state.selectedComponentId=null;state.graphFocusMode='all';} else state.graphFocusMode=mode; renderGraph(); }));
 }
 
 function renderLists() {
@@ -2013,7 +2133,22 @@ function currentInstructionContext() {
   }
 
   if (state.currentView === 'architecture') {
-    const node = findArchitectureNode(state.selectedNode || state.drillNodeId);
+    if (state.architectureGraphKind === 'code') {
+      const codeNode = codeNodeById(state.selectedCodeNodeId);
+      const repository = state.codeDiagram?.repository;
+      return {
+        label: codeNode ? `Code · ${codeNode.label}` : repository ? `Code · ${repository.slug}@${repository.revision.slice(0, 8)}` : 'Code Architecture · no snapshot',
+        instruction: codeNode ? 'Ask about this implementation component or its source evidence' : 'Ask the Agent to inspect GitHub and publish a revision-pinned Code Architecture snapshot',
+        placeholder: codeNode ? `Example: What source evidence proves ${codeNode.label} belongs here?` : 'Inspect the connected GitHub repository at an exact commit and build the implementation architecture.',
+        payload: {
+          ...base,
+          architecture_graph_kind: 'code',
+          ...(repository ? {repository: repository.slug, revision: repository.revision} : {}),
+          ...(codeNode ? {code_node_id: codeNode.id, code_component_id: codeNode.component_id, code_node_name: codeNode.label} : {}),
+        },
+      };
+    }
+    const node = findArchitectureNode(state.selectedComponentId || state.scopeComponentId);
     return {
       label: node ? `Architecture · ${node.name}` : `Architecture · v${state.architecture?.version || 0}`,
       instruction: node ? 'Ask about this architecture area or describe new evidence' : 'Ask about the accepted architecture or describe a mismatch',
@@ -2134,7 +2269,7 @@ function switchView(name) {
   if (!views[name]) return;
   if (name === 'tasks') {
     state.selectedProposalId = null;
-    state.selectedNode = null;
+    state.selectedComponentId = null;
   } else if (name === 'architecture') {
     state.selectedProposalId = null;
     state.selectedTaskId = null;
@@ -2735,7 +2870,7 @@ function webMcpContext() {
     };
   }
   const selectedTask = state.tasks.find((item) => item.id === state.selectedTaskId) || null;
-  const selectedNode = findArchitectureNode(state.selectedNode || state.drillNodeId);
+  const selectedNode = findArchitectureNode(state.selectedComponentId || state.scopeComponentId);
   const pending = state.proposals.filter((proposal) => proposal.status === 'PENDING');
   const selectedProposal = state.proposals.find((proposal) => proposal.id === state.selectedProposalId) || pending[0] || null;
   return {
@@ -2749,8 +2884,129 @@ function webMcpContext() {
   };
 }
 
+const WEBMCP_ARCHITECTURE_KINDS = new Set([
+  'SYSTEM', 'UI', 'SERVICE', 'AGENT', 'TOOL', 'DATA_STORE', 'STATE',
+  'EXTERNAL_SERVICE', 'INFRASTRUCTURE',
+]);
+
+function normalizeWebMcpArchitectureComponents(rawComponents, {requireIds = false, maxDepth = 3} = {}) {
+  if (!Array.isArray(rawComponents) || !rawComponents.length) {
+    throw new Error('At least one architecture component is required.');
+  }
+  const usedIds = new Set();
+  const aliases = new Map();
+  const ambiguousNames = new Set();
+
+  const registerName = (name, id) => {
+    const key = name.toLowerCase();
+    if (aliases.has(key) && aliases.get(key) !== id) {
+      ambiguousNames.add(key);
+      aliases.delete(key);
+      return;
+    }
+    if (!ambiguousNames.has(key)) aliases.set(key, id);
+  };
+
+  const normalize = (component, depth, indexPath) => {
+    if (!component || typeof component !== 'object' || Array.isArray(component)) {
+      throw new Error('Every architecture component must be an object.');
+    }
+    if (depth > maxDepth) throw new Error(`Architecture depth is capped at ${maxDepth} levels.`);
+    const componentName = String(component.name || '').trim();
+    const componentType = String(component.type || '').trim();
+    const responsibility = String(component.responsibility || '').trim();
+    const explicitId = String(component.id || '').trim();
+    if (!componentName || !componentType || !responsibility) {
+      throw new Error('Every component requires name, type, and responsibility.');
+    }
+    if (requireIds && !explicitId) throw new Error('Every architecture component requires a stable id.');
+    const baseId = explicitId || componentName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || `component-${indexPath.join('-')}`;
+    let id = baseId;
+    if (explicitId && usedIds.has(id)) throw new Error(`Duplicate architecture component id: ${id}`);
+    let suffix = 2;
+    while (!explicitId && usedIds.has(id)) id = `${baseId}-${suffix++}`;
+    usedIds.add(id);
+    aliases.set(id.toLowerCase(), id);
+    registerName(componentName, id);
+
+    const kind = String(component.kind || 'SYSTEM').trim().toUpperCase();
+    if (!WEBMCP_ARCHITECTURE_KINDS.has(kind)) throw new Error(`Unsupported architecture component kind: ${kind}`);
+    const rawChildren = component.children ?? [];
+    if (!Array.isArray(rawChildren)) throw new Error(`Component ${id} children must be an array.`);
+    if (depth >= maxDepth && rawChildren.length) {
+      throw new Error(`Architecture depth is capped at ${maxDepth} levels.`);
+    }
+    const children = rawChildren.map((child, index) => normalize(child, depth + 1, [...indexPath, index + 1]));
+    return {
+      id,
+      name: componentName,
+      type: componentType,
+      responsibility,
+      status: String(component.status || 'PLANNED').trim() || 'PLANNED',
+      kind,
+      children,
+    };
+  };
+
+  const components = rawComponents.map((component, index) => normalize(component, 1, [index + 1]));
+  const resolveComponent = (value) => {
+    const raw = String(value || '').trim();
+    const key = raw.toLowerCase();
+    if (ambiguousNames.has(key)) throw new Error(`Architecture component name is ambiguous; use a stable id instead: ${raw}`);
+    return aliases.get(key) || raw;
+  };
+  return {components, resolveComponent};
+}
+
+function normalizeInitialPlanningTrace(rawTrace, normalizedComponents) {
+  if (!rawTrace || typeof rawTrace !== 'object' || Array.isArray(rawTrace)) {
+    throw new Error('planning_trace is required for WebMCP initial architecture.');
+  }
+  if (rawTrace.reconciled !== true) {
+    throw new Error('planning_trace.reconciled must be true after relationships and tasks are reconciled.');
+  }
+  const rootIds = normalizedComponents.map((component) => component.id);
+  const systemMapRootIds = Array.isArray(rawTrace.system_map_root_ids)
+    ? rawTrace.system_map_root_ids.map((value) => String(value || '').trim())
+    : [];
+  if (systemMapRootIds.length !== rootIds.length || systemMapRootIds.some((id, index) => id !== rootIds[index])) {
+    throw new Error('planning_trace.system_map_root_ids must exactly match final architecture roots in order.');
+  }
+  const rawExpansions = Array.isArray(rawTrace.scope_expansions) ? rawTrace.scope_expansions : [];
+  if (rawExpansions.length !== rootIds.length) {
+    throw new Error('planning_trace.scope_expansions must cover every SYSTEM_MAP root exactly once in order.');
+  }
+  const descendantIds = (component) => {
+    const result = [];
+    for (const child of component.children || []) result.push(child.id, ...descendantIds(child));
+    return result;
+  };
+  const scopeExpansions = rawExpansions.map((expansion, index) => {
+    const scopeComponentId = String(expansion?.scope_component_id || '').trim();
+    if (scopeComponentId !== rootIds[index]) {
+      throw new Error('planning_trace.scope_expansions must follow SYSTEM_MAP root order.');
+    }
+    const suppliedDescendants = Array.isArray(expansion?.descendant_ids)
+      ? expansion.descendant_ids.map((value) => String(value || '').trim())
+      : [];
+    const expectedDescendants = descendantIds(normalizedComponents[index]);
+    if (
+      suppliedDescendants.length !== expectedDescendants.length
+      || suppliedDescendants.some((id, descendantIndex) => id !== expectedDescendants[descendantIndex])
+    ) {
+      throw new Error(`planning_trace descendant ids do not match final hierarchy for scope ${scopeComponentId}.`);
+    }
+    return {scope_component_id: scopeComponentId, descendant_ids: suppliedDescendants};
+  });
+  return {
+    system_map_root_ids: systemMapRootIds,
+    scope_expansions: scopeExpansions,
+    reconciled: true,
+  };
+}
+
 window.ArchBroWebBridge = {
-  async bootstrapProject({name, goal, architectureSummary, components = [], relationships = [], tasks = [], reasoning} = {}) {
+  async bootstrapProject({name, goal, architectureSummary, components = [], relationships = [], tasks = [], planningTrace, reasoning} = {}) {
     await ensureAppInitialized();
     const projectName = String(name || '').trim();
     const projectGoal = String(goal || '').trim();
@@ -2763,22 +3019,8 @@ window.ArchBroWebBridge = {
     if (!Array.isArray(tasks) || !tasks.length) throw new Error('At least one initial task is required.');
     if (!bootstrapReasoning) throw new Error('Architecture reasoning is required.');
 
-    const componentIds = new Map();
-    const usedIds = new Set();
-    const normalizedComponents = components.map((component, index) => {
-      const componentName = String(component?.name || '').trim();
-      const componentType = String(component?.type || '').trim();
-      const responsibility = String(component?.responsibility || '').trim();
-      if (!componentName || !componentType || !responsibility) throw new Error('Every component requires name, type, and responsibility.');
-      const baseId = componentName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || `component-${index + 1}`;
-      let id = baseId;
-      let suffix = 2;
-      while (usedIds.has(id)) id = `${baseId}-${suffix++}`;
-      usedIds.add(id);
-      componentIds.set(componentName.toLowerCase(), id);
-      return {id, name: componentName, type: componentType, responsibility, children: []};
-    });
-    const resolveComponent = (value) => componentIds.get(String(value || '').trim().toLowerCase()) || String(value || '').trim();
+    const {components: normalizedComponents, resolveComponent} = normalizeWebMcpArchitectureComponents(components, {requireIds: true});
+    const normalizedPlanningTrace = normalizeInitialPlanningTrace(planningTrace, normalizedComponents);
     const architecture = {
       version: 1,
       summary,
@@ -2817,7 +3059,12 @@ window.ArchBroWebBridge = {
       state.onboarding.active = false;
       const result = await api(`/projects/${project.id}/interactive-initial-architecture`, {
         method: 'POST',
-        body: JSON.stringify({architecture, tasks: normalizedTasks, reasoning: bootstrapReasoning}),
+        body: JSON.stringify({
+          architecture,
+          tasks: normalizedTasks,
+          reasoning: bootstrapReasoning,
+          planning_trace: normalizedPlanningTrace,
+        }),
       });
       await loadProjects();
       await refresh();
@@ -2840,6 +3087,45 @@ window.ArchBroWebBridge = {
       await refresh();
       throw error;
     }
+  },
+
+  async expandArchitectureScope({scopeComponentId, children = [], reasoning, evidence = [], impact = '', expectedArchitectureVersion} = {}) {
+    await ensureAppInitialized();
+    webMcpRequireProject();
+    await refresh();
+    const scopeId = String(scopeComponentId || '').trim();
+    if (!scopeId) throw new Error('scope_component_id is required.');
+    if (!findArchitectureNode(scopeId)) throw new Error(`Architecture component not found: ${scopeId}`);
+    const expected = Number(expectedArchitectureVersion);
+    if (!Number.isInteger(expected) || expected < 0) throw new Error('expected_architecture_version must be a non-negative integer.');
+    if (Number(state.architecture.version) !== expected) {
+      throw new Error(`Stale architecture version: expected ${expected}, current ${state.architecture.version}.`);
+    }
+    const normalizedEvidence = (Array.isArray(evidence) ? evidence : []).map((item) => String(item || '').trim()).filter(Boolean);
+    if (!normalizedEvidence.length) throw new Error('At least one evidence item is required.');
+    const expansionReasoning = String(reasoning || '').trim();
+    if (!expansionReasoning) throw new Error('Expansion reasoning is required.');
+    const {components: normalizedChildren} = normalizeWebMcpArchitectureComponents(children, {requireIds: true, maxDepth: 1});
+    const existingIds = new Set();
+    const collectExistingIds = (nodes) => {
+      for (const node of nodes || []) {
+        existingIds.add(node.id);
+        collectExistingIds(node.children || []);
+      }
+    };
+    collectExistingIds(state.architecture.components);
+    const collisions = normalizedChildren.map((child) => child.id).filter((id) => existingIds.has(id));
+    if (collisions.length) throw new Error(`Expanded child ids already exist in architecture: ${collisions.join(', ')}`);
+    return window.ArchBroWebBridge.submitAgentRecommendation({
+      recommendation: 'ACCEPT_PROPOSED_CHANGE',
+      reasoning: expansionReasoning,
+      evidence: normalizedEvidence,
+      observedChange: `The accepted ${scopeId} boundary needs one more explicit decomposition level.`,
+      affectedComponents: [scopeId],
+      proposedChanges: [{operation: 'expand_scope', component_id: scopeId, children: normalizedChildren}],
+      impact: String(impact || '').trim() || `Adds explicit child boundaries under ${scopeId} without replacing existing component identities.`,
+      expectedArchitectureVersion: expected,
+    });
   },
 
   async createProject({name, goal, description = ''} = {}) {
@@ -2871,13 +3157,11 @@ window.ArchBroWebBridge = {
         architecture_version_required: 1,
         task_status_default: 'TODO',
         rules: [
-          'Generate Architecture v1 from the stored Goal/Brief using the current WebMCP host model.',
+          'This low-level bridge method is internal; public WebMCP project creation uses archbro_bootstrap_project atomically.',
           'Use stable component ids that tasks can reference.',
-          'Create at least one actionable initial task.',
-          'Submit the result with archbro_submit_initial_architecture.',
         ],
       },
-      recommended_next_tool: 'archbro_submit_initial_architecture',
+      recommended_next_tool: null,
     };
   },
 
@@ -2964,10 +3248,11 @@ window.ArchBroWebBridge = {
           impact: proposal.impact,
         })),
         blockers: blocked.map(summarizeTask),
-        recommended_next_tool: pending.length
-          ? 'archbro_focus_pending_review'
+        recommended_next_tool: null,
+        recommended_human_action: pending.length
+          ? 'REVIEW_ARCHITECTURE_PROPOSAL'
           : blocked.length
-            ? 'archbro_focus_workspace_item'
+            ? 'UNBLOCK_TASK'
             : null,
         recommended_focus: recommendedFocus,
       },
@@ -3016,9 +3301,12 @@ window.ArchBroWebBridge = {
     affectedComponents = [],
     proposedChanges = [],
     impact = '',
+    expectedArchitectureVersion,
   } = {}) {
     await ensureAppInitialized();
     webMcpRequireProject();
+    const expected = Number(expectedArchitectureVersion);
+    if (!Number.isInteger(expected) || expected < 0) throw new Error('expected_architecture_version must be a non-negative integer.');
     const result = await api(`/projects/${state.projectId}/agent-recommendations`, {
       method: 'POST',
       body: JSON.stringify({
@@ -3029,6 +3317,7 @@ window.ArchBroWebBridge = {
         affected_components: affectedComponents,
         proposed_changes: proposedChanges,
         impact,
+        expected_architecture_version: expected,
       }),
     });
     await refresh();
@@ -3125,10 +3414,14 @@ window.ArchBroWebBridge = {
     } else if (kind === 'architecture') {
       const node = findArchitectureNode(id);
       if (!node) throw new Error(`Architecture component not found: ${id}`);
-      state.selectedNode = node.id;
-      state.drillNodeId = null;
       switchView('architecture');
-      renderGraph();
+      const parentScopeComponentId = findArchitectureParentId(node.id);
+      await navigateGraphScope(parentScopeComponentId ?? null, {focusComponentId: node.id});
+      if (diagramNodeByComponentId(node.id)) {
+        state.selectedComponentId = node.id;
+        state.graphFocusMode = 'connected';
+        renderGraph();
+      }
     } else if (kind === 'proposal') {
       const proposal = state.proposals.find((item) => item.id === id);
       if (!proposal) throw new Error(`Architecture proposal not found: ${id}`);
@@ -3159,6 +3452,54 @@ window.ArchBroWebBridge = {
     );
   },
 
+  async createTask({
+    requestId,
+    title,
+    description = '',
+    owner = 'UNASSIGNED',
+    relatedComponent = null,
+    dependencies = [],
+    acceptanceCriteria = [],
+  } = {}) {
+    await ensureAppInitialized();
+    webMcpRequireProject();
+    const result = await api(`/projects/${state.projectId}/tasks`, {
+      method: 'POST',
+      body: JSON.stringify({
+        request_id: requestId,
+        title,
+        description,
+        owner,
+        related_component: relatedComponent,
+        dependencies,
+        acceptance_criteria: acceptanceCriteria,
+      }),
+    });
+    await refresh();
+    return {...result, context: webMcpContext()};
+  },
+
+  async recordProjectObservation({
+    summary,
+    evidence = [],
+    relatedComponents = [],
+    relatedTaskId = null,
+  } = {}) {
+    await ensureAppInitialized();
+    webMcpRequireProject();
+    const result = await api(`/projects/${state.projectId}/observations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        summary,
+        evidence,
+        related_components: relatedComponents,
+        related_task_id: relatedTaskId,
+      }),
+    });
+    await refresh();
+    return {...result, context: webMcpContext()};
+  },
+
   async updateTaskStatus({taskId, status} = {}) {
     await ensureAppInitialized();
     webMcpRequireProject();
@@ -3171,11 +3512,12 @@ window.ArchBroWebBridge = {
       throw new Error(`Task ${taskId} must be IN_PROGRESS before completion.`);
     }
     if (!['IN_PROGRESS', 'DONE'].includes(status)) throw new Error(`Unsupported task status: ${status}`);
-    await updateTask(taskId, status === 'DONE' ? 'done' : 'start');
-    return {
-      task: state.tasks.find((item) => item.id === taskId) || null,
-      agent_run: state.lastRun,
-    };
+    const result = await api(`/projects/${state.projectId}/tasks/${encodeURIComponent(taskId)}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({status}),
+    });
+    await refresh();
+    return {...result, context: webMcpContext()};
   },
 
   async decideProposal({proposalId, decision} = {}) {
@@ -3411,6 +3753,7 @@ $('preferenceContinueBtn').addEventListener('click', completePreference);
 $('authBackBtn').addEventListener('click', () => closeAuthentication());
 
 wireGoButtons();
+document.querySelectorAll('[data-architecture-graph-kind]').forEach((button) => button.addEventListener('click', () => setArchitectureGraphKind(button.dataset.architectureGraphKind)));
 window.matchMedia('(max-width: 760px)').addEventListener('change', syncMobileSidebarLayers);
 async function initializeWorkspace() {
   try {

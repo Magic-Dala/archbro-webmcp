@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import time
+from dataclasses import dataclass
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
@@ -83,12 +85,108 @@ class GeminiComponentWire(BaseModel):
     parent_id: str | None = None
 
 
+class ArchitectureNeedsFactError(RuntimeError):
+    """Initial architecture cannot be truthful without concrete project facts."""
+
+    def __init__(self, missing_facts: list[str]) -> None:
+        facts = [fact.strip() for fact in missing_facts if fact.strip()]
+        if not facts:
+            facts = ["unspecified architecture fact"]
+        self.missing_facts = facts
+        super().__init__("Architecture needs fact: " + "; ".join(facts))
+
+
+class GeminiPlannerRootWire(BaseModel):
+    id: str
+    name: str
+    type: str
+    responsibility: str
+    status: str = "PLANNED"
+
+    def as_component(self) -> GeminiComponentWire:
+        return GeminiComponentWire(
+            id=self.id,
+            name=self.name,
+            type=self.type,
+            responsibility=self.responsibility,
+            status=self.status,
+            kind=ArchitectureNodeKind.SYSTEM,
+            parent_id=None,
+        )
+
+
+class GeminiSystemMapWire(BaseModel):
+    status: Literal["READY", "NEEDS_FACT"] = "READY"
+    missing_facts: list[str] = Field(default_factory=list, max_length=5)
+    summary: str = ""
+    roots: list[GeminiPlannerRootWire] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def validate_status(self) -> "GeminiSystemMapWire":
+        if self.status == "NEEDS_FACT":
+            if not self.missing_facts:
+                raise ValueError("NEEDS_FACT requires missing_facts")
+            if self.roots:
+                raise ValueError("NEEDS_FACT cannot carry topology")
+        elif not self.roots:
+            raise ValueError("SYSTEM_MAP requires at least one root")
+        return self
+
+
+class GeminiScopeDeltaWire(BaseModel):
+    status: Literal["READY", "NEEDS_FACT"] = "READY"
+    missing_facts: list[str] = Field(default_factory=list, max_length=5)
+    scope_id: str
+    components: list[GeminiComponentWire] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_status(self) -> "GeminiScopeDeltaWire":
+        if not self.scope_id.strip():
+            raise ValueError("scope_id must not be empty")
+        if self.status == "NEEDS_FACT":
+            if not self.missing_facts:
+                raise ValueError("NEEDS_FACT requires missing_facts")
+            if self.components:
+                raise ValueError("NEEDS_FACT cannot carry a scoped delta")
+        elif any(component.parent_id is None for component in self.components):
+            raise ValueError("scope deltas may only add descendants")
+        return self
+
+
+class GeminiReconcileWire(BaseModel):
+    status: Literal["READY", "NEEDS_FACT"] = "READY"
+    missing_facts: list[str] = Field(default_factory=list, max_length=5)
+    summary: str = ""
+    relationships: list[Relationship] = Field(default_factory=list, max_length=12)
+    tasks: list[TaskProposal] = Field(default_factory=list, max_length=6)
+    decisions: list[str] = Field(default_factory=list, max_length=3)
+    assumptions: list[str] = Field(default_factory=list, max_length=3)
+    risks: list[str] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_status(self) -> "GeminiReconcileWire":
+        if self.status == "NEEDS_FACT":
+            if not self.missing_facts:
+                raise ValueError("NEEDS_FACT requires missing_facts")
+            if self.relationships or self.tasks or self.decisions or self.assumptions or self.risks:
+                raise ValueError("NEEDS_FACT cannot carry reconciliation output")
+        elif not self.tasks:
+            raise ValueError("RECONCILE requires at least one implementation task")
+        return self
+
+
+@dataclass(frozen=True)
+class InitialArchitecturePlannerSnapshot:
+    roots: tuple[str, ...]
+    components: tuple[GeminiComponentWire, ...]
+
+
 class GeminiArchitectureWire(BaseModel):
     """Non-recursive provider wire for a hierarchical Architecture v1."""
 
     version: int = 1
     summary: str = ""
-    components: list[GeminiComponentWire] = Field(min_length=3, max_length=40)
+    components: list[GeminiComponentWire] = Field(min_length=1, max_length=40)
     relationships: list[Relationship] = Field(default_factory=list, max_length=12)
     decisions: list[str] = Field(default_factory=list, max_length=3)
     assumptions: list[str] = Field(default_factory=list, max_length=3)
@@ -104,8 +202,8 @@ class GeminiArchitectureWire(BaseModel):
             raise ValueError("bootstrap architecture node ids must be unique")
 
         top_level = [component for component in self.components if component.parent_id is None]
-        if not 3 <= len(top_level) <= 8:
-            raise ValueError("bootstrap requires 3-8 top-level components")
+        if not 1 <= len(top_level) <= 8:
+            raise ValueError("bootstrap requires 1-8 top-level components")
 
         child_counts: dict[str, int] = {}
         depths: dict[str, int] = {}
@@ -228,8 +326,13 @@ class GeminiProvider(ModelProvider):
         if self.routine_model_timeout_seconds <= 0:
             raise ValueError("GEMINI_ROUTINE_MODEL_TIMEOUT_SECONDS must be greater than zero")
         self.architecture_model_timeout_seconds = float(os.getenv("GEMINI_ARCHITECTURE_MODEL_TIMEOUT_SECONDS", "12"))
+        self.architecture_phase_timeout_seconds = float(os.getenv("GEMINI_ARCHITECTURE_PHASE_TIMEOUT_SECONDS", "18"))
         self.architecture_total_timeout_seconds = float(os.getenv("GEMINI_ARCHITECTURE_TOTAL_TIMEOUT_SECONDS", "36"))
-        if self.architecture_model_timeout_seconds <= 0 or self.architecture_total_timeout_seconds <= 0:
+        if (
+            self.architecture_model_timeout_seconds <= 0
+            or self.architecture_phase_timeout_seconds <= 0
+            or self.architecture_total_timeout_seconds <= 0
+        ):
             raise ValueError("Gemini architecture timeouts must be greater than zero")
         bootstrap_fallbacks = os.getenv(
             "GEMINI_BOOTSTRAP_FALLBACK_MODELS",
@@ -366,6 +469,230 @@ class GeminiProvider(ModelProvider):
             raise RuntimeError("Strands returned no structured GeminiBootstrapWire")
         return GeminiBootstrapWire.model_validate(result.structured_output)
 
+    async def _invoke_system_map(self, model_id: str, prompt: str) -> GeminiSystemMapWire:
+        result = await self._agent_for(model_id).invoke_async(prompt, structured_output_model=GeminiSystemMapWire)
+        if result.structured_output is None:
+            raise RuntimeError("Strands returned no structured GeminiSystemMapWire")
+        return GeminiSystemMapWire.model_validate(result.structured_output)
+
+    async def _invoke_scope_delta(self, model_id: str, prompt: str) -> GeminiScopeDeltaWire:
+        result = await self._agent_for(model_id).invoke_async(prompt, structured_output_model=GeminiScopeDeltaWire)
+        if result.structured_output is None:
+            raise RuntimeError("Strands returned no structured GeminiScopeDeltaWire")
+        return GeminiScopeDeltaWire.model_validate(result.structured_output)
+
+    async def _invoke_reconcile(self, model_id: str, prompt: str) -> GeminiReconcileWire:
+        result = await self._agent_for(model_id).invoke_async(prompt, structured_output_model=GeminiReconcileWire)
+        if result.structured_output is None:
+            raise RuntimeError("Strands returned no structured GeminiReconcileWire")
+        return GeminiReconcileWire.model_validate(result.structured_output)
+
+    @staticmethod
+    def _require_ready(wire: GeminiSystemMapWire | GeminiScopeDeltaWire | GeminiReconcileWire) -> None:
+        if wire.status == "NEEDS_FACT":
+            raise ArchitectureNeedsFactError(wire.missing_facts)
+
+    async def _run_planner_phase(
+        self,
+        invoke_name: str,
+        prompt: str,
+        *,
+        global_deadline: float,
+    ):
+        phase_deadline = min(
+            global_deadline,
+            time.perf_counter() + self.architecture_phase_timeout_seconds,
+        )
+        timed_out: list[str] = []
+        unavailable: list[str] = []
+        last_unavailable: Exception | None = None
+        invoke = getattr(self, invoke_name)
+
+        for candidate in self.bootstrap_model_chain:
+            remaining = min(phase_deadline, global_deadline) - time.perf_counter()
+            if remaining <= 0:
+                break
+            self.last_model_id = candidate
+            try:
+                return await asyncio.wait_for(
+                    invoke(candidate, prompt),
+                    timeout=min(self.architecture_model_timeout_seconds, remaining),
+                )
+            except TimeoutError as exc:
+                timed_out.append(candidate)
+                last_unavailable = exc
+                continue
+            except Exception as exc:
+                if not self._is_temporary_unavailable(exc):
+                    raise
+                unavailable.append(candidate)
+                last_unavailable = exc
+
+        details: list[str] = []
+        if timed_out:
+            details.append("timed out: " + ", ".join(timed_out))
+        if unavailable:
+            details.append("503 unavailable: " + ", ".join(unavailable))
+        reason = "; ".join(details) or "phase/global reasoning deadline reached"
+        raise RuntimeError(
+            f"Gemini planner phase {invoke_name} could not complete ({reason}). "
+            "No project state was changed; retry the event."
+        ) from last_unavailable
+
+    @staticmethod
+    def _apply_scope_delta(
+        snapshot: InitialArchitecturePlannerSnapshot,
+        delta: GeminiScopeDeltaWire,
+        *,
+        expected_scope_id: str,
+    ) -> InitialArchitecturePlannerSnapshot:
+        GeminiProvider._require_ready(delta)
+        if delta.scope_id != expected_scope_id:
+            raise ValueError("scope delta returned a different scope_id")
+        if expected_scope_id not in snapshot.roots:
+            raise ValueError("scope delta must target an existing SYSTEM_MAP root")
+
+        existing_ids = {component.id for component in snapshot.components}
+        new_ids = [component.id for component in delta.components]
+        if len(set(new_ids)) != len(new_ids):
+            raise ValueError("scope delta node ids must be unique")
+        reused = existing_ids.intersection(new_ids)
+        if reused:
+            raise ValueError("scope delta cannot redefine existing node ids: " + ", ".join(sorted(reused)))
+
+        combined = [*snapshot.components, *delta.components]
+        validated = GeminiArchitectureWire(version=1, components=combined)
+        by_id = {component.id: component for component in validated.components}
+        for component in delta.components:
+            cursor = component
+            while cursor.parent_id is not None:
+                cursor = by_id[cursor.parent_id]
+            if cursor.id != expected_scope_id:
+                raise ValueError("scope delta may only extend its named root")
+
+        return InitialArchitecturePlannerSnapshot(
+            roots=snapshot.roots,
+            components=tuple(validated.components),
+        )
+
+    @staticmethod
+    def _system_map_prompt(*, event: ProjectEvent, context: ProjectContext) -> str:
+        return (
+            "SYSTEM_MAP phase for ArchBro initial architecture. Return ONLY root system boundaries; do not return descendants, relationships, or tasks. "
+            "Normally use 3-6 truthful major boundaries for a rich project, but allow 1-2 for a genuinely simple system. Never return more than 6 roots. "
+            "Roots must be independently meaningful architecture responsibilities, not files/classes/functions or technology leaves promoted merely because they are easy to name. "
+            "Do not hardcode a category taxonomy; derive boundaries from the confirmed Goal. If concrete missing or contradictory facts make a truthful map impossible, return NEEDS_FACT with those facts and no roots. "
+            "Use stable short lowercase IDs that later scoped passes can reference."
+            "\n\nCONFIRMED PROJECT:\n" + context.project.model_dump_json()
+            + "\n\nBOOTSTRAP EVENT:\n" + event.model_dump_json()
+        )
+
+    @staticmethod
+    def _scope_prompt(
+        *,
+        event: ProjectEvent,
+        context: ProjectContext,
+        snapshot: InitialArchitecturePlannerSnapshot,
+        scope_id: str,
+    ) -> str:
+        accepted = [component.model_dump(mode="json") for component in snapshot.components]
+        return (
+            f"EXPAND_SCOPE phase for root scope_id={scope_id}. Return only NEW descendants inside this named root; never regenerate or edit accepted nodes. "
+            "Use parent_id to attach each new node to the named root or another new descendant. Depth is capped at 3 canonical levels. "
+            "Stop at independently addressable architecture responsibility/boundary/capability detail; do not emit files, classes, functions, methods, local code paths, arbitrary helpers, tables, or columns by default. "
+            "An empty READY delta is valid when the root is already an architecture-level leaf. If a truthful expansion requires concrete missing/contradictory facts, return NEEDS_FACT and no components."
+            "\n\nACCEPTED PLANNER SNAPSHOT JSON:\n" + json.dumps(accepted, ensure_ascii=False, separators=(",", ":"))
+            + "\n\nCONFIRMED PROJECT:\n" + context.project.model_dump_json()
+            + "\n\nBOOTSTRAP EVENT:\n" + event.model_dump_json()
+        )
+
+    @staticmethod
+    def _reconcile_prompt(
+        *,
+        event: ProjectEvent,
+        context: ProjectContext,
+        snapshot: InitialArchitecturePlannerSnapshot,
+        system_summary: str,
+    ) -> str:
+        accepted = [component.model_dump(mode="json") for component in snapshot.components]
+        return (
+            "RECONCILE phase for ArchBro initial architecture. The topology below is immutable. Do not rename, reparent, replace, or emit topology nodes. "
+            "Return only the final concise summary, authored relationships, 1-6 critical implementation tasks, and bounded decisions/assumptions/risks. "
+            "Every relationship endpoint and task.related_component must reference an accepted component ID. Do not create containment edges merely to restate hierarchy. "
+            "If concrete missing/contradictory facts make truthful reconciliation impossible, return NEEDS_FACT and no reconciliation output."
+            "\n\nSYSTEM MAP SUMMARY:\n" + system_summary
+            + "\n\nIMMUTABLE TOPOLOGY JSON:\n" + json.dumps(accepted, ensure_ascii=False, separators=(",", ":"))
+            + "\n\nCONFIRMED PROJECT:\n" + context.project.model_dump_json()
+            + "\n\nBOOTSTRAP EVENT:\n" + event.model_dump_json()
+        )
+
+    async def _plan_initial_architecture(
+        self,
+        *,
+        event: ProjectEvent,
+        context: ProjectContext,
+    ) -> GeminiBootstrapWire:
+        global_deadline = time.perf_counter() + self.architecture_total_timeout_seconds
+        system_map = await self._run_planner_phase(
+            "_invoke_system_map",
+            self._system_map_prompt(event=event, context=context),
+            global_deadline=global_deadline,
+        )
+        self._require_ready(system_map)
+        if len(system_map.roots) > 6:
+            raise ValueError("SYSTEM_MAP allows at most 6 roots")
+        root_components = tuple(root.as_component() for root in system_map.roots)
+        if len({component.id for component in root_components}) != len(root_components):
+            raise ValueError("SYSTEM_MAP root ids must be unique")
+        snapshot = InitialArchitecturePlannerSnapshot(
+            roots=tuple(component.id for component in root_components),
+            components=root_components,
+        )
+        GeminiArchitectureWire(version=1, components=list(snapshot.components))
+
+        for scope_id in snapshot.roots:
+            delta = await self._run_planner_phase(
+                "_invoke_scope_delta",
+                self._scope_prompt(
+                    event=event,
+                    context=context,
+                    snapshot=snapshot,
+                    scope_id=scope_id,
+                ),
+                global_deadline=global_deadline,
+            )
+            snapshot = self._apply_scope_delta(
+                snapshot,
+                delta,
+                expected_scope_id=scope_id,
+            )
+
+        reconcile = await self._run_planner_phase(
+            "_invoke_reconcile",
+            self._reconcile_prompt(
+                event=event,
+                context=context,
+                snapshot=snapshot,
+                system_summary=system_map.summary,
+            ),
+            global_deadline=global_deadline,
+        )
+        self._require_ready(reconcile)
+        architecture = GeminiArchitectureWire(
+            version=1,
+            summary=reconcile.summary or system_map.summary,
+            components=list(snapshot.components),
+            relationships=reconcile.relationships,
+            decisions=reconcile.decisions,
+            assumptions=reconcile.assumptions,
+            risks=reconcile.risks,
+        )
+        return GeminiBootstrapWire(
+            summary=reconcile.summary or system_map.summary or "Initial architecture created.",
+            architecture=architecture,
+            tasks=reconcile.tasks,
+        )
+
     @staticmethod
     def _bootstrap_to_domain_decision(wire: GeminiBootstrapWire) -> AgentDecision:
         architecture = wire.architecture.to_domain()
@@ -494,56 +821,26 @@ class GeminiProvider(ModelProvider):
         )
 
         if is_bootstrap:
-            prompt = (
-                "Create the smallest useful V0 software architecture from this confirmed project brief. "
-                "This is initial setup, not an architecture change. Return architecture version 1. "
-                "Use 3-8 TOP-LEVEL components and at most 12 relationships. Create 3-6 concrete human implementation tasks. "
-                "The provider schema is intentionally FLAT to avoid recursive structured-output schemas: every architecture component has a parent_id field. Use parent_id=null for top-level system boundaries and set parent_id to another component id for child/detail nodes. Do not output nested children arrays. The server rebuilds the validated hierarchy deterministically. "
-                "The top level is a human overview: only meaningful system boundaries belong there. Use child nodes for component detail when the parent contains independently meaningful UI modules, services, tools, state stores, or infrastructure. Children are optional; do not decompose a simple component just to make the graph look detailed. "
-                "Architecture depth is capped at 3 levels: top-level system overview, component architecture, then optional implementation detail. A top-level component may have at most 7 children and a level-2 child may have at most 6 children. Keep the total architecture comfortably below 40 nodes, ideally 8-20 for a multi-capability V0. "
-                "Set Component.kind to one of SYSTEM, UI, SERVICE, AGENT, TOOL, DATA_STORE, STATE, EXTERNAL_SERVICE, INFRASTRUCTURE. Keep Component.type domain/technology-specific. "
-                "Do not model runtime verbs such as Understand, Evaluate, Decide, or Explain as components unless they are backed by an actual tool/service boundary. Runtime steps belong in a runtime flow, not the component hierarchy. "
-                "Decompose by meaningful system boundaries, not by an arbitrary component count. A capability deserves its own component when it has a distinct responsibility, owns state, crosses an external/service integration boundary, or can be implemented as an independent human workstream. "
-                "When the confirmed Goal explicitly contains several materially different capabilities, do not collapse them into one generic Backend or Agent Core. In particular, keep user experience, agent orchestration, domain/API behavior, persistence/state, and external search/recommendation/data integrations separate when the Goal actually requires those boundaries. "
-                "For a multi-capability Goal, do not leave the entire architecture flat when a top-level boundary clearly contains two or more independently implementable capabilities. In that case create meaningful child nodes with parent_id. For example, a Rental Services boundary that owns Search, Recommendation, Verification, and Commute Scoring should expose those as children rather than hiding them inside one combined 'Search & Recommendation' component. At least one such rich boundary should be decomposed when the brief clearly contains multiple capabilities. "
-                "Do not join independently implementable capabilities with '&' or 'and' merely to avoid hierarchy. Keep them under one coherent parent when they share a system boundary, and express the capabilities as child nodes. "
-                "When the Goal names a concrete domain capability, prefer a domain-specific component name and responsibility (for example Rental Search & Recommendation Service) over a generic name such as Backend. Agent orchestration should coordinate domain capabilities rather than absorb their business responsibility. "
-                "Do not invent auth, queues, microservices, caches, observability stacks, or other infrastructure unless the Goal justifies them. Prefer 4-6 components for a multi-capability product, but 3 is valid for a genuinely simple product. "
-                "Every component must have one crisp responsibility, every component should participate in at least one meaningful relationship, and the graph should make the main end-to-end request/data flow understandable. "
-                "Create tasks that cover the critical implementation boundaries instead of assigning every task to one catch-all component. Link each task to the most specific meaningful component or child id. "
-                "Keep summary, responsibilities, relationship descriptions, task descriptions, and acceptance criteria concise. "
-                "Use stable short lowercase component ids across the entire hierarchy. Relationships and task.related_component may reference any valid node id. Keep the main top-level request/data flow understandable; do not create a relationship for every parent-child pair just to restate hierarchy. "
-                "Use at most 3 plain-string decisions, assumptions, and risks each. Do not invent requirements beyond the brief."
-                + "\n\nCONFIRMED PROJECT:\n"
-                + context.project.model_dump_json()
-                + "\n\nBOOTSTRAP EVENT:\n"
-                + event.model_dump_json()
-            )
-        else:
-            prompt = (
-                system_prompt
-                + "\n\nPROJECT CONTEXT (bounded JSON):\n"
-                + context.model_dump_json()
-                + "\n\nOBSERVED EVENT:\n"
-                + event.model_dump_json()
-            )
+            wire = await self._plan_initial_architecture(event=event, context=context)
+            return self._bootstrap_to_domain_decision(wire)
 
-        candidate_chain = (
-            self.routine_model_chain
-            if is_routine_update
-            else self.bootstrap_model_chain
-            if is_bootstrap
-            else self.model_chain
+        prompt = (
+            system_prompt
+            + "\n\nPROJECT CONTEXT (bounded JSON):\n"
+            + context.model_dump_json()
+            + "\n\nOBSERVED EVENT:\n"
+            + event.model_dump_json()
         )
+        candidate_chain = self.routine_model_chain if is_routine_update else self.model_chain
         per_model_timeout = (
             self.routine_model_timeout_seconds
             if is_routine_update
             else self.architecture_model_timeout_seconds
         )
         total_timeout = (
-            max(per_model_timeout, self.architecture_total_timeout_seconds)
-            if not is_routine_update
-            else per_model_timeout * max(1, len(candidate_chain))
+            per_model_timeout * max(1, len(candidate_chain))
+            if is_routine_update
+            else max(per_model_timeout, self.architecture_total_timeout_seconds)
         )
         started = time.perf_counter()
         unavailable: list[str] = []
@@ -556,12 +853,6 @@ class GeminiProvider(ModelProvider):
                 break
             self.last_model_id = candidate
             try:
-                if is_bootstrap:
-                    wire = await asyncio.wait_for(
-                        self._invoke_bootstrap(candidate, prompt),
-                        timeout=min(per_model_timeout, remaining),
-                    )
-                    return self._bootstrap_to_domain_decision(wire)
                 wire = await asyncio.wait_for(
                     self._invoke(candidate, prompt),
                     timeout=min(per_model_timeout, remaining),

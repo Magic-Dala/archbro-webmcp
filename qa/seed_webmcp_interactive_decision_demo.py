@@ -152,7 +152,7 @@ def main() -> None:
             }
             for event in events
         ],
-        "next_demo_step": "Ask the WebMCP agent to use archbro_get_decision_context and submit its own recommendation.",
+        "next_demo_step": "Ask the WebMCP agent to use archbro_get_architecture_decision_context and submit its own recommendation.",
     }, indent=2))
 
 

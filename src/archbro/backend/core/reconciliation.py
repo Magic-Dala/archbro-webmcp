@@ -115,6 +115,42 @@ class ArchitectureAcceptanceReconciler:
         return updated, before, after
 
     @staticmethod
+    def _expand_scope(
+        nodes: list[Component],
+        component_id: str,
+        children_to_add: list[Component],
+    ) -> tuple[list[Component], Component | None, Component | None]:
+        before: Component | None = None
+        after: Component | None = None
+        updated: list[Component] = []
+        for component in nodes:
+            if component.id == component_id:
+                before = component
+                after = component.model_copy(
+                    update={
+                        "children": [
+                            *[child.model_copy(deep=True) for child in component.children],
+                            *[child.model_copy(deep=True) for child in children_to_add],
+                        ]
+                    },
+                    deep=True,
+                )
+                updated.append(after)
+                continue
+            children, child_before, child_after = ArchitectureAcceptanceReconciler._expand_scope(
+                component.children,
+                component_id,
+                children_to_add,
+            )
+            if child_before is not None:
+                before = child_before
+                after = child_after
+                updated.append(component.model_copy(update={"children": children}, deep=True))
+            else:
+                updated.append(component.model_copy(deep=True))
+        return updated, before, after
+
+    @staticmethod
     def _migration_task_title(before: Component, after: Component) -> str:
         if before.name.strip().casefold() != after.name.strip().casefold():
             return f"Migrate {before.name} to {after.name}"
@@ -333,6 +369,66 @@ class ArchitectureAcceptanceReconciler:
                 if before == after:
                     raise ValueError(f"proposal update is a no-op for component: {component_id}")
                 next_architecture.components = components
+                updated_ids.add(component_id)
+                directly_changed.add(component_id)
+                continue
+
+            if operation == "expand_scope":
+                supported = {"operation", "component_id", "children"}
+                unsupported = set(change).difference(supported)
+                if unsupported:
+                    raise ValueError(
+                        "expand_scope contains unsupported fields: "
+                        + ", ".join(sorted(unsupported))
+                    )
+                component_id = str(change.get("component_id", "")).strip()
+                if not component_id:
+                    raise ValueError("expand_scope requires component_id")
+                if component_id in directly_changed:
+                    raise ValueError(f"proposal changes component more than once: {component_id}")
+                if component_id not in proposal.affected_components:
+                    raise ValueError("changed component must be included in proposal affected_components")
+                before = next_architecture.find_component(component_id)
+                if before is None:
+                    raise ValueError(f"affected component not found: {component_id}")
+                raw_children = change.get("children")
+                if not isinstance(raw_children, list) or not raw_children:
+                    raise ValueError("expand_scope requires a non-empty children list")
+                children_to_add: list[Component] = []
+                for raw_child in raw_children:
+                    if not isinstance(raw_child, dict):
+                        raise ValueError("expand_scope children must be objects")
+                    child = Component.model_validate(raw_child)
+                    if child.children:
+                        raise ValueError(
+                            "expand_scope adds exactly one hierarchy level; expand grandchildren by targeting the child in a later proposal"
+                        )
+                    children_to_add.append(child)
+                existing_ids = next_architecture.component_ids()
+                added_ids = [child.id for child in children_to_add]
+                duplicate_added_ids = sorted({item for item in added_ids if added_ids.count(item) > 1})
+                if duplicate_added_ids:
+                    raise ValueError(
+                        "expand_scope contains duplicate child ids: "
+                        + ", ".join(duplicate_added_ids)
+                    )
+                collisions = sorted(existing_ids.intersection(added_ids))
+                if collisions:
+                    raise ValueError(
+                        "expand_scope child ids already exist in architecture: "
+                        + ", ".join(collisions)
+                    )
+                components, found_before, after = self._expand_scope(
+                    next_architecture.components,
+                    component_id,
+                    children_to_add,
+                )
+                if found_before is None or after is None:
+                    raise ValueError(f"affected component not found: {component_id}")
+                next_architecture.components = components
+                # Structural decomposition preserves existing executable work on
+                # the parent. New child work can be created explicitly after the
+                # human accepts the scope expansion.
                 updated_ids.add(component_id)
                 directly_changed.add(component_id)
                 continue

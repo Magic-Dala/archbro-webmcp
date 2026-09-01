@@ -174,6 +174,16 @@ class ActionExecutor:
 
     def apply(self, project_id: str, actions: list[AgentAction]) -> list[str]:
         plan = self.build_plan(project_id, actions)
+        self.apply_plan(project_id, plan)
+        return plan.proposal_ids
+
+    def apply_plan(self, project_id: str, plan: ObservationMutationPlan) -> None:
+        """Persist one already-built deterministic mutation plan.
+
+        Semantic API surfaces that need to return generated task identifiers can
+        build a plan once, inspect the materialized task, and persist that exact
+        plan without regenerating ids on a second build.
+        """
         if plan.architecture is not None:
             self.repository.save_architecture(project_id, plan.architecture)
         if plan.project is not None:
@@ -184,7 +194,6 @@ class ActionExecutor:
             self.repository.save_proposal(proposal)
         for note in plan.notes:
             self.repository.add_note(project_id, note)
-        return plan.proposal_ids
 
     def accept_proposal(self, project_id: str, proposal_id: str) -> ArchitectureChangeProposal:
         proposal = self.repository.get_proposal(proposal_id)

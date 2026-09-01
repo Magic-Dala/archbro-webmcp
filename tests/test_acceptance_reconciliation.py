@@ -425,6 +425,116 @@ def test_acceptance_rejects_replace_component_fields_that_would_be_silently_igno
     assert repo.get_proposal(proposal.id).status == ProposalStatus.PENDING
 
 
+def test_acceptance_expand_scope_adds_exactly_one_level_and_preserves_existing_children_and_tasks(dsn):
+    repo, project = _repo_with_project(dsn)
+    task = Task(
+        title="Keep API contract stable",
+        status=TaskStatus.IN_PROGRESS,
+        related_component="api",
+    )
+    repo.save_task(project.id, task)
+    proposal = _proposal(
+        project.id,
+        affected_components=["api"],
+        proposed_changes=[
+            {
+                "operation": "expand_scope",
+                "component_id": "api",
+                "children": [
+                    {
+                        "id": "request_validation",
+                        "name": "Request Validation",
+                        "type": "service",
+                        "responsibility": "Validate incoming API requests.",
+                        "kind": "SERVICE",
+                    },
+                    {
+                        "id": "request_execution",
+                        "name": "Request Execution",
+                        "type": "service",
+                        "responsibility": "Execute accepted API operations.",
+                        "kind": "SERVICE",
+                    },
+                ],
+            }
+        ],
+    )
+    repo.save_proposal(proposal)
+
+    accepted = ActionExecutor(repo).accept_proposal(project.id, proposal.id)
+
+    architecture = repo.get_architecture(project.id)
+    assert accepted.status == ProposalStatus.ACCEPTED
+    assert architecture.version == 2
+    assert architecture.child_component_ids_for("api") == ["request_validation", "request_execution"]
+    assert architecture.parent_component_id_for("request_validation") == "api"
+    assert architecture.parent_component_id_for("request_execution") == "api"
+    # A structural decomposition does not invalidate executable work already
+    # attached to the stable parent boundary.
+    assert repo.get_task(task.id).status == TaskStatus.IN_PROGRESS
+    # Unrelated hierarchy is untouched.
+    assert architecture.child_component_ids_for("data") == ["primary_store"]
+
+
+def test_acceptance_expand_scope_rejects_nested_overwrite_and_existing_id_collision_before_writes(dsn):
+    repo, project = _repo_with_project(dsn)
+    nested = _proposal(
+        project.id,
+        affected_components=["api"],
+        proposed_changes=[
+            {
+                "operation": "expand_scope",
+                "component_id": "api",
+                "children": [
+                    {
+                        "id": "request_pipeline",
+                        "name": "Request Pipeline",
+                        "type": "service",
+                        "responsibility": "Own request processing.",
+                        "children": [
+                            {
+                                "id": "request_validation",
+                                "name": "Request Validation",
+                                "type": "service",
+                                "responsibility": "Validate requests.",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    repo.save_proposal(nested)
+
+    with pytest.raises(ValueError, match="adds exactly one hierarchy level"):
+        ActionExecutor(repo).accept_proposal(project.id, nested.id)
+    assert repo.get_architecture(project.id).version == 1
+
+    collision = _proposal(
+        project.id,
+        affected_components=["api"],
+        proposed_changes=[
+            {
+                "operation": "expand_scope",
+                "component_id": "api",
+                "children": [
+                    {
+                        "id": "primary_store",
+                        "name": "Duplicate Store Boundary",
+                        "type": "service",
+                        "responsibility": "Invalid duplicate identity.",
+                    }
+                ],
+            }
+        ],
+    )
+    repo.save_proposal(collision)
+
+    with pytest.raises(ValueError, match="child ids already exist"):
+        ActionExecutor(repo).accept_proposal(project.id, collision.id)
+    assert repo.get_architecture(project.id).version == 1
+
+
 def test_proposal_persistence_rebuilds_server_owned_review_provenance(dsn):
     repo, project = _repo_with_project(dsn)
     candidate = _proposal(project.id).model_copy(

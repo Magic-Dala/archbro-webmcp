@@ -200,3 +200,31 @@ def test_diagram_ir_structural_adapter_preserves_versions_and_parent_grouping():
     assert nodes["child-a"].order < nodes["child-b"].order
     assert_no_node_overlap(graph)
     assert_edges_avoid_unrelated_nodes(graph)
+
+
+def test_scoped_layout_is_deterministic_and_primary_precedes_context_in_equal_rank():
+    diagram = {
+        "diagram_version": "archbro.diagram.v1",
+        "architecture_version": 14,
+        "nodes": [
+            {"id": "node:a-context", "projection_role": "CONTEXT"},
+            {"id": "node:z-primary", "projection_role": "PRIMARY"},
+        ],
+        "edges": [],
+    }
+    first = layout_diagram(diagram)
+    second = layout_diagram(
+        {
+            **diagram,
+            "nodes": list(reversed(diagram["nodes"])),
+        }
+    )
+
+    assert first == second
+    assert first.layout_version == "archbro.layout.v1"
+    assert first.stable_order == ("node:z-primary", "node:a-context")
+    assert {node.node_id for node in first.nodes} == {
+        "node:z-primary",
+        "node:a-context",
+    }
+    assert_no_node_overlap(first)

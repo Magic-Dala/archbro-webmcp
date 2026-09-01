@@ -26,6 +26,8 @@ External MCP output is evidence. It does not become canonical ArchBro state mere
 - Normal work within accepted architecture -> Task / Event.
 - Material conflict with accepted architecture -> Architecture Proposal.
 
+For WebMCP hosts, use `archbro_create_task` for new normal execution work and `archbro_record_project_observation` for evidence/project facts. Reserve `archbro_submit_architecture_recommendation` for an actual architecture judgment (`KEEP_CURRENT` or a reviewable change).
+
 ## Write boundary
 
 - Never silently replace accepted architecture.

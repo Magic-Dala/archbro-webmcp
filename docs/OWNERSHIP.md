@@ -1,25 +1,25 @@
-# Archbro ownership and boundaries
+# ArchBro ownership and boundaries
 
-This file maps team ownership to stable product boundaries. Folder names describe responsibilities, not people, so the structure survives team changes.
+This file maps product responsibilities to stable code boundaries. Ownership is described by role rather than by individual name so the structure survives team changes.
 
 ## Ownership
 
-| Area | Primary owner | Responsibilities |
+| Area | Primary responsibility | Responsibilities |
 | --- | --- | --- |
 | `frontend/` | Shaun | Goal / Ask, Architecture View, Task View, Proposal Review, browser UX |
 | `src/archbro/backend/` | Jim | Project State, Goal contract, Architecture, Tasks, Agent logic, drift evaluation, change proposals, product API |
 | `src/archbro/integrations/` | Ayushi | Firebase Auth, user/team identity, permissions, GitHub integration, external-event normalization |
 | `src/archbro/platform/` | Max | PostgreSQL persistence, runtime composition, event pipeline, CI/CD/Cloud Run, logging/observability |
 
-## Google Cloud / KBF reuse decision
+## Platform direction
 
 Archbro intentionally reuses the Firebase Authentication pattern already proven in Keys by Friday, with PostgreSQL for durable state. Do not introduce a parallel AWS identity/database stack unless the team explicitly changes platform direction.
 
 ```text
-Browser / Firebase Auth
-        -> Ayushi Firebase identity adapter
+Browser / authenticated principal
+        -> identity adapter
         -> normalized user/team identity
-        -> Jim product API / authorization contract
+        -> product API / authorization contract
 
 Project / Architecture / Tasks
         -> Jim ProjectRepositoryPort
@@ -36,12 +36,11 @@ frontend/web
     -> backend/api
         -> backend/core + backend/agent
 
-integrations/firebase
-    -> integrations/auth
-        -> backend/api identity/permission boundary
+integrations/auth
+    -> backend/api identity/permission boundary
 
-integrations/github
-    -> integrations/events
+integrations/providers
+    -> normalized events
         -> platform/pipeline
             -> backend/agent
 
@@ -86,15 +85,15 @@ Jim -> LLM
 
 ```text
 Goal
--> Architecture
+-> Living Architecture
 -> Tasks
--> Human Execution
--> Project Signals
+-> Human / Agent Execution
+-> Project Signals & Evidence
 -> Agent Evaluation
--> Update / Proposal
--> Human Review when architecture changes
+-> Deterministic Update or Architecture Proposal
+-> Human Review for consequential architecture change
 ```
 
 ### Trusted event provenance
 
-Provider provenance is not caller-controlled authentication metadata. A public API caller cannot label an event as `GITHUB` or `SYSTEM`. The GitHub integration verifies the provider webhook first, normalizes it to `GitHubChangePayload`, and only server-side code constructs the trusted `ProjectEvent(source=GITHUB, type=GITHUB_CHANGE)` passed to the backend orchestrator.
+Provider provenance is not caller-controlled authentication metadata. A public API caller cannot prove an event came from GitHub, Slack, or another provider merely by setting a source field. Provider adapters verify/authorize the external source, normalize it, and only server-side code constructs trusted project events passed to the backend orchestrator.

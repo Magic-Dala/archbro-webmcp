@@ -316,27 +316,59 @@ with sync_playwright() as p:
         assert not graph_layout["overflow"], graph_layout
         shot(page, "06_health_map_clean")
         root_with_children = next(c for c in components if c.get("children"))
-        graph_context = page.locator(f"#graphCanvas [data-graph-node='{root_with_children['id']}']")
-        graph_context.focus()
+        graph_node = page.locator(f"#graphCanvas [data-component='{root_with_children['id']}']")
+        graph_node.wait_for(state="visible", timeout=3000)
+        assert graph_node.get_attribute("data-node-action") == "drill"
+        graph_node.focus()
         page.keyboard.press("Enter")
-        assert graph_context.get_attribute("aria-pressed") == "true"
-        page.wait_for_function("() => document.activeElement?.hasAttribute('data-graph-node')")
-        assert root_with_children["name"] in page.locator("#instructionContext").inner_text()
-        graph_drill = page.locator(f"#graphCanvas [data-graph-drill='{root_with_children['id']}']")
-        graph_drill.focus()
-        page.keyboard.press("Enter")
-        page.locator(".graph-drilldown").wait_for(state="visible", timeout=3000)
-        page.wait_for_function("() => document.activeElement?.classList.contains('drill-back')")
-        drill_text = page.locator(".graph-drilldown").inner_text()
+        page.wait_for_function(
+            "name => document.querySelector('.graph-scope-copy strong')?.textContent === name",
+            arg=root_with_children["name"],
+            timeout=5000,
+        )
+        assert page.locator("#graphCanvas [data-graph-back]").is_visible()
+        for child in root_with_children["children"]:
+            page.locator(f"#graphCanvas [data-component='{child['id']}']").wait_for(state="visible", timeout=3000)
+        drill_text = page.locator("#graphCanvas").inner_text()
         assert root_with_children["name"] in drill_text
         assert any(child["name"] in drill_text for child in root_with_children["children"])
         shot(page, "07_hierarchy_drilldown")
         step("graph_hierarchy_pass", root=root_with_children["name"], children=len(root_with_children["children"]))
 
-        # Force one legitimate BLOCKED task signal to verify top-level issue aggregation.
-        tasks = api_json(page, f"/projects/{qa_project_id}/tasks")["payload"]
-        block_task = next((t for t in tasks if t.get("status") != "DONE" and t.get("related_component") in id_set), None)
-        assert block_task is not None
+        # WebMCP focus must navigate from root projection into the requested nested node's parent scope.
+        focused_child = root_with_children["children"][0]
+        page.reload(wait_until="networkidle", timeout=15000)
+        open_project_view(page, qa_project_id, "architecture")
+        page.evaluate(
+            "id => window.ArchBroWebBridge.focusItem({kind: 'architecture', id})",
+            focused_child["id"],
+        )
+        page.wait_for_function(
+            "name => document.querySelector('.graph-scope-copy strong')?.textContent === name",
+            arg=root_with_children["name"],
+            timeout=5000,
+        )
+        focused_node = page.locator(f"#graphCanvas [data-component='{focused_child['id']}']")
+        focused_node.wait_for(state="visible", timeout=3000)
+        assert "selected" in (focused_node.get_attribute("class") or "")
+        step("nested_architecture_focus_pass", component=focused_child["id"], parent=root_with_children["id"])
+
+        # A BLOCKED task attached to a descendant must aggregate to the root health map.
+        descendant_task_result = api_json(
+            page,
+            f"/projects/{qa_project_id}/tasks",
+            method="POST",
+            body={
+                "request_id": f"release-descendant-blocker-{qa_project_id}",
+                "title": "QA descendant blocker",
+                "description": "Verify descendant task health aggregation at the root projection.",
+                "related_component": focused_child["id"],
+                "acceptance_criteria": ["Root representative surfaces BLOCKED health."],
+            },
+        )
+        assert descendant_task_result["ok"], descendant_task_result
+        block_task = descendant_task_result["payload"]["task"]
+        assert block_task["related_component"] == focused_child["id"]
         block_result = api_json(
             page,
             f"/projects/{qa_project_id}/events",
@@ -351,7 +383,9 @@ with sync_playwright() as p:
         page.reload(wait_until="networkidle", timeout=15000)
         open_project_view(page, qa_project_id, "architecture")
         page.locator("#graphCanvas .node-card").first.wait_for(state="visible", timeout=5000)
-        blocked_roots = page.locator("#graphCanvas .node-card.health-blocked.attention").count()
+        blocked_root = page.locator(f"#graphCanvas [data-component='{root_with_children['id']}'].health-blocked")
+        blocked_roots = page.locator("#graphCanvas .node-card.health-blocked").count()
+        assert blocked_root.count() == 1, "Blocked descendant did not project health onto its root representative"
         assert blocked_roots >= 1, "Blocked child/task did not surface at top-level health map"
         assert "need attention" in page.locator("#graphReviewState").inner_text().lower()
         shot(page, "08_health_map_blocked")

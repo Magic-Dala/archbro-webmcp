@@ -1,5 +1,5 @@
 # External event normalization
 
-Owner: Ayushi.
+Normalize provider-specific signals such as GitHub and future external systems into ArchBro's provider-neutral project-event vocabulary here. The normalized output is handed to the platform pipeline for durable delivery to the backend evaluation path.
 
-Normalize provider-specific signals (GitHub, auth/account, future external systems) into the Archbro project-event vocabulary here. The normalized output is handed to Max's platform pipeline, which delivers it to Jim's Agent evaluation path.
+Provider authentication and raw payload parsing belong at the integration edge; normalized events must not directly mutate Project, Living Architecture, or Task state.

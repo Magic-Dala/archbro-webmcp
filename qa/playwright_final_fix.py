@@ -172,6 +172,9 @@ class FakeBackend:
         if parts[2:] == ["architecture", "proposals"] and method == "GET":
             self.json(route, context["proposals"])
             return
+        if parts[2:] == ["code-architecture", "latest"] and method == "GET":
+            route.fulfill(status=204, body="")
+            return
         if parts[2:] == ["events"] and method == "GET":
             self.json(route, context.get("activity", []))
             return
@@ -748,11 +751,21 @@ def case_autonomous_surface_sweep(browser: Browser) -> None:
 
           const width = innerWidth;
           const height = innerHeight;
+          const overflowElements = () => [...document.querySelectorAll('body *')]
+            .filter(visible)
+            .map(node => ({node, rect: node.getBoundingClientRect()}))
+            .filter(({rect}) => rect.right > width + 2 || rect.left < -2)
+            .sort((a, b) => Math.max(b.rect.right - width, -b.rect.left) - Math.max(a.rect.right - width, -a.rect.left))
+            .slice(0, 8)
+            .map(({node, rect}) => ({
+              element: node.id ? `#${node.id}` : node.classList.length ? `${node.tagName.toLowerCase()}.${[...node.classList].slice(0, 3).join('.')}` : node.tagName.toLowerCase(),
+              rect: roundedRect(rect),
+            }));
           if (document.body.scrollWidth > width + 2) {
-            add('horizontal-overflow', 'Body is wider than the viewport.', {scroll_width: document.body.scrollWidth, viewport_width: width});
+            add('horizontal-overflow', 'Body is wider than the viewport.', {scroll_width: document.body.scrollWidth, viewport_width: width, offenders: overflowElements()});
           }
           if (document.documentElement.scrollWidth > width + 2) {
-            add('horizontal-overflow', 'Document root is wider than the viewport.', {scroll_width: document.documentElement.scrollWidth, viewport_width: width});
+            add('horizontal-overflow', 'Document root is wider than the viewport.', {scroll_width: document.documentElement.scrollWidth, viewport_width: width, offenders: overflowElements()});
           }
 
           const ids = [...document.querySelectorAll('[id]')].map(node => node.id).filter(Boolean);
@@ -928,6 +941,7 @@ def case_autonomous_surface_sweep(browser: Browser) -> None:
         page.locator("#mobileSidebarBtn").click()
         page.locator("#workspaceSidebar").wait_for(state="visible")
         assert page.locator("#mobileSidebarBtn").get_attribute("aria-expanded") == "true"
+        page.wait_for_function("() => Math.abs(document.querySelector('#workspaceSidebar')?.getBoundingClientRect().left || 0) < 1")
         capture_surface("mobile_375_sidebar")
 
         for name, selector in core_surfaces.items():

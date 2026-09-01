@@ -33,7 +33,11 @@ from archbro.backend.core.observation import (
     ObservationMutationPlan,
     ObservationRejectedError,
 )
-from archbro.backend.core.repository import ProjectRepositoryPort
+from archbro.backend.core.repository import (
+    ConcurrentStateError,
+    IdempotencyConflictError,
+    ProjectRepositoryPort,
+)
 from archbro.backend.llm.fake import FakeModelProvider
 from archbro.platform.persistence.postgres import PostgresProjectRepository
 from archbro.platform.runtime.app import create_app
@@ -80,7 +84,7 @@ def test_postgres_repository_implements_the_full_project_repository_port(repo):
     }
     missing = sorted(name for name in required if not callable(getattr(repo, name, None)))
     assert missing == []
-    assert len(required) == 25
+    assert len(required) == 27
 
 
 def test_postgres_repository_implements_archbro_project_state_contract(repo):
@@ -202,6 +206,34 @@ def test_postgres_agent_run_history_is_ordered_oldest_first_and_bounded(repo):
     assert [item.agent_run_id for item in repo.list_agent_runs(project.id)] == [
         run.agent_run_id for run in runs
     ]
+def test_postgres_latest_event_by_type_returns_latest_matching_event(repo):
+    project = Project(name="Latest typed event", goal="Read durable artifact history by type")
+    repo.save_project(project)
+    first = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.CODE_ARCHITECTURE_SNAPSHOT,
+        payload={"revision": "first"},
+    )
+    repo.save_event(first)
+    repo.save_event(
+        ProjectEvent(
+            project_id=project.id,
+            type=ProjectEventType.MANUAL_NOTE,
+            payload={"message": "noise"},
+        )
+    )
+    latest = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.CODE_ARCHITECTURE_SNAPSHOT,
+        payload={"revision": "latest"},
+    )
+    repo.save_event(latest)
+
+    assert repo.get_latest_event_by_type(
+        project.id,
+        ProjectEventType.CODE_ARCHITECTURE_SNAPSHOT,
+    ) == latest
+    assert repo.get_latest_event_by_type(project.id, ProjectEventType.TASK_UPDATED) is None
 
 
 def test_postgres_save_event_deduplicates_on_source_key(repo):
@@ -661,6 +693,150 @@ def test_postgres_commit_event_actions_is_atomic_on_a_rejected_mutation(repo):
             proposals=[],
             notes=[],
         )
+
+
+def test_postgres_commit_event_actions_rolls_back_task_and_event_after_injected_write_failure(repo, monkeypatch):
+    project = Project(name="Atomic task event", goal="Never expose a partial semantic task mutation")
+    repo.save_project(project)
+    task = Task(title="Atomic semantic task")
+    event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.MANUAL_NOTE,
+        payload={"intent": "CREATE_TASK", "task_id": task.id},
+    )
+    original_put_task = repo._put_task
+
+    def fail_after_task_write(conn, project_id, candidate):
+        original_put_task(conn, project_id, candidate)
+        raise RuntimeError("injected failure after task write")
+
+    monkeypatch.setattr(repo, "_put_task", fail_after_task_write)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        repo.commit_event_actions(
+            event=event,
+            project=None,
+            architecture=None,
+            tasks=[task],
+            proposals=[],
+            notes=[],
+        )
+
+    assert repo.list_tasks(project.id) == []
+    assert repo.list_events(project.id) == []
+
+
+def test_postgres_commit_event_actions_rejects_stale_task_plan_without_audit_event(repo):
+    project = Project(name="Stale task guard", goal="Reject stale semantic task plans")
+    repo.save_project(project)
+    original = Task(title="Start deployment")
+    repo.save_task(project.id, original)
+    expected_updated_at = original.updated_at.isoformat()
+
+    concurrent = original.model_copy(
+        update={
+            "status": TaskStatus.IN_PROGRESS,
+            "updated_at": original.updated_at + timedelta(seconds=1),
+        }
+    )
+    repo.save_task(project.id, concurrent)
+    stale_candidate = original.model_copy(
+        update={
+            "status": TaskStatus.BLOCKED,
+            "updated_at": original.updated_at + timedelta(seconds=2),
+        }
+    )
+    event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.TASK_UPDATED,
+        payload={"intent": "TASK_STATUS_TRANSITION", "task_id": original.id},
+    )
+
+    with pytest.raises(ConcurrentStateError, match="task state changed before commit"):
+        repo.commit_event_actions(
+            event=event,
+            project=None,
+            architecture=None,
+            tasks=[stale_candidate],
+            proposals=[],
+            notes=[],
+            expected_task_updated_at={original.id: expected_updated_at},
+        )
+
+    assert repo.get_task(original.id).status == TaskStatus.IN_PROGRESS
+    assert repo.list_events(project.id) == []
+
+
+def test_postgres_commit_event_actions_dedupes_semantic_create_by_source_event_id(repo):
+    project = Project(name="Idempotent task", goal="Retry a committed create safely")
+    repo.save_project(project)
+    first_task = Task(title="One logical task")
+    first_event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.MANUAL_NOTE,
+        source="SYSTEM",
+        source_event_id="semantic-task-create:req-123",
+        payload={
+            "intent": "CREATE_TASK",
+            "request_fingerprint": "same-request",
+            "task_id": first_task.id,
+        },
+    )
+    canonical = repo.commit_event_actions(
+        event=first_event,
+        project=None,
+        architecture=None,
+        tasks=[first_task],
+        proposals=[],
+        notes=[],
+    )
+    assert canonical.id == first_event.id
+
+    retry_task = Task(title="One logical task")
+    retry_event = ProjectEvent(
+        project_id=project.id,
+        type=ProjectEventType.MANUAL_NOTE,
+        source="SYSTEM",
+        source_event_id="semantic-task-create:req-123",
+        payload={
+            "intent": "CREATE_TASK",
+            "request_fingerprint": "same-request",
+            "task_id": retry_task.id,
+        },
+    )
+    canonical_retry = repo.commit_event_actions(
+        event=retry_event,
+        project=None,
+        architecture=None,
+        tasks=[retry_task],
+        proposals=[],
+        notes=[],
+    )
+    assert canonical_retry.id == first_event.id
+    assert canonical_retry.payload["task_id"] == first_task.id
+    assert [task.id for task in repo.list_tasks(project.id)] == [first_task.id]
+    assert [event.id for event in repo.list_events(project.id)] == [first_event.id]
+
+    conflicting_event = retry_event.model_copy(
+        update={
+            "id": "event_conflict",
+            "payload": {
+                "intent": "CREATE_TASK",
+                "request_fingerprint": "different-request",
+                "task_id": retry_task.id,
+            },
+        }
+    )
+    with pytest.raises(IdempotencyConflictError, match="different semantic request"):
+        repo.commit_event_actions(
+            event=conflicting_event,
+            project=None,
+            architecture=None,
+            tasks=[retry_task],
+            proposals=[],
+            notes=[],
+        )
+    assert [task.id for task in repo.list_tasks(project.id)] == [first_task.id]
+    assert [event.id for event in repo.list_events(project.id)] == [first_event.id]
 
 
 def _run_concurrently(*targets):

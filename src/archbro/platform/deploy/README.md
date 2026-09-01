@@ -1,5 +1,5 @@
 # CI/CD and deployment
 
-Owner: Max.
+Place deployment manifests, CI/CD workflows, environment/runtime configuration, and release automation here. Product-specific architecture and agent decision logic stay outside this boundary.
 
-Place deployment manifests, CI/CD workflows, environment/runtime configuration, and release automation here. Product-specific architecture/Agent decisions stay outside this directory.
+Current repository-level deployment assets live under `deploy/` and `.github/workflows/`.

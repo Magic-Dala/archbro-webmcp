@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Archbro</title>
   <link rel="icon" href="/static/archbro-logo.svg?v=20260829-3" />
-  <link rel="stylesheet" href="/static/styles.css?v=20260830-5" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260831-living-code-architecture" />
   <link rel="stylesheet" href="/static/progress.css?v=20260829-3" />
 </head>
 <body>
@@ -211,10 +211,10 @@
         </div>
 
         <div id="view-architecture" class="view">
-          <div class="section-intro"><div><h2>Living Graph</h2><p>Start with the system health map. Healthy areas stay quiet; colored problem areas are the ones worth opening.</p></div><span id="graphVersion" class="version-pill">v0</span></div>
+          <div class="section-intro"><div><h2 id="architectureViewTitle">Living Graph</h2><p id="architectureViewSubtitle">Start with the system health map. Healthy areas stay quiet; colored problem areas are the ones worth opening.</p></div><div class="architecture-view-tools"><div class="architecture-mode-switch" role="group" aria-label="Architecture graph source"><button type="button" data-architecture-graph-kind="living" class="active" aria-pressed="true">Living</button><button type="button" data-architecture-graph-kind="code" aria-pressed="false">Code</button></div><span id="graphVersion" class="version-pill">v0</span></div></div>
           <div class="graph-layout">
-            <article class="panel graph-panel"><div class="panel-head"><div><h3>System health map</h3><p>Red or amber areas need attention. Healthy areas require no inspection.</p></div><span id="graphReviewState" class="muted">Aligned</span></div><div class="graph-health-legend"><span><i class="health-dot healthy"></i>Healthy</span><span><i class="health-dot active"></i>Active, no action needed</span><span><i class="health-dot review"></i>Needs review</span><span><i class="health-dot blocked"></i>Blocked</span></div><div id="graphCanvas" class="graph-canvas"></div><div id="selectedNode" class="selected-node"><small>SYSTEM HEALTH</small><h3>No inspection selected</h3><p>Only open a colored problem area when you need to understand what changed or what is blocked.</p></div></article>
-            <aside class="graph-side"><article class="panel"><h3>Why this status?</h3><div id="nodeEvidence"><p class="muted">Select a node to inspect the accepted architecture.</p></div></article><article class="panel"><h3>Architecture decisions</h3><div id="decisionList" class="bullet-list"></div></article><article class="panel"><h3>Risks & assumptions</h3><div id="riskList" class="bullet-list"></div></article></aside>
+            <article class="panel graph-panel"><div class="panel-head"><div><h3 id="graphPanelTitle">System health map</h3><p id="graphPanelSubtitle">Red or amber areas need attention. Healthy areas require no inspection.</p></div><span id="graphReviewState" class="muted">Aligned</span></div><div id="graphHealthLegend" class="graph-health-legend"><span><i class="health-dot healthy"></i>Healthy</span><span><i class="health-dot active"></i>Active, no action needed</span><span><i class="health-dot review"></i>Needs review</span><span><i class="health-dot blocked"></i>Blocked</span></div><div id="graphCanvas" class="graph-canvas"></div><div id="selectedNode" class="selected-node"><small>SYSTEM HEALTH</small><h3>No inspection selected</h3><p>Only open a colored problem area when you need to understand what changed or what is blocked.</p></div></article>
+            <aside class="graph-side"><article class="panel"><h3 id="graphEvidenceTitle">Why this status?</h3><div id="nodeEvidence"><p class="muted">Select a node to inspect the accepted architecture.</p></div></article><article class="panel"><h3 id="graphDecisionTitle">Architecture decisions</h3><div id="decisionList" class="bullet-list"></div></article><article class="panel"><h3 id="graphRiskTitle">Risks & assumptions</h3><div id="riskList" class="bullet-list"></div></article></aside>
           </div>
         </div>
 
@@ -395,7 +395,7 @@
   <div id="toast" class="toast hidden"></div>
   <script src="/runtime-config.js"></script>
   <script src="/static/prototype.js?v=20260829-4"></script>
-  <script type="module" src="/static/app.js?v=20260830-webmcp-host-compat"></script>
-  <script type="module" src="/static/archbro-webmcp.js?v=20260830-webmcp-host-compat"></script>
+  <script type="module" src="/static/app.js?v=20260831-webmcp-build-watchdog"></script>
+  <script type="module" src="/static/archbro-webmcp.js?v=20260831-webmcp-build-watchdog"></script>
 </body>
 </html>

@@ -205,7 +205,9 @@ def test_initial_architecture_requires_explicit_goal_bootstrap(dsn):
     })
     assert bootstrap.status_code == 200
     assert bootstrap.json()["result"] == "SUCCESS"
-    assert client.get(f"/projects/{project_id}/architecture").json()["version"] == 1
+    architecture = client.get(f"/projects/{project_id}/architecture").json()
+    assert architecture["version"] == 1
+    assert any(component.get("children") for component in architecture["components"])
 
 
 def test_minimal_api_contract_end_to_end(dsn):

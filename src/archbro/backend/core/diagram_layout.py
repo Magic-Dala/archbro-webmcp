@@ -71,6 +71,7 @@ class PositionedGraph:
 class _NodeSpec:
     node_id: str
     parent_id: str | None
+    projection_role: str = "PRIMARY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,8 +151,13 @@ def _collect_nodes(raw_nodes: Iterable[Any]) -> dict[str, _NodeSpec]:
         if explicit_parent is None:
             explicit_parent = _value(raw, "parent", None)
         parent_id = str(explicit_parent) if explicit_parent not in (None, "") else inherited_parent
+        projection_role = str(_value(raw, "projection_role", "PRIMARY") or "PRIMARY").upper()
         existing = nodes.get(node_id)
-        spec = _NodeSpec(node_id=node_id, parent_id=parent_id)
+        spec = _NodeSpec(
+            node_id=node_id,
+            parent_id=parent_id,
+            projection_role=projection_role,
+        )
         if existing is not None and existing != spec:
             raise ValueError(f"conflicting diagram node id: {node_id}")
         if existing is not None:
@@ -174,6 +180,7 @@ def _normalize_edges(raw_edges: Iterable[Any], node_ids: set[str]) -> tuple[_Edg
             continue
         semantic = str(
             _value(raw, "relationship_type", None)
+            or _value(raw, "semantic_type", None)
             or _value(raw, "kind", None)
             or _value(raw, "type", None)
             or ""
@@ -350,7 +357,13 @@ def _layout(
     for node_id in sorted(nodes):
         by_layer[layers[node_id]].append(node_id)
     for layer in by_layer:
-        by_layer[layer].sort(key=lambda node_id: (paths[node_id], node_id))
+        by_layer[layer].sort(
+            key=lambda node_id: (
+                0 if nodes[node_id].projection_role == "PRIMARY" else 1,
+                paths[node_id],
+                node_id,
+            )
+        )
 
     parallel_counts = Counter((edge.source, edge.target) for edge in edges)
     max_parallel_index = max((count - 1 for count in parallel_counts.values()), default=0)

@@ -9,6 +9,15 @@ import pytest
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "deploy" / "deploy-stack.sh"
+IDENTITY_SCRIPT = Path(__file__).resolve().parents[1] / "qa" / "setup_archbro_identity_platform.ps1"
+
+
+def test_identity_platform_public_and_staging_hosts_remain_parameter_driven() -> None:
+    script = IDENTITY_SCRIPT.read_text(encoding="utf-8")
+    lowered = script.lower()
+    assert '\n$publichost =' not in lowered
+    assert 'foreach ($domain in @($PublicHost, $StagingHost))' in script
+    assert '$allowedReferrers = @("https://$PublicHost/*")' in script
 
 
 def _validate(tmp_path: Path, stack: str, env_text: str) -> subprocess.CompletedProcess[str]:

@@ -182,3 +182,5 @@ def test_webmcp_exposes_agent_context_and_connected_mcp_tools(dsn):
     assert "/agent-context" in module.text
     assert "/mcp/servers" in module.text
     assert "document.modelContext.registerTool()" in module.text
+    assert "connectedMcpGatewayConfigured" in module.text
+    assert "includeConnectedMcp" in module.text

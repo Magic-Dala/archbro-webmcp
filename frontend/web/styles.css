@@ -422,7 +422,7 @@ main{display:block}
 .danger-link{color:var(--danger)}
 .mobile-sidebar-button{display:none;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--brand-deep);width:38px;height:38px;font-size:18px;cursor:pointer}
 .sidebar-backdrop{display:none}
-@media(max-width:760px){.sidebar{position:fixed;inset:0 auto 0 0;width:min(310px,88vw);height:100dvh;padding:20px 16px;border-right:1px solid var(--line);border-bottom:0;box-shadow:14px 0 34px rgba(29,29,31,.12);transform:translateX(-105%);transition:transform .2s ease;z-index:30}.project-tree{overflow:auto}.sidebar-backdrop{display:block;position:fixed;inset:0;border:0;background:rgba(29,29,31,.32);z-index:20}.sidebar-open .sidebar{transform:translateX(0)}.mobile-sidebar-button{display:grid;place-items:center;flex:0 0 auto}.topbar{gap:12px;justify-content:flex-start}.top-actions{margin-left:auto}.welcome{display:block}.new-project-button{margin-top:18px;min-height:44px}.mobile-sidebar-button,.icon-button,.account-button{width:44px;height:44px;min-width:44px}.project-row{grid-template-columns:44px minmax(0,1fr) 44px;gap:4px}.project-toggle,.project-menu-trigger{width:44px;height:44px}.project-name{min-height:44px;padding:10px 7px!important}.project-row-menu{top:calc(100% + 8px);min-width:188px}.project-row-menu [role="menuitem"]{min-height:44px}.project-children button{width:100%;min-height:44px;padding:11px 10px}.project-rename-form button{min-height:44px}.top-menu-close{width:44px;height:44px}.onboarding-ask::before,.global-agent-composer::before{inset:-3px;border-radius:17px;filter:blur(3px)}}
+@media(max-width:760px){.sidebar{position:fixed;inset:0 auto 0 0;width:min(310px,88vw);height:100dvh;padding:20px 16px;border-right:1px solid var(--line);border-bottom:0;box-shadow:14px 0 34px rgba(29,29,31,.12);transform:translateX(-105%);transition:transform .2s ease;z-index:30}.project-tree{overflow:auto}.sidebar-backdrop{display:block;position:fixed;inset:0;border:0;background:rgba(29,29,31,.32);z-index:20}.sidebar-open .sidebar{transform:translateX(0)}.mobile-sidebar-button{display:grid;place-items:center;flex:0 0 auto}.topbar{gap:12px;justify-content:flex-start;max-width:100vw}.page-heading{min-width:0;flex:1 1 auto}.topbar h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.top-actions{margin-left:auto;flex:0 0 auto}.welcome{display:block}.new-project-button{margin-top:18px;min-height:44px}.mobile-sidebar-button,.icon-button,.account-button{width:44px;height:44px;min-width:44px}.project-row{grid-template-columns:44px minmax(0,1fr) 44px;gap:4px}.project-toggle,.project-menu-trigger{width:44px;height:44px}.project-name{min-height:44px;padding:10px 7px!important}.project-row-menu{top:calc(100% + 8px);min-width:188px}.project-row-menu [role="menuitem"]{min-height:44px}.project-children button{width:100%;min-height:44px;padding:11px 10px}.project-rename-form button{min-height:44px}.top-menu-close{width:44px;height:44px}.onboarding-ask::before,.global-agent-composer::before{inset:-3px;border-radius:17px;filter:blur(3px)}}
 .settings-lens-group{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.settings-lens-group [role="radio"]{border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);padding:10px;text-align:left;font-size:11px;font-weight:750;cursor:pointer}.settings-lens-group [role="radio"][aria-checked="true"]{border-color:var(--brand-deep);background:var(--brand-soft);color:var(--brand-deep);box-shadow:0 0 0 2px var(--focus-ring)}
 @media(max-width:760px){.landing-view,.auth-view,.preference-view{padding:24px 16px}.landing-content h1{font-size:clamp(32px,11vw,44px)}.landing-composer{margin-top:22px}.auth-providers{grid-template-columns:1fr}.top-menu{right:16px;top:62px;width:calc(100vw - 32px)}.notification-menu{max-height:min(60dvh,420px);overflow:auto}.settings-lens-group{grid-template-columns:1fr}.sidebar-backdrop{touch-action:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
@@ -450,9 +450,9 @@ main{display:block}
 .project-snapshot-architecture{background:#f8f6fd}
 .project-snapshot-architecture .snapshot-label{position:absolute;top:11px;left:12px;z-index:1;border:1px solid var(--brand-primary);border-radius:999px;background:rgba(255,255,255,.9);color:var(--brand-deep);padding:5px 8px;font-size:9px;font-weight:820;letter-spacing:.04em}
 .project-snapshot-architecture svg{display:block;width:100%;height:100%;padding:20px 10px 8px}
-.snapshot-edges line{stroke:#c7bddf;stroke-width:2;stroke-linecap:round}
-.snapshot-node circle{stroke:#fff;stroke-width:2}
-.snapshot-node text{fill:#fff;font-size:5.5px;font-weight:850;letter-spacing:.02em}
+.snapshot-edges path{fill:none;stroke:#9e94ba;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.snapshot-node rect{fill:#fff;stroke:#74669d;stroke-width:1.6;vector-effect:non-scaling-stroke}
+.snapshot-node text{fill:#4d416f;font-size:10px;font-weight:850;letter-spacing:.01em;pointer-events:none}
 .project-snapshot-pending{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:22px;text-align:center;color:var(--muted);background:#fbfbfc}
 .snapshot-icon{display:grid;place-items:center;width:38px;height:38px;border:1px dashed #c8c3cf;border-radius:11px;color:#aaa4af;font-size:20px}
 .project-snapshot-pending strong{font-size:11px;color:#666171}
@@ -477,17 +477,39 @@ main{display:block}
 
 /* Living Graph renderer: presentation only; semantics and routing come from backend contracts. */
 #graphCanvas .graph-empty{min-height:430px;display:grid;place-items:center;text-align:center;padding:30px}
+#graphCanvas .graph-scope-bar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:12px 14px;margin:0 0 12px;border:1px solid #e2e7ef;border-radius:13px;background:#fafbfc}
+#graphCanvas .graph-scope-copy{min-width:0;display:grid;gap:8px}
+#graphCanvas .graph-scope-copy>div:last-child{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+#graphCanvas .graph-scope-copy strong{font-size:12px;color:var(--ink)}
+#graphCanvas .graph-scope-copy span{font-size:9px;color:var(--muted)}
+#graphCanvas .graph-breadcrumb{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;font-size:9px}
+#graphCanvas .graph-breadcrumb button{border:0;padding:0;background:transparent;color:var(--brand-deep);font:inherit;font-weight:780;cursor:pointer}
+#graphCanvas .graph-breadcrumb button:hover{text-decoration:underline}
+#graphCanvas .graph-breadcrumb [aria-current="page"]{font-weight:820;color:#515b6b}
+#graphCanvas .graph-crumb-sep{color:#adb5c2}
+#graphCanvas .graph-scope-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+#graphCanvas .graph-back,#graphCanvas .graph-reading-modes button{border:1px solid #dce2ea;background:#fff;color:#617082;border-radius:9px;padding:7px 9px;font-size:9px;font-weight:800;cursor:pointer}
+#graphCanvas .graph-back:hover,#graphCanvas .graph-reading-modes button:hover,#graphCanvas .graph-reading-modes button.active{border-color:var(--brand-hover);background:#f5f3ff;color:var(--brand-deep)}
+#graphCanvas .graph-reading-modes{display:flex;gap:3px;padding:3px;border-radius:10px;background:#eef1f5}
+#graphCanvas .graph-reading-modes button{border-color:transparent;background:transparent;padding:5px 8px}
+#graphCanvas .graph-reading-modes button.active{background:#fff;box-shadow:0 1px 4px rgba(15,23,42,.08)}
+#graphCanvas .graph-stage{min-width:0;overflow:auto;overscroll-behavior:contain}
 #graphCanvas .living-graph-svg{display:block;width:100%;height:auto;min-width:0;max-width:100%;max-height:720px;overflow:visible}
 #graphCanvas .graph-hierarchy{stroke:#d8dee8;stroke-width:1.5;stroke-dasharray:5 5;vector-effect:non-scaling-stroke;pointer-events:none}
-#graphCanvas .graph-edge{opacity:1}
+#graphCanvas .graph-edge{opacity:1;transition:opacity .12s}
 #graphCanvas .graph-edge path{fill:none;stroke:#94a3b8;stroke-width:2;vector-effect:non-scaling-stroke}
 #graphCanvas .graph-edge text{font-size:9.5px;font-weight:750;fill:#667588;paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}
+#graphCanvas .graph-edge.projection-derived_crossing path{stroke-dasharray:7 4}
 #graphCanvas .graph-edge.is-focused path{stroke:var(--brand-deep);stroke-width:2.6}
 #graphCanvas .graph-edge.is-focused text{fill:var(--module-deep)}
 #graphCanvas .graph-edge.is-dimmed{opacity:.14}
 #graphCanvas marker path{fill:#8b98a9}
 #graphCanvas .node-card{outline:0;transition:opacity .12s}
-#graphCanvas .node-card .node-surface{fill:var(--surface);stroke:#cbd5e1;stroke-width:1.5;vector-effect:non-scaling-stroke}
+#graphCanvas .node-card .node-surface{fill:var(--surface);stroke:#cbd5e1;stroke-width:1.5;vector-effect:non-scaling-stroke;transition:fill .12s,stroke .12s,stroke-width .12s}
+#graphCanvas .node-card.is-drill{cursor:pointer}
+#graphCanvas .node-card.is-drill .node-surface{stroke:var(--brand-primary);stroke-width:2}
+#graphCanvas .node-card.is-drill:hover .node-surface,#graphCanvas .node-card.is-drill:focus-visible .node-surface{fill:var(--brand-soft);stroke:var(--brand-deep);stroke-width:2.6}
+#graphCanvas .node-card.projection-context .node-surface{fill:#fbfcfe;stroke-dasharray:6 4}
 #graphCanvas .node-card:hover .node-surface,#graphCanvas .node-card:focus-visible .node-surface{stroke:var(--module-violet);stroke-width:2.2}
 #graphCanvas .node-card.selected .node-surface{stroke:var(--brand-deep);stroke-width:3}
 #graphCanvas .node-card.is-dimmed{opacity:.2}
@@ -495,6 +517,10 @@ main{display:block}
 #graphCanvas .node-name{font-size:13.5px;font-weight:820;fill:var(--ink)}
 #graphCanvas .node-responsibility{font-size:10.2px;fill:var(--muted)}
 #graphCanvas .node-status{font-size:8.8px;font-weight:760;fill:#738095}
+#graphCanvas .node-drill-action rect{fill:var(--brand-soft);stroke:var(--brand-primary);stroke-width:1;vector-effect:non-scaling-stroke}
+#graphCanvas .node-card.is-drill:hover .node-drill-action rect,#graphCanvas .node-card.is-drill:focus-visible .node-drill-action rect{fill:var(--brand-primary);stroke:var(--brand-deep)}
+#graphCanvas .node-drill-cue,#graphCanvas .node-context-cue{font-size:9.5px;font-weight:900;letter-spacing:.035em;fill:var(--brand-deep)}
+#graphCanvas .node-context-cue{fill:#6f7d8e}
 #graphCanvas .node-health-dot{fill:#94a3b8}
 #graphCanvas .node-card.health-healthy .node-health-dot{fill:#22c55e}
 #graphCanvas .node-card.health-active .node-health-dot{fill:var(--brand-deep)}
@@ -503,8 +529,41 @@ main{display:block}
 #graphCanvas .node-card.health-review .node-surface{stroke:#f4b942}
 #graphCanvas .node-card.health-blocked .node-surface{stroke:#f87171}
 #graphCanvas .node-card.health-planned .node-health-dot{fill:#94a3b8}
+#graphCanvas .graph-detail-read,#graphCanvas .graph-detail-full{transition:opacity .12s}
+#graphCanvas .graph-stage[data-reading-mode="MAP"] .graph-detail-read,#graphCanvas .graph-stage[data-reading-mode="MAP"] .graph-detail-full,#graphCanvas .graph-stage[data-reading-mode="READ"] .graph-detail-full{opacity:0;pointer-events:none}
+#graphCanvas .graph-stage[data-reading-mode="MAP"] .node-card.selected .graph-detail-read,#graphCanvas .graph-stage[data-reading-mode="MAP"] .node-card.selected .graph-detail-full{opacity:1;pointer-events:auto}
 #selectedNode .graph-focus-controls{display:flex;gap:7px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid #e7ebf1}
 #selectedNode .graph-focus-controls button{border:1px solid #dfe5ed;background:#fff;color:#5f6d7d;border-radius:999px;padding:6px 10px;font-size:9.5px;font-weight:780;cursor:pointer}
 #selectedNode .graph-focus-controls button:hover,#selectedNode .graph-focus-controls button.active{border-color:var(--brand-hover);background:#f5f3ff;color:var(--brand-deep)}
 #selectedNode .health-pill.health-planned{background:#f1f5f9;color:#64748b}
-@media(max-width:760px){#graphCanvas .living-graph-svg{width:100%;height:auto;min-width:0;max-width:100%}#selectedNode .graph-focus-controls button{min-height:34px}}
+@media(max-width:760px){#graphCanvas .graph-scope-bar{display:grid;gap:10px;padding:10px}#graphCanvas .graph-scope-actions{width:100%;justify-content:space-between}#graphCanvas .living-graph-svg{width:100%;height:auto;min-width:0;max-width:100%}#selectedNode .graph-focus-controls button{min-height:34px}}
+
+/* Architecture source switch: accepted Living intent vs revision-pinned implementation evidence. */
+.architecture-view-tools{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+#view-architecture .section-intro{flex-wrap:wrap;gap:12px}
+.architecture-mode-switch{display:flex;gap:3px;padding:3px;border-radius:11px;background:#eef1f5}
+.architecture-mode-switch button{border:0;border-radius:8px;background:transparent;color:#6b7788;padding:7px 11px;font-size:9.5px;font-weight:850;cursor:pointer}
+.architecture-mode-switch button:hover,.architecture-mode-switch button.active{background:#fff;color:var(--brand-deep);box-shadow:0 1px 4px rgba(15,23,42,.08)}
+.code-snapshot-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 14px;margin:0 0 12px;border:1px solid #d9e0e8;border-radius:13px;background:#f8fafc}
+.code-snapshot-bar>div{min-width:0;display:grid;gap:3px}
+.code-snapshot-bar strong{font-size:12px;color:var(--ink)}
+.code-snapshot-bar span{font-size:9px;color:var(--muted)}
+.code-snapshot-bar>a{max-width:58%;display:inline-flex;align-items:center;gap:6px;border:1px solid #d7dee8;border-radius:9px;background:#fff;color:#4b5563;padding:7px 9px;font-size:9px;font-weight:760;text-decoration:none;overflow:hidden}
+.code-snapshot-bar>a:hover{border-color:var(--brand-hover);color:var(--brand-deep)}
+.code-snapshot-bar code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#graphCanvas .code-node-card{cursor:pointer}
+#graphCanvas .code-node-card .node-surface{fill:#fff;stroke:#9aa7b8;stroke-width:1.7}
+#graphCanvas .code-node-card:hover .node-surface,#graphCanvas .code-node-card:focus-visible .node-surface,#graphCanvas .code-node-card.selected .node-surface{fill:#f8f7ff;stroke:var(--brand-deep);stroke-width:2.6}
+#graphCanvas .code-node-evidence-count{font-size:8.8px;font-weight:780;fill:#68778a}
+#graphCanvas .code-edge path{stroke:#7d8da1}
+#graphCanvas .code-edge text{fill:#536273}
+#graphCanvas .code-hierarchy{stroke:#bcc6d3}
+#graphCanvas .code-graph-meta .graph-meta-ok{background:#eefbf3;color:#18794e}
+.code-evidence-pill{display:inline-flex;align-items:center;border-radius:999px;background:#eefbf3;color:#18794e;padding:5px 8px;font-size:8.5px;font-weight:900;letter-spacing:.04em}
+.code-evidence-item{display:grid;gap:7px;padding:10px 0;border-bottom:1px solid #e8ecf1}
+.code-evidence-item:last-child{border-bottom:0}
+.code-evidence-link{width:max-content;max-width:100%;color:var(--brand-deep);font-size:9.5px;font-weight:820;text-decoration:none;overflow-wrap:anywhere}
+.code-evidence-link:hover{text-decoration:underline}
+.code-evidence-symbol{width:max-content;border-radius:999px;background:#f1f5f9;color:#617082;padding:3px 6px;font-size:8px;font-weight:780}
+.code-evidence-item pre{margin:0;max-height:180px;overflow:auto;border:1px solid #e0e6ed;border-radius:9px;background:#f8fafc;color:#334155;padding:9px;font:9px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:760px){.architecture-view-tools{width:100%;justify-content:space-between;margin-top:12px}.architecture-mode-switch button{min-height:36px;padding-inline:13px}.code-snapshot-bar{display:grid}.code-snapshot-bar>a{max-width:100%;width:100%}}

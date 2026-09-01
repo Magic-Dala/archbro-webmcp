@@ -21,6 +21,12 @@ pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL not set")
 SCRIPT = Path(__file__).resolve().parents[1] / "qa" / "migrate_sqlite_to_postgres.py"
 
 
+def test_direct_cli_bootstraps_the_src_layout() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert 'SRC_ROOT = Path(__file__).resolve().parents[1] / "src"' in source
+    assert "sys.path.insert(0, str(SRC_ROOT))" in source
+
+
 def _sqlite_with(path: Path, notes: list[tuple[str, str]], projects: list[tuple[str, str]] | None = None) -> Path:
     _sqlite_with_notes(path, notes)
     if projects:

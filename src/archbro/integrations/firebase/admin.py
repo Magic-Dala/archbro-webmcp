@@ -11,9 +11,8 @@ class FirebaseAdminUnavailable(RuntimeError):
 def get_firebase_admin_app(project_id: str):
     """Return one named Firebase Admin app for a Google Cloud project.
 
-    This follows the proven Keys by Friday pattern: use Application Default
-    Credentials / Cloud Run identity and avoid shipping service-account JSON in
-    the repository.
+    Use Application Default Credentials / runtime identity and avoid shipping
+    service-account JSON in the repository.
     """
 
     normalized = project_id.strip()

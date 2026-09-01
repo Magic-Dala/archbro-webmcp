@@ -16,7 +16,7 @@ with sync_playwright() as p:
     """)
     page.goto(URL, wait_until="networkidle")
     page.wait_for_function("() => Object.keys(window.__archbroRegisteredTools || {}).length >= 7")
-    raw = page.evaluate("async () => await window.__archbroRegisteredTools.archbro_get_decision_context.execute({})")
+    raw = page.evaluate("async () => await window.__archbroRegisteredTools.archbro_get_architecture_decision_context.execute({})")
     context = json.loads(raw)
     rows = [
         (

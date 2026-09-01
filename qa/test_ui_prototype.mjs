@@ -236,7 +236,7 @@ test('goal refinement ask composer exposes a reduced-motion-safe vibrant full-pe
   ]);
   assert.match(html, /id="onboardingAsk"/);
   assert.match(html, /app\.js\?v=[^\"']+/);
-  assert.match(html, /styles\.css\?v=20260830-5/);
+  assert.match(html, /styles\.css\?v=20260831-living-code-architecture/);
   assert.match(js, /onboardingAsk.*classList\.toggle\('rainbow-active'/s);
   assert.match(css, /\.onboarding-ask\.rainbow-active/);
   assert.match(css, /\.onboarding-ask::before[,{][^}]*-webkit-mask:conic-gradient/);

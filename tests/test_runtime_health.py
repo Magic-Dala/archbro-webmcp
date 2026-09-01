@@ -55,9 +55,9 @@ def test_healthz_is_hidden_from_the_public_api_schema(dsn):
 def test_healthz_bypasses_the_edge_origin_guard(dsn, monkeypatch):
     """The container probe runs inside the container, so it has no edge token.
 
-    Production puts a Cloudflare Worker in front of the origin and sets
-    ARCHBRO_EDGE_GUARD=required. Without an exemption the probe gets 403, the
-    container never reports healthy, and a rolling deploy stalls forever.
+    When an authenticated edge proxy is configured with ARCHBRO_EDGE_GUARD=required,
+    the container's internal health probe still has no edge token. Without an exemption
+    the probe gets 403, the container never reports healthy, and a rolling deploy stalls.
     """
 
     monkeypatch.setenv("ARCHBRO_EDGE_GUARD", "required")

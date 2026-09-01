@@ -85,9 +85,48 @@ class FakeModelProvider(ModelProvider):
 
         if bootstrap:
             components = [
-                Component(id="frontend", name="React frontend", type="frontend", responsibility="Project collaboration UI"),
-                Component(id="backend", name="FastAPI backend", type="backend", responsibility="REST API and deterministic execution"),
-                Component(id="database", name="PostgreSQL", type="database", responsibility="Persist project state"),
+                Component(
+                    id="frontend",
+                    name="React frontend",
+                    type="frontend",
+                    responsibility="Project collaboration UI",
+                    children=[
+                        Component(
+                            id="frontend_workspace",
+                            name="Project workspace",
+                            type="ui",
+                            responsibility="Render project, architecture, and task workflows",
+                        )
+                    ],
+                ),
+                Component(
+                    id="backend",
+                    name="FastAPI backend",
+                    type="backend",
+                    responsibility="REST API and deterministic execution",
+                    children=[
+                        Component(
+                            id="backend_api",
+                            name="Application API",
+                            type="service",
+                            responsibility="Serve deterministic project and agent operations",
+                        )
+                    ],
+                ),
+                Component(
+                    id="database",
+                    name="PostgreSQL",
+                    type="database",
+                    responsibility="Persist project state",
+                    children=[
+                        Component(
+                            id="database_store",
+                            name="Project state store",
+                            type="data-store",
+                            responsibility="Persist canonical project, architecture, task, and event state",
+                        )
+                    ],
+                ),
             ]
             architecture_payload = {
                 "version": 1,

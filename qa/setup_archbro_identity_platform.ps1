@@ -1,11 +1,11 @@
 param(
-    [string]$ProjectId = "keys-by-friday-2026-kbf"
+    [Parameter(Mandatory = $true)]
+    [string]$ProjectId,
+    [string]$PublicHost = "archbro.magicdala.com",
+    [string]$StagingHost = "archbro-dev.magicdala.com"
 )
 
 $ErrorActionPreference = "Stop"
-$publicHost = "archbro-dev.magicdala.com"
-$runHost = "archbro-webmcp-23051378248.us-west1.run.app"
-$alternateRunHost = "archbro-webmcp-fbfcgmlcsq-uw.a.run.app"
 $gcloud = (Get-Command gcloud.cmd -ErrorAction Stop).Source
 
 & $gcloud services enable identitytoolkit.googleapis.com apikeys.googleapis.com --project $ProjectId --quiet | Out-Null
@@ -50,8 +50,8 @@ try {
 }
 
 $domains = @($config.authorizedDomains)
-foreach ($domain in @($publicHost, $runHost, $alternateRunHost)) {
-    if ($domains -notcontains $domain) { $domains += $domain }
+foreach ($domain in @($PublicHost, $StagingHost)) {
+    if ($domain -and $domains -notcontains $domain) { $domains += $domain }
 }
 
 $updateUri = $configUri + "?updateMask=signIn.anonymous.enabled,authorizedDomains"
@@ -77,6 +77,9 @@ $matchingKeys = @(Get-ArchBroBrowserApiKeys)
 $keyName = if ($matchingKeys.Count -gt 0) { [string]$matchingKeys[0].name } else { "" }
 
 if (-not $keyName) {
+    $allowedReferrers = @("https://$PublicHost/*")
+    if ($StagingHost) { $allowedReferrers += "https://$StagingHost/*" }
+
     # Do not capture create output: gcloud may emit the completed operation payload,
     # including the key string. Resolve the resource name separately via JSON list.
     & $gcloud services api-keys create `
@@ -84,7 +87,7 @@ if (-not $keyName) {
         --display-name="ArchBro Browser Auth" `
         --api-target=service=identitytoolkit.googleapis.com `
         --api-target=service=securetoken.googleapis.com `
-        --allowed-referrers="https://$publicHost/*,https://$runHost/*,https://$alternateRunHost/*" `
+        --allowed-referrers=($allowedReferrers -join ",") `
         --async `
         --quiet 1>$null 2>$null
     if ($LASTEXITCODE -ne 0) { throw "ArchBro browser API key creation failed." }
@@ -98,8 +101,7 @@ if (-not $keyName) {
 
 if (-not $keyName) { throw "ArchBro browser API key was not created." }
 $apiKey = ((& $gcloud services api-keys get-key-string $keyName --format='value(keyString)') -join "").Trim()
-if ($LASTEXITCODE -ne 0) { throw "ArchBro browser API key string could not be read." }
-if (-not $apiKey) { throw "ArchBro browser API key string could not be read." }
+if ($LASTEXITCODE -ne 0 -or -not $apiKey) { throw "ArchBro browser API key string could not be read." }
 
 @{
     apiKey = $apiKey
@@ -111,7 +113,8 @@ if (-not $apiKey) { throw "ArchBro browser API key string could not be read." }
 [pscustomobject]@{
     projectId = $ProjectId
     anonymousEnabled = [bool]$config.signIn.anonymous.enabled
-    authorizedPublicDomain = @($config.authorizedDomains) -contains $publicHost
+    authorizedPublicDomain = @($config.authorizedDomains) -contains $PublicHost
+    authorizedStagingDomain = (-not $StagingHost) -or (@($config.authorizedDomains) -contains $StagingHost)
     apiKeyRestricted = $true
     configSaved = $true
 } | ConvertTo-Json -Compress

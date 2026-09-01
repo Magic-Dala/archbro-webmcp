@@ -1,63 +1,64 @@
-# WebMCP Challenge Demo Script (<3 minutes)
+# ArchBro WebMCP Demo Script (<3 minutes)
 
 ## 0:00–0:20 — Problem
 
-Show Architecture v1: React + FastAPI + PostgreSQL + custom WebSocket.
+Show a project with an accepted Living Architecture and active tasks.
 
-Voiceover: "Architecture docs go stale because project reality changes faster than humans can maintain them. ArchBro gives humans and agents one living architecture."
+Voiceover: "Architecture gets stale when project reality changes faster than the documentation. ArchBro gives humans and agents one governed living architecture instead of separate plans."
 
 ## 0:20–0:45 — Native WebMCP
 
-In ChatGPT Work with a WebMCP-capable model, ask naturally what needs attention. Do not name a tool.
+Open the production WebMCP acceptance URL and let a WebMCP-capable host discover ArchBro's semantic Site Tools. Do not name tools in the user prompt.
 
-Show that ArchBro Site Tools are discovered and used. Emphasize structured Site Tools instead of DOM guessing.
+Show that the host reads project state through structured Site Tools rather than DOM guessing.
 
-## 0:45–1:15 — Reasoning from reality
+## 0:45–1:15 — Architecture context
 
-First show an operational PostgreSQL health incident. The agent should keep Architecture v1 because an operational failure alone does not justify a boundary change.
+Ask the agent to inspect the current architecture and dependency context.
 
-Then introduce the approved release constraint: offline-first clients, managed Firebase persistence, automatic synchronization, and no custom realtime persistence channel.
+Expected behavior:
 
-## 1:15–1:50 — Governed architecture change
+- read the accepted Living Architecture;
+- drill one backend-authored scope;
+- inspect node context or a directed authored path;
+- explain current architecture without inventing topology.
 
-Ask the agent to review the project and decide whether Architecture v1 still fits.
+## 1:15–1:45 — Execution and evidence
 
-Expected result:
+Ask the agent to create or continue one normal implementation task and record one operational observation.
 
-- `archbro_get_project_brief`
-- `archbro_get_decision_context`
-- host-agent reasoning
-- `archbro_submit_agent_recommendation`
-- proposal remains `PENDING`
-- `archbro_focus_pending_review`
+Expected behavior:
 
-Show the ArchBro `Needs You` view.
+- task execution uses deterministic task tools without built-in model invocation;
+- the observation becomes durable evidence;
+- the observation does not silently mutate Living Architecture.
 
-## 1:50–2:15 — Human control
+## 1:45–2:15 — Living vs Code Architecture
 
-Human clicks `Accept proposed change`.
+Show the separate **Living** and **Code** Architecture views.
 
-Show Architecture v2:
+Explain that Living Architecture is human-approved design intent, while Code Architecture is revision-pinned implementation evidence. Publishing Code Architecture must not change the accepted Living Architecture version or topology.
 
-- React owns offline caching, synchronization, and snapshot listeners through Firebase SDK.
-- Firebase Auth + Cloud Firestore replace PostgreSQL.
-- FastAPI remains for privileged operations/integrations via Firebase Admin SDK.
-- Custom WebSocket component is removed.
+## 2:15–2:40 — Human-governed change
 
-## 2:15–2:40 — Execution continues
+Ask the agent to propose one justified structural architecture change.
 
-Ask the agent to continue from the accepted architecture.
+Expected behavior:
 
-Expected result: the re-scoped Firestore task is ready and transitions from `TODO` to `IN_PROGRESS` through `archbro_update_task_status`.
+- the recommendation becomes `PENDING`;
+- the current accepted architecture remains unchanged;
+- there is no agent-accessible WebMCP Accept/Reject tool.
+
+The human may then review and accept or reject the proposal directly in ArchBro.
 
 ## 2:40–2:55 — Closing
 
-Voiceover: "ArchBro lets agents observe and reason about project reality, humans govern consequential decisions, and execution stays aligned with the architecture they actually accepted."
+Voiceover: "ArchBro lets agents observe project reality and continue execution, while humans keep control of consequential architecture decisions."
 
 ## Recording rules
 
 - Keep total runtime below 3 minutes.
-- Use the public HTTPS deployment, not localhost, for the final recording.
-- Use natural-language prompts; do not expose internal tool names unless briefly showing the Site Tool activity.
-- Do not make Connected MCP the main story.
-- Record only after the public WebMCP golden acceptance passes end to end.
+- Use `https://archbro.magicdala.com/?mode=webmcp` for the public demo.
+- Use natural-language prompts; show tool activity only briefly when useful.
+- Do not substitute DOM automation, Playwright, shell commands, or unrelated MCP tools for ArchBro's native WebMCP surface.
+- Record only after the native WebMCP acceptance flow passes end to end.

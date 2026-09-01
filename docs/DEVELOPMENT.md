@@ -62,8 +62,8 @@ docker compose run --rm app python -m pytest -k healthz   # by name
 Do not add `--no-deps`: almost every test needs the database container, and
 without `DATABASE_URL` they silently **skip** rather than fail.
 
-Expect `252 passed, 7 skipped`. The 7 skips are `test_real_gemini.py`, which
-needs a real API key.
+The suite should pass completely. Without a real Gemini API key, only the seven
+`test_real_gemini.py` cases are expected to skip.
 
 ## Persistence
 

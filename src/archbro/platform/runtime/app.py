@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -19,6 +20,10 @@ from archbro.backend.llm.provider import ModelProvider
 from archbro.platform.persistence.postgres import PostgresProjectRepository
 
 load_dotenv()
+
+WEBMCP_SURFACE_VERSION = "archbro.semantic-webmcp.v3"
+WEBMCP_DEFAULT_TOOL_COUNT = 14
+WEBMCP_GATEWAY_TOOL_COUNT = 3
 
 
 def _project_root() -> Path:
@@ -129,6 +134,32 @@ def create_app(
     frontend_dir = Path(web_dir) if web_dir is not None else _project_root() / "frontend" / "web"
     if not frontend_dir.exists():
         raise RuntimeError(f"Archbro frontend directory not found: {frontend_dir}")
+    webmcp_asset_sha256 = hashlib.sha256(
+        (frontend_dir / "archbro-webmcp.js").read_bytes()
+    ).hexdigest()
+
+    def connected_mcp_gateway_configured() -> bool:
+        raw_connected_mcp = os.getenv("ARCHBRO_MCP_SERVERS_JSON", "").strip()
+        if not raw_connected_mcp:
+            return False
+        try:
+            return bool(json.loads(raw_connected_mcp))
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    def webmcp_manifest_payload() -> dict[str, object]:
+        gateway_configured = connected_mcp_gateway_configured()
+        return {
+            "surface": "archbro-webmcp",
+            "surface_version": WEBMCP_SURFACE_VERSION,
+            "asset_sha256": webmcp_asset_sha256,
+            "connected_mcp_gateway_configured": gateway_configured,
+            "expected_tool_count": (
+                WEBMCP_DEFAULT_TOOL_COUNT + WEBMCP_GATEWAY_TOOL_COUNT
+                if gateway_configured
+                else WEBMCP_DEFAULT_TOOL_COUNT
+            ),
+        }
 
     app = FastAPI(title="Archbro")
     app.include_router(
@@ -171,6 +202,16 @@ def create_app(
         )
         if environment == "production":
             response.headers["Strict-Transport-Security"] = "max-age=86400"
+        if request.url.path in {
+            "/",
+            "/runtime-config.js",
+            "/webmcp-manifest.json",
+            "/static/app.js",
+            "/static/archbro-webmcp.js",
+        }:
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         return response
 
     # Container liveness probe. Deliberately does not touch persistence: a probe
@@ -185,9 +226,25 @@ def create_app(
     async def web_app():
         return FileResponse(frontend_dir / "index.html")
 
+    @app.get("/webmcp-manifest.json", include_in_schema=False)
+    async def webmcp_manifest():
+        return JSONResponse(
+            content=webmcp_manifest_payload(),
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
     @app.get("/runtime-config.js", include_in_schema=False)
     async def runtime_config():
-        payload = {"auth_mode": auth_mode, "firebase": public_firebase_config}
+        manifest = webmcp_manifest_payload()
+        payload = {
+            "auth_mode": auth_mode,
+            "firebase": public_firebase_config,
+            "connected_mcp_gateway_configured": manifest["connected_mcp_gateway_configured"],
+            "webmcp_surface_version": manifest["surface_version"],
+            "webmcp_asset_sha256": manifest["asset_sha256"],
+            "webmcp_expected_tool_count": manifest["expected_tool_count"],
+            "webmcp_manifest_url": "/webmcp-manifest.json",
+        }
         return Response(
             content="window.__ARCHBRO_RUNTIME_CONFIG__ = " + json.dumps(payload) + ";\n",
             media_type="application/javascript",

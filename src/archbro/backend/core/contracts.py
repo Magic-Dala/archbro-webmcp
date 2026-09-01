@@ -48,6 +48,7 @@ class ProjectEventType(StrEnum):
     TASK_UPDATED = "TASK_UPDATED"
     MANUAL_NOTE = "MANUAL_NOTE"
     GITHUB_CHANGE = "GITHUB_CHANGE"
+    CODE_ARCHITECTURE_SNAPSHOT = "CODE_ARCHITECTURE_SNAPSHOT"
 
 
 class ProjectEventSource(StrEnum):
@@ -211,6 +212,23 @@ class Architecture(BaseModel):
 
         root = next((component for component in self.components if contains(component)), None)
         return root.id if root else None
+
+    def parent_component_id_for(self, component_id: str) -> str | None:
+        def find(nodes: list[Component], parent_id: str | None) -> tuple[bool, str | None]:
+            for node in nodes:
+                if node.id == component_id:
+                    return True, parent_id
+                found, parent = find(node.children, node.id)
+                if found:
+                    return True, parent
+            return False, None
+
+        found, parent_id = find(self.components, None)
+        return parent_id if found else None
+
+    def child_component_ids_for(self, component_id: str) -> list[str]:
+        component = self.find_component(component_id)
+        return [child.id for child in component.children] if component is not None else []
 
 
 class Task(BaseModel):

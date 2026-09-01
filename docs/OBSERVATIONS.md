@@ -29,13 +29,13 @@ Webhook signatures, GitHub installation identity, retries, and raw GitHub payloa
 provider-specific signal
         |
         v
-integrations/events          Ayushi: normalize provider payloads
+integrations/events          normalize and authenticate provider payloads
         |
         v
-platform/pipeline            Max: durable delivery / retry / transport
+platform/pipeline            durable delivery / retry / transport
         |
         v
-backend ProjectEvent         Jim: canonical observation contract
+backend ProjectEvent         canonical observation contract
         |
         v
 Agent evaluation
@@ -44,7 +44,7 @@ Agent evaluation
 validated mutation plan + durable AgentRun
         |
         v
-frontend activity/evidence   Shaun: present history and review context
+frontend activity/evidence   present history and review context
 ```
 
 ## Normalized event identity

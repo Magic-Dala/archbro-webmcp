@@ -15,6 +15,7 @@ from archbro.backend.core.contracts import (
     Project,
     ProjectContext,
     ProjectEvent,
+    ProjectEventType,
     ProposalStatus,
     Task,
 )
@@ -22,6 +23,7 @@ from archbro.backend.core.observation import (
     ObservationMutationPlan,
     ObservationRejectedError,
 )
+from archbro.backend.core.repository import ConcurrentStateError, IdempotencyConflictError
 
 
 _OBSERVATION_CLAIM_TTL = timedelta(minutes=2)
@@ -430,6 +432,23 @@ class PostgresProjectRepository:
         events = [ProjectEvent.model_validate_json(row["data"]) for row in rows]
         return list(reversed(events))
 
+    def get_latest_event_by_type(
+        self,
+        project_id: str,
+        event_type: ProjectEventType,
+    ) -> ProjectEvent | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT data FROM events
+                WHERE project_id=%s AND (data::jsonb ->> 'type')=%s
+                ORDER BY seq DESC
+                LIMIT 1
+                """,
+                (project_id, event_type.value),
+            ).fetchone()
+        return ProjectEvent.model_validate_json(row["data"]) if row else None
+
     def list_agent_runs(self, project_id: str, limit: int = 100) -> list[AgentRunResult]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -651,10 +670,60 @@ class PostgresProjectRepository:
         tasks: list[Task],
         proposals: list[ArchitectureChangeProposal],
         notes: list[str],
-    ) -> None:
+        expected_project_updated_at: str | None = None,
+        expected_architecture_version: int | None = None,
+        expected_task_updated_at: dict[str, str] | None = None,
+    ) -> ProjectEvent:
         with self._connect() as conn:
             if not self._lock_project(conn, event.project_id):
                 raise KeyError(event.project_id)
+            source_key = self._source_key(event)
+            if source_key is not None:
+                source_row = conn.execute(
+                    "SELECT data FROM events WHERE source_key=%s FOR UPDATE",
+                    (source_key,),
+                ).fetchone()
+                if source_row is not None:
+                    existing_event = ProjectEvent.model_validate_json(source_row["data"])
+                    same_request = (
+                        existing_event.type == event.type
+                        and existing_event.source == event.source
+                        and existing_event.payload.get("intent") == event.payload.get("intent")
+                        and existing_event.payload.get("request_fingerprint")
+                        == event.payload.get("request_fingerprint")
+                    )
+                    if not same_request:
+                        raise IdempotencyConflictError(
+                            "idempotency key is already registered for a different semantic request"
+                        )
+                    return existing_event
+            if expected_project_updated_at is not None:
+                project_row = conn.execute(
+                    "SELECT data FROM projects WHERE id=%s", (event.project_id,)
+                ).fetchone()
+                if project_row is None:
+                    raise KeyError(event.project_id)
+                current_project = Project.model_validate_json(project_row["data"])
+                if current_project.updated_at.isoformat() != expected_project_updated_at:
+                    raise ConcurrentStateError("event action project state changed before commit")
+            if expected_architecture_version is not None:
+                architecture_row = conn.execute(
+                    "SELECT data FROM architectures WHERE project_id=%s", (event.project_id,)
+                ).fetchone()
+                if architecture_row is None:
+                    raise KeyError(event.project_id)
+                current_architecture = Architecture.model_validate_json(architecture_row["data"])
+                if current_architecture.version != expected_architecture_version:
+                    raise ConcurrentStateError("event action architecture state changed before commit")
+            for task_id, expected_updated_at in (expected_task_updated_at or {}).items():
+                task_row = conn.execute(
+                    "SELECT project_id, data FROM tasks WHERE id=%s", (task_id,)
+                ).fetchone()
+                if task_row is None or task_row["project_id"] != event.project_id:
+                    raise ConcurrentStateError("event action task state changed before commit")
+                current_task = Task.model_validate_json(task_row["data"])
+                if current_task.updated_at.isoformat() != expected_updated_at:
+                    raise ConcurrentStateError("event action task state changed before commit")
             if project is not None and project.id != event.project_id:
                 raise ValueError("project mutation does not match event project")
             for task in tasks:
@@ -669,11 +738,14 @@ class PostgresProjectRepository:
 
             conn.execute(
                 f"""
-                INSERT INTO events(id, project_id, data) VALUES (%s, %s, %s)
+                INSERT INTO events(id, project_id, data, source_key) VALUES (%s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET
-                    project_id=EXCLUDED.project_id, data=EXCLUDED.data, seq=nextval('{_SEQUENCE}')
+                    project_id=EXCLUDED.project_id,
+                    data=EXCLUDED.data,
+                    source_key=EXCLUDED.source_key,
+                    seq=nextval('{_SEQUENCE}')
                 """,
-                (event.id, event.project_id, event.model_dump_json()),
+                (event.id, event.project_id, event.model_dump_json(), source_key),
             )
             if architecture is not None:
                 self._put_architecture(conn, event.project_id, architecture)
@@ -687,6 +759,7 @@ class PostgresProjectRepository:
                 conn.execute(
                     "INSERT INTO notes(project_id, note) VALUES (%s, %s)", (event.project_id, note)
                 )
+            return event
 
     def add_note(self, project_id: str, note: str) -> None:
         with self._connect() as conn:

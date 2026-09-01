@@ -20,29 +20,38 @@ Goal
 -> Reconciled Execution
 ```
 
-## WebMCP Challenge extension
+## WebMCP integration
 
-The WebMCP integration was developed during the challenge period and uses the imperative browser API:
+The WebMCP integration uses the imperative browser API:
 
 ```js
 document.modelContext.registerTool(...)
 ```
 
-The production WebMCP implementation now lives directly in this repository. The earlier standalone `archbro-webmcp` repository is retained only as challenge-period history and is not a runtime or build dependency.
+The production WebMCP implementation lives directly in this repository and has no runtime or build dependency on an external adapter repository.
 
-Core Site Tools:
+Default semantic Site Tools (14 when no connected MCP gateway is configured):
 
 | Tool | Purpose |
 | --- | --- |
 | `archbro_ping` | Verify the native WebMCP connection without mutation or model invocation |
-| `archbro_bootstrap_project` | Save a project, Architecture v1, and initial tasks designed by the host agent |
-| `archbro_get_project_brief` | Read fresh project health, tasks, blockers, activity, and human attention |
-| `archbro_get_decision_context` | Read accepted architecture, evidence, execution state, and governance rules |
-| `archbro_submit_agent_recommendation` | Submit host-agent reasoning; architecture changes become `PENDING` human review |
-| `archbro_update_task_status` | Start or complete an existing task through the deterministic task boundary |
-| `archbro_focus_pending_review` | Navigate the visible UI to the pending architecture review |
+| `archbro_get_agent_context` | Read compact project and connected-source context |
+| `archbro_get_architecture_diagram` | Read root/subsystem projections from the backend-authored Living Architecture graph |
+| `archbro_get_architecture_node_context` | Read bounded upstream/downstream dependency context for a stable Living Architecture node |
+| `archbro_find_architecture_path` | Find a directed authored dependency path between architecture nodes |
+| `archbro_bootstrap_project` | Atomically commit a host-designed Architecture v1 only after SYSTEM_MAP → per-root EXPAND_SCOPE → RECONCILE planning; the required trace is validated against the final hierarchy |
+| `archbro_expand_architecture_scope` | Propose an additive one-level decomposition under an existing component; human acceptance remains required |
+| `archbro_get_architecture_decision_context` | Read accepted Living Architecture, execution state, evidence, and governance rules |
+| `archbro_submit_architecture_recommendation` | Submit architecture-specific reasoning; changes become `PENDING` human review |
+| `archbro_publish_code_architecture` | Validate and persist revision-pinned Code Architecture evidence; accepted Living Architecture is unchanged |
+| `archbro_get_code_architecture` | Read the latest persisted Code Architecture implementation-evidence snapshot |
+| `archbro_create_task` | Create normal execution work inside the accepted Living Architecture without invoking the built-in model |
+| `archbro_update_task_status` | Start or complete an existing task through the deterministic task boundary without invoking the built-in model |
+| `archbro_record_project_observation` | Persist external evidence/project facts without pretending they are architecture recommendations |
 
-The calling host agent owns reasoning. ArchBro owns validation, state, governance, and execution. A WebMCP agent can recommend an architecture change but cannot approve it.
+If the deployment configures connected MCP servers, three gateway tools are added: `archbro_list_connected_mcp_servers`, `archbro_list_connected_mcp_tools`, and `archbro_call_connected_mcp_tool`, for 17 total. They are absent when no gateway is configured. The calling host agent owns reasoning. ArchBro owns validation, state, governance, and deterministic execution. A WebMCP agent can recommend an architecture change but cannot approve it.
+
+The Architecture workspace has two deliberately separate views. **Living** is the human-approved canonical design intent and keeps stable `node:<component_id>` identities. **Code** is derived implementation evidence at one exact GitHub commit and uses the separate `code-node:*` namespace. Publishing a Code Architecture snapshot does not mutate the accepted Living Architecture; implementation drift still requires a normal reviewable architecture proposal.
 
 See [`docs/WEBMCP.md`](docs/WEBMCP.md) for the complete contract and governance invariants.
 
@@ -70,7 +79,7 @@ Agent continues execution
 
 The agent does not need DOM automation, and ArchBro does not expose an unsafe direct architecture-mutation tool.
 
-## Competition-safe acceptance mode
+## WebMCP acceptance mode
 
 Open:
 
@@ -88,11 +97,10 @@ src/archbro/backend/            # Core backend, agent, API, governance
 src/archbro/integrations/       # Firebase Auth / external integrations
 src/archbro/platform/           # PostgreSQL persistence / runtime composition
 tests/                          # contract + regression + golden WebMCP flow
-qa/                             # browser and competition acceptance harnesses
+qa/                             # browser and WebMCP acceptance harnesses
 docs/OWNERSHIP.md               # ownership + dependency rules
 docs/WEBMCP.md                  # WebMCP contract and governance
-docs/DEMO.md                    # <3 minute competition demo script
-docs/SUBMISSION.md              # submission copy and final checklist
+docs/DEMO.md                    # concise WebMCP demo script
 ```
 
 ## Run the stack with Docker Compose
@@ -162,7 +170,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m uvicorn archbro.main:app --host 127.0.0.1 --port 8011
 ```
 
-Open `http://127.0.0.1:8011/` or `http://127.0.0.1:8011/?mode=webmcp` for the competition-safe WebMCP mode.
+Open `http://127.0.0.1:8011/` or `http://127.0.0.1:8011/?mode=webmcp` for the WebMCP acceptance mode.
 
 ## Environment
 
@@ -196,7 +204,7 @@ may remain explicit `local/local` until Firebase is provisioned for that environ
 
 `qa/setup_archbro_identity_platform.ps1` provisions the anonymous browser identity
 boundary directly through Google Cloud Identity Platform. Its browser API key is
-restricted to Identity Toolkit/Secure Token and the ArchBro public/run hostnames;
+restricted to Identity Toolkit/Secure Token and the configured production/staging hostnames;
 the generated local config file is gitignored. This keeps auth independent from
 Firebase Hosting while remaining compatible with Firebase Admin ID-token verification.
 

@@ -54,7 +54,7 @@ with sync_playwright() as playwright:
           name: 'WebMCP Host Probe',
           goal: 'Build a React frontend, FastAPI backend, and PostgreSQL persistence.',
           architecture_summary: architecture.summary,
-          components: architecture.components.map(({name, type, responsibility}) => ({name, type, responsibility})),
+          components: architecture.components.map(({id, name, type, responsibility}) => ({id, name, type, responsibility})),
           relationships: architecture.relationships.map(({source, target, relationship_type, description}) => ({
             source: architecture.components.find((component) => component.id === source)?.name || source,
             target: architecture.components.find((component) => component.id === target)?.name || target,
@@ -65,13 +65,18 @@ with sync_playwright() as playwright:
             title,
             component: architecture.components.find((component) => component.id === related_component)?.name || related_component,
           })),
-          reasoning: 'The current WebMCP host designed Architecture v1 directly from the project goal.'
+          planning_trace: {
+            system_map_root_ids: architecture.components.map((component) => component.id),
+            scope_expansions: architecture.components.map((component) => ({scope_component_id: component.id, descendant_ids: []})),
+            reconciled: true
+          },
+          reasoning: 'The current WebMCP host planned root boundaries, evaluated each root as an architecture-level leaf, then reconciled relationships and tasks.'
         })""",
         {"architecture": ARCHITECTURE, "tasks": TASKS},
     ))
     project_id = submitted["project"]["id"]
-    brief = json.loads(page.evaluate("async () => await window.__archbroRegisteredTools.archbro_get_project_brief.execute({})"))
-    decision = json.loads(page.evaluate("async () => await window.__archbroRegisteredTools.archbro_get_decision_context.execute({})"))
+    decision = json.loads(page.evaluate("async () => await window.__archbroRegisteredTools.archbro_get_architecture_decision_context.execute({})"))
+    brief = decision["project_brief"]
 
     page.evaluate("async (projectId) => fetch(`/projects/${projectId}`, {method: 'DELETE'})", project_id)
 

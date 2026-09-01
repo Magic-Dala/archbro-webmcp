@@ -19,7 +19,7 @@ Both environments are reached only through Cloudflare Tunnels. The VM publishes
 no HTTP port and carries no `http-server` tag, so nothing on the public internet
 can open a connection to the application except through Cloudflare.
 
-## Google Cloud — project `magic-dala` (382990620621)
+## Google Cloud — project `magic-dala`
 
 | Resource | Identifier | Purpose |
 | --- | --- | --- |
@@ -69,14 +69,14 @@ so containers, networks, and database volumes never overlap. The stacks join a
 shared external network, `archbro-edge`, which is how the tunnel connectors
 reach them without anything being published on the host.
 
-## Cloudflare — zone `magicdala.com`, account `ec152a0db...`
+## Cloudflare — zone `magicdala.com`
 
 | Resource | Identifier |
 | --- | --- |
-| Tunnel (main) | `archbro-main` · `85f86abe-2614-4e1c-87da-2ec907a20521` |
-| Tunnel (dev) | `archbro-dev` · `83b96d8c-8638-4ddc-bcb7-873943950da4` |
-| Access application | `ArchBro dev` → `archbro-dev.magicdala.com`, 730h session |
-| Access policy | `ArchBro team`, allow, five email addresses |
+| Tunnel (main) | `archbro-main` |
+| Tunnel (dev) | `archbro-dev` |
+| Access application | `ArchBro dev` → `archbro-dev.magicdala.com` |
+| Access policy | team email allowlist |
 | Login method | One-time PIN |
 
 DNS is two CNAMEs to `<tunnel-id>.cfargotunnel.com`, both proxied. Proxying is

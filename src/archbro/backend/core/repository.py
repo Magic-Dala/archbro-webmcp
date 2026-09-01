@@ -10,10 +10,19 @@ from archbro.backend.core.contracts import (
     Project,
     ProjectContext,
     ProjectEvent,
+    ProjectEventType,
     ProposalStatus,
     Task,
 )
 from archbro.backend.core.observation import ObservationMutationPlan
+
+
+class ConcurrentStateError(ValueError):
+    """A deterministic mutation plan is stale relative to current persisted state."""
+
+
+class IdempotencyConflictError(ValueError):
+    """An idempotency key was reused for a different semantic request."""
 
 
 class ProjectRepositoryPort(Protocol):
@@ -65,8 +74,33 @@ class ProjectRepositoryPort(Protocol):
         ...
 
     def save_event(self, event: ProjectEvent) -> None: ...
+    def commit_event_actions(
+        self,
+        *,
+        event: ProjectEvent,
+        project: Project | None,
+        architecture: Architecture | None,
+        tasks: list[Task],
+        proposals: list[ArchitectureChangeProposal],
+        notes: list[str],
+        expected_project_updated_at: str | None = None,
+        expected_architecture_version: int | None = None,
+        expected_task_updated_at: dict[str, str] | None = None,
+    ) -> ProjectEvent:
+        """Persist one event and its materialized state mutations atomically.
+
+        Returns the canonical persisted event. When ``source_event_id`` identifies
+        an already-committed equivalent semantic request, implementations return
+        that original event without re-applying mutations.
+        """
+        ...
     def get_event(self, event_id: str) -> ProjectEvent: ...
     def list_events(self, project_id: str, limit: int = 100) -> list[ProjectEvent]: ...
+    def get_latest_event_by_type(
+        self,
+        project_id: str,
+        event_type: ProjectEventType,
+    ) -> ProjectEvent | None: ...
     def list_agent_runs(self, project_id: str, limit: int = 100) -> list[AgentRunResult]: ...
 
     def claim_observation(self, event: ProjectEvent, *, run_id: str) -> ObservationClaim:
