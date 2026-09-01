@@ -23,13 +23,27 @@ def test_email_password_browser_contract_has_no_anonymous_fallback():
     )
 
 
-def test_email_password_browser_behavior_with_fake_firebase_sdk():
+def _browser_auth_suites() -> list[Path]:
+    """Every browser-auth suite, collected rather than listed.
+
+    Naming each file here means a new suite is written, passes locally, and
+    then never runs in CI because nobody remembered this list. Collecting
+    them removes that failure mode; the count assertion below keeps a glob
+    that silently matches nothing from passing vacuously.
+    """
+    return sorted((ROOT / "qa").glob("test_firebase_*_auth.mjs"))
+
+
+def test_browser_auth_behavior_with_fake_firebase_sdk():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required for the deterministic browser-auth test")
 
+    suites = _browser_auth_suites()
+    assert len(suites) >= 2, f"expected the email and Google suites, found {suites}"
+
     completed = subprocess.run(
-        [node, "--test", str(ROOT / "qa/test_firebase_email_auth.mjs")],
+        [node, "--test", *(str(suite) for suite in suites)],
         cwd=ROOT,
         capture_output=True,
         text=True,

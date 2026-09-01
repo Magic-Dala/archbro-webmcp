@@ -172,7 +172,7 @@ test('the browser wiring removes anonymous auth and loads the testable client be
   assert.match(firebaseModule, /return client \? client\.getIdToken\(\) : null/);
   assert.match(app, /prototype\.startSession\(localStorage, identity\)/);
   assert.match(app, /await signOutFromFirebase\(\)/);
-  assert.match(app, /login is not enabled yet\. Use email and password/);
+  assert.match(app, /GitHub login is not enabled yet/);
   assert.ok(html.indexOf('/static/firebase-auth-client.js') < html.indexOf('/static/app.js'));
   assert.match(html, /id="authFormMessage"[^>]+aria-live="polite"/);
 });

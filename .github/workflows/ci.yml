@@ -70,6 +70,17 @@ jobs:
             exit 1
           fi
 
+      - name: Fail if the browser-auth suite silently skipped
+        # The sign-in flows are covered by Node suites the test skips when node
+        # is absent. Runners ship Node today, so this passes; if that ever
+        # changes the sign-in coverage would vanish behind a green check.
+        run: |
+          python -m pytest tests/test_firebase_browser_auth.py -q 2>&1 | tee browser.txt
+          if grep -qE '[0-9]+ skipped' browser.txt; then
+            echo "::error::Browser-auth tests skipped - node is not available"
+            exit 1
+          fi
+
   image:
     runs-on: ubuntu-latest
 

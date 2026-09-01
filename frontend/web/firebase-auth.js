@@ -2,7 +2,9 @@ import {getApp, getApps, initializeApp} from 'https://www.gstatic.com/firebasejs
 import {
   createUserWithEmailAndPassword,
   getAuth,
+  GoogleAuthProvider,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signOut,
   updateProfile,
 } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js';
@@ -28,12 +30,20 @@ async function firebaseClient() {
   const auth = getAuth(app);
   const factory = globalThis.ArchbroFirebaseAuthClient?.createFirebaseAuthClient;
   if (typeof factory !== 'function') throw new Error('Firebase authentication support did not load.');
+  // A popup rather than a redirect: the redirect flow leaves and re-enters the
+  // page, so it has to rebuild whatever was in flight on the way back. The
+  // popup is opened by the person's own click, so browsers allow it.
+  const googleProvider = new GoogleAuthProvider();
+  googleProvider.setCustomParameters({prompt: 'select_account'});
+
   return factory({
     auth,
     createUserWithEmailAndPassword,
     signInWithEmailAndPassword,
     signOut,
     updateProfile,
+    signInWithPopup,
+    googleProvider,
   });
 }
 
@@ -70,6 +80,12 @@ export async function signInWithFirebaseEmail({email, password}) {
   const client = await configuredClient();
   if (!client) throw new Error('Firebase authentication is not enabled.');
   return client.signIn({email, password});
+}
+
+export async function signInWithGoogleAccount() {
+  const client = await configuredClient();
+  if (!client) throw new Error('Firebase authentication is not enabled.');
+  return client.signInWithGoogle();
 }
 
 export async function signOutFromFirebase() {

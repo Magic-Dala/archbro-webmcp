@@ -4,9 +4,10 @@ import {
   getFirebaseIdToken,
   restoreFirebaseIdentity,
   signInWithFirebaseEmail,
+  signInWithGoogleAccount,
   signOutFromFirebase,
   usesFirebaseAuthentication,
-} from './firebase-auth.js';
+} from './firebase-auth.js?v=20260901-google-signin';
 
 const prototype = window.ArchbroPrototype;
 const storedProjectId = localStorage.getItem('archbro-project-id');
@@ -3907,8 +3908,21 @@ document.querySelectorAll('[data-password-target]').forEach((button) => button.a
 document.querySelectorAll('[data-auth-provider]').forEach((button) => button.addEventListener('click', async () => {
   const provider = button.dataset.authProvider;
   if (usesFirebaseAuthentication()) {
-    const name = provider === 'github' ? 'GitHub' : 'Google';
-    writeAuthMessage(`${name} login is not enabled yet. Use email and password for this milestone.`);
+    if (provider !== 'google') {
+      writeAuthMessage('GitHub login is not enabled yet. Use Google, or email and password.');
+      return;
+    }
+    writeAuthMessage('');
+    setAuthenticationBusy(true);
+    try {
+      const identity = await signInWithGoogleAccount();
+      prototype.startSession(localStorage, identity);
+      await routeAfterAuthentication();
+    } catch (error) {
+      writeAuthMessage(authenticationErrorMessage(error));
+    } finally {
+      setAuthenticationBusy(false);
+    }
     return;
   }
   prototype.startSession(localStorage, {

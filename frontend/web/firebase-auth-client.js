@@ -15,9 +15,14 @@
     }
     const uid = normalizeText(user?.uid);
     if (!uid) throw new Error('Firebase returned a user without a trusted UID.');
+    // Firebase reports which provider signed the person in. Reading it rather
+    // than hardcoding keeps one source of truth as providers are added, and
+    // falls back to password for the email flow, whose fake user in tests
+    // carries no providerData.
+    const providerId = normalizeText(user?.providerData?.[0]?.providerId) || 'password';
     return {
       id: uid,
-      provider: 'password',
+      provider: providerId,
       email: normalizeEmail(user?.email),
       name: normalizeText(user?.displayName) || normalizeText(name),
     };
@@ -39,6 +44,15 @@
     if (code === 'auth/network-request-failed') {
       return 'Archbro could not reach Firebase. Check your internet connection and try again.';
     }
+    if (['auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(code)) {
+      return 'Sign-in was cancelled before it finished.';
+    }
+    if (code === 'auth/popup-blocked') {
+      return 'Your browser blocked the sign-in window. Allow pop-ups for this site and try again.';
+    }
+    if (code === 'auth/account-exists-with-different-credential') {
+      return 'This email is already registered with a different sign-in method. Use that method instead.';
+    }
     if (code === 'auth/operation-not-allowed') {
       return 'Email/password authentication is not enabled for this Firebase project.';
     }
@@ -54,6 +68,8 @@
     signInWithEmailAndPassword,
     signOut,
     updateProfile,
+    signInWithPopup,
+    googleProvider,
   }) {
     if (!auth) throw new TypeError('Firebase Auth is required.');
 
@@ -96,6 +112,14 @@
       return identityFromUser(credential?.user);
     }
 
+    async function signInWithGoogle() {
+      if (typeof signInWithPopup !== 'function' || !googleProvider) {
+        throw new Error('Google sign-in is not available.');
+      }
+      const credential = await signInWithPopup(auth, googleProvider);
+      return identityFromUser(credential?.user);
+    }
+
     async function getIdToken() {
       await waitUntilReady();
       if (!auth.currentUser) throw new Error('Sign in to continue.');
@@ -106,7 +130,7 @@
       await signOut(auth);
     }
 
-    return Object.freeze({restoreIdentity, signUp, signIn, getIdToken, endSession});
+    return Object.freeze({restoreIdentity, signUp, signIn, signInWithGoogle, getIdToken, endSession});
   }
 
   global.ArchbroFirebaseAuthClient = Object.freeze({
