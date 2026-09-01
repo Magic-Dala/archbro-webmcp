@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 from playwright.sync_api import sync_playwright
 
 
-BASE_URL = os.getenv("ARCHBRO_BASE_URL", "http://127.0.0.1:8011/")
+BASE_URL = os.getenv("ARCHBRO_BASE_URL", "http://127.0.0.1:8012/")
 CODE_REVISION = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -157,7 +157,21 @@ def bootstrap_project() -> tuple[str, int]:
                     "dependencies": [],
                 }
             ],
-            "reasoning": "A three-level fixture proves that real clicks request progressively deeper backend scopes.",
+            "planning_trace": {
+                "system_map_root_ids": ["experience", "backend", "data"],
+                "scope_evaluations": [
+                    {"scope_component_id": "experience", "decomposition": "EXPANDED", "child_ids": ["workspace"]},
+                    {"scope_component_id": "workspace", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Project Workspace is one user interaction boundary with no independent architecture subsystem below it."},
+                    {"scope_component_id": "backend", "decomposition": "EXPANDED", "child_ids": ["api", "review"]},
+                    {"scope_component_id": "api", "decomposition": "EXPANDED", "child_ids": ["projection"]},
+                    {"scope_component_id": "projection", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Projection Engine owns one canonical projection responsibility with no lower architecture boundary required."},
+                    {"scope_component_id": "review", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Review Workflow owns one human-governance boundary with no independent subsystem below it."},
+                    {"scope_component_id": "data", "decomposition": "EXPANDED", "child_ids": ["architecture_repository"]},
+                    {"scope_component_id": "architecture_repository", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Architecture Repository is one durable canonical persistence boundary with no lower architecture split."},
+                ],
+                "reconciled": True,
+            },
+            "reasoning": "A recursively evaluated three-level fixture proves that real clicks request progressively deeper backend scopes.",
         },
     )
     assert result and result["architecture"]["version"] == 1
@@ -273,6 +287,10 @@ def storage_seed(project_id: str) -> str:
 
 def main() -> int:
     project_id, version = bootstrap_project()
+    root_payload = api("GET", f"/projects/{project_id}/architecture/diagram?expected_architecture_version={version}")
+    assert root_payload
+    root_pairs = [(edge["source"], edge["target"]) for edge in root_payload["diagram"]["edges"]]
+    assert len(root_pairs) == len(set(root_pairs)), root_pairs
     diagram_requests: list[dict] = []
     console_errors: list[str] = []
     page_errors: list[str] = []
@@ -317,29 +335,60 @@ def main() -> int:
             assert root.get_attribute("data-child-count") == "2"
             assert "OPEN · 2 CHILDREN" in (root.text_content() or "")
             trace.append({"scope": "ROOT", "visible": ["experience", "backend", "data"]})
+            assert page.locator('[data-projection-role="CONTEXT"]').count() == 0
+            if page.locator(".graph-edge text").count():
+                page.locator('button[data-reading-mode="READ"]').click()
+                assert all(float(value) == 0 for value in page.locator(".graph-edge text").evaluate_all("els => els.map(el => getComputedStyle(el).opacity)"))
+                page.locator('button[data-reading-mode="FULL"]').click()
+                assert any(float(value) > 0 for value in page.locator(".graph-edge text").evaluate_all("els => els.map(el => getComputedStyle(el).opacity)"))
+                page.locator('button[data-reading-mode="MAP"]').click()
 
             assert diagram_requests, "initial project load must request the root backend diagram"
             assert diagram_requests[-1]["scope"] is None
             assert diagram_requests[-1]["expected_architecture_version"] == str(version)
 
             root.click()
+            assert "selected" in (root.get_attribute("class") or "")
+            assert page.locator('[data-component="backend"][data-projection-role="SCOPE"]').count() == 0
+            root.dblclick()
             page.locator('[data-component="api"]').wait_for(state="visible")
             page.wait_for_function("() => document.querySelector('.graph-scope-copy strong')?.textContent === 'Backend Services'")
             assert diagram_requests[-1]["scope"] == "backend"
             assert diagram_requests[-1]["expected_architecture_version"] == str(version)
+            assert page.locator(".graph-stage").get_attribute("data-reading-mode") == "MAP"
+            scope_anchor = page.locator('[data-projection-role="SCOPE"]')
+            assert scope_anchor.count() == 1
+            assert scope_anchor.get_attribute("data-component") == "backend"
+            assert "CURRENT SCOPE" in (scope_anchor.text_content() or "")
             primary = page.locator('[data-projection-role="PRIMARY"]')
             assert {primary.nth(index).get_attribute("data-component") for index in range(primary.count())} == {"api", "review"}
-            trace.append({"scope": "backend", "primary": ["api", "review"]})
+            assert page.locator('[data-projection-role="CONTEXT"]').count() == 0
+            assert page.locator('.graph-hierarchy').count() == 2
+            assert page.locator('.graph-edge').count() == 0
+            assert {page.locator('[data-node]').nth(index).get_attribute('data-component') for index in range(page.locator('[data-node]').count())} == {"backend", "api", "review"}
+            text_overflow = page.locator('#graphCanvas .node-card').evaluate_all("""cards => cards.flatMap(card => { const surface = card.querySelector('.node-surface')?.getBBox(); if (!surface) return []; return [...card.querySelectorAll('text')].map(text => ({text: text.textContent, box: text.getBBox()})).filter(item => item.box.x < surface.x - 1 || item.box.y < surface.y - 1 || item.box.x + item.box.width > surface.x + surface.width + 1 || item.box.y + item.box.height > surface.y + surface.height + 1); })""")
+            assert not text_overflow, text_overflow
+            trace.append({"scope": "backend", "anchor": "backend", "primary": ["api", "review"], "hierarchy_connectors": page.locator('.graph-hierarchy').count()})
 
             api_node = page.locator('[data-component="api"]')
             assert api_node.get_attribute("data-node-action") == "drill"
             assert "OPEN · 1 CHILD" in (api_node.text_content() or "")
             api_node.click()
+            assert "selected" in (api_node.get_attribute("class") or "")
+            assert page.locator('[data-component="api"][data-projection-role="SCOPE"]').count() == 0
+            api_node.dblclick()
             leaf = page.locator('[data-component="projection"]')
             leaf.wait_for(state="visible")
             page.wait_for_function("() => document.querySelector('.graph-scope-copy strong')?.textContent === 'Architecture API'")
             assert diagram_requests[-1]["scope"] == "api"
             assert diagram_requests[-1]["expected_architecture_version"] == str(version)
+            api_scope_anchor = page.locator('[data-projection-role="SCOPE"]')
+            assert api_scope_anchor.count() == 1
+            assert api_scope_anchor.get_attribute("data-component") == "api"
+            assert page.locator('[data-projection-role="CONTEXT"]').count() == 0
+            assert page.locator('.graph-hierarchy').count() == 1
+            assert page.locator('.graph-edge').count() == 0
+            assert {page.locator('[data-node]').nth(index).get_attribute('data-component') for index in range(page.locator('[data-node]').count())} == {"api", "projection"}
             assert leaf.get_attribute("data-node-action") == "inspect"
             trace.append({"scope": "api", "primary": ["projection"]})
 
@@ -350,20 +399,24 @@ def main() -> int:
 
             before_modes = len(diagram_requests)
             for mode in ["MAP", "READ", "FULL"]:
-                page.locator(f'[data-reading-mode="{mode}"]').click()
+                page.locator(f'button[data-reading-mode="{mode}"]').click()
                 assert page.locator(".graph-stage").get_attribute("data-reading-mode") == mode
             assert len(diagram_requests) == before_modes, "MAP/READ/FULL must not refetch topology"
 
             page.locator("[data-graph-back]").click()
+            page.wait_for_function("() => document.querySelector('.graph-scope-copy strong')?.textContent === 'Backend Services'")
             page.locator('[data-component="api"]').wait_for(state="visible")
             assert diagram_requests[-1]["scope"] == "backend"
             page.locator("[data-graph-back]").click()
+            page.wait_for_function("() => document.querySelector('.graph-scope-copy strong')?.textContent === 'Overview'")
             page.locator('[data-component="backend"]').wait_for(state="visible")
             assert diagram_requests[-1]["scope"] is None
 
-            page.locator('[data-component="backend"]').click()
+            page.locator('[data-component="backend"]').dblclick()
+            page.wait_for_function("() => document.querySelector('.graph-scope-copy strong')?.textContent === 'Backend Services'")
             page.locator('[data-component="api"]').wait_for(state="visible")
             page.locator('[data-scope-target=""]').click()
+            page.wait_for_function("() => document.querySelector('.graph-scope-copy strong')?.textContent === 'Overview'")
             page.locator('[data-component="backend"]').wait_for(state="visible")
             assert diagram_requests[-1]["scope"] is None
 

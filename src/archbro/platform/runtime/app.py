@@ -21,7 +21,7 @@ from archbro.platform.persistence.postgres import PostgresProjectRepository
 
 load_dotenv()
 
-WEBMCP_SURFACE_VERSION = "archbro.semantic-webmcp.v3"
+WEBMCP_SURFACE_VERSION = "archbro.semantic-webmcp.v4"
 WEBMCP_DEFAULT_TOOL_COUNT = 14
 WEBMCP_GATEWAY_TOOL_COUNT = 3
 

@@ -244,7 +244,15 @@ def test_code_architecture_api_does_not_mutate_living_architecture(dsn):
                 "risks": [],
             },
             "tasks": [{"title": "Build workspace", "related_component": "workspace"}],
-            "reasoning": "Fixture",
+            "planning_trace": {
+                "system_map_root_ids": ["product"],
+                "scope_evaluations": [
+                    {"scope_component_id": "product", "decomposition": "EXPANDED", "child_ids": ["workspace"]},
+                    {"scope_component_id": "workspace", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Workspace owns one human interaction boundary with no independent architecture subsystem below it."},
+                ],
+                "reconciled": True,
+            },
+            "reasoning": "Fixture with recursive scope evaluation",
         },
     )
     assert bootstrap.status_code == 200
@@ -288,6 +296,7 @@ def test_code_architecture_publish_is_durable_idempotent_and_latest_rebuilds_wit
                         "name": "Product",
                         "type": "system",
                         "responsibility": "Own accepted product intent.",
+                        "children": [{"id": "product-core", "name": "Product Core", "type": "application", "responsibility": "Own the accepted product implementation boundary."}],
                     }
                 ],
                 "relationships": [],
@@ -295,8 +304,16 @@ def test_code_architecture_publish_is_durable_idempotent_and_latest_rebuilds_wit
                 "assumptions": [],
                 "risks": [],
             },
-            "tasks": [{"title": "Keep code evidence reviewable", "related_component": "product"}],
-            "reasoning": "Fixture",
+            "tasks": [{"title": "Keep code evidence reviewable", "related_component": "product-core"}],
+            "planning_trace": {
+                "system_map_root_ids": ["product"],
+                "scope_evaluations": [
+                    {"scope_component_id": "product", "decomposition": "EXPANDED", "child_ids": ["product-core"]},
+                    {"scope_component_id": "product-core", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Product Core is one implementation boundary with no independently addressable architecture subsystem below it."},
+                ],
+                "reconciled": True,
+            },
+            "reasoning": "Fixture with recursive scope evaluation",
         },
     )
     assert bootstrap.status_code == 200

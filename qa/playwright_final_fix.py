@@ -3,15 +3,22 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
+from dataclasses import asdict
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import Browser, BrowserContext, Page, Route, sync_playwright
 
 from playwright_diagnostics import diagnostic_scope, failure_details
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from archbro.backend.core.contracts import Architecture
+from archbro.backend.core.diagram import project_scoped_diagram
+from archbro.backend.core.diagram_layout import layout_diagram
 
-BASE_URL = os.getenv("ARCHBRO_BASE_URL", "http://127.0.0.1:8011/")
+
+BASE_URL = os.getenv("ARCHBRO_BASE_URL", "http://127.0.0.1:8012/")
 ART = Path("qa/playwright_artifacts")
 ART.mkdir(parents=True, exist_ok=True)
 REPORT_PATH = ART / "final_fix_report.json"
@@ -106,6 +113,19 @@ class FakeBackend:
     def json(self, route: Route, payload, status: int = 200) -> None:
         route.fulfill(status=status, content_type="application/json", body=json.dumps(payload))
 
+    def scoped_diagram_payload(self, project_id: str, scope: str | None = None) -> dict:
+        context = self.contexts[project_id]
+        model = Architecture.model_validate(context["architecture"])
+        projection = project_scoped_diagram(model, scope_component_id=scope)
+        return {
+            "schema": projection.schema,
+            "project_id": project_id,
+            "architecture_version": projection.architecture_version,
+            "scope": projection.scope.model_dump(mode="json"),
+            "diagram": projection.diagram.model_dump(mode="json"),
+            "positioned_graph": asdict(layout_diagram(projection.diagram)),
+        }
+
     def handle(self, route: Route) -> None:
         request = route.request
         method = request.method
@@ -168,6 +188,16 @@ class FakeBackend:
             return
         if parts[2:] == ["architecture"] and method == "GET":
             self.json(route, context["architecture"])
+            return
+        if parts[2:] == ["architecture", "diagram"] and method == "GET":
+            query = parse_qs(urlsplit(request.url).query)
+            scope = query.get("scope", [None])[0]
+            expected = query.get("expected_architecture_version", [None])[0]
+            current_version = int(context["architecture"].get("version", 0))
+            if expected is not None and int(expected) != current_version:
+                self.json(route, {"detail": {"code": "stale_architecture_version", "expected_architecture_version": int(expected), "current_architecture_version": current_version}}, 409)
+                return
+            self.json(route, self.scoped_diagram_payload(project_id, scope))
             return
         if parts[2:] == ["architecture", "proposals"] and method == "GET":
             self.json(route, context["proposals"])
@@ -335,6 +365,31 @@ def case_empty_workspace_cancel(browser: Browser) -> None:
     context, page, errors = open_page(browser, backend, identity=identity, profiles={identity: profile(identity)})
     with diagnostic_scope(context.close):
         assert page.locator("#workspaceHome").is_visible()
+        for width in (1051, 1050, 901, 900, 860, 761, 390):
+            page.set_viewport_size({"width": width, "height": 844})
+            page.wait_for_timeout(60)
+            assert page.locator("#pageTitle").inner_text() == "Personal workspace"
+            title_metrics = page.locator("#pageTitle").evaluate(
+                """node => { const style=getComputedStyle(node); const rect=node.getBoundingClientRect(); return {height:rect.height,fontSize:parseFloat(style.fontSize),whiteSpace:style.whiteSpace}; }"""
+            )
+            assert title_metrics["whiteSpace"] == "nowrap", f"Personal workspace can wrap at {width}px"
+            assert title_metrics["height"] <= title_metrics["fontSize"] * 1.5, f"Personal workspace wrapped at {width}px"
+            topbar = page.locator(".topbar").bounding_box()
+            heading = page.locator(".page-heading").bounding_box()
+            actions = page.locator(".top-actions").bounding_box()
+            assert topbar and heading and actions
+            assert heading["y"] >= topbar["y"] - 1
+            assert heading["y"] + heading["height"] <= topbar["y"] + topbar["height"] + 1
+            assert heading["x"] + heading["width"] <= actions["x"] + 1
+            subtitle_display = page.locator("#pageSubtitle").evaluate("node => getComputedStyle(node).display")
+            if 761 <= width <= 1050:
+                assert subtitle_display == "none"
+            if width <= 900:
+                assert not page.locator("#workspaceLens").is_visible()
+            elif width >= 901:
+                assert page.locator("#workspaceLens").is_visible()
+        page.set_viewport_size({"width": 1440, "height": 1000})
+        page.wait_for_timeout(60)
         page.locator("#newProjectBtn").click()
         page.locator("#newProjectNameDialog").wait_for(state="visible")
         page.keyboard.press("Escape")
@@ -487,18 +542,23 @@ def case_keyboard_and_mobile_layers(browser: Browser) -> None:
         graph_view = page.locator('[data-project-id="alpha"] [data-project-view="architecture"]')
         graph_view.focus()
         page.keyboard.press("Enter")
-        graph_control = page.locator('[data-graph-node="alpha-experience"]')
+        graph_control = page.locator('[data-component="alpha-experience"][data-node-action="drill"]')
         graph_control.focus()
         page.keyboard.press("Enter")
-        assert "Workspace Experience" in page.locator("#selectedNode").inner_text()
-        page.wait_for_function("() => document.activeElement?.dataset.graphNode === 'alpha-experience'")
-        graph_drill = page.locator('[data-graph-drill="alpha-experience"]')
-        graph_drill.focus()
+        assert "selected" in (graph_control.get_attribute("class") or "")
+        assert page.locator('[data-component="alpha-experience"][data-projection-role="SCOPE"]').count() == 0
+        page.wait_for_function("() => document.activeElement?.dataset.component === 'alpha-experience'")
+        page.keyboard.press("ArrowRight")
+        scoped_anchor = page.locator('[data-component="alpha-experience"][data-projection-role="SCOPE"]')
+        scoped_anchor.wait_for(state="visible")
+        assert "Workspace Experience" in page.locator("#graphCanvas").inner_text()
+        page.wait_for_function("() => document.activeElement?.dataset.component === 'alpha-experience'")
+        graph_back = page.locator('[data-graph-back]')
+        graph_back.focus()
         page.keyboard.press("Enter")
-        page.locator(".graph-drilldown").wait_for(state="visible")
-        page.wait_for_function("() => document.activeElement?.classList.contains('drill-back')")
-        page.keyboard.press("Enter")
-        page.wait_for_function("() => document.activeElement?.dataset.graphDrill === 'alpha-experience'")
+        root_node = page.locator('[data-component="alpha-experience"][data-node-action="drill"]')
+        root_node.wait_for(state="visible")
+        page.wait_for_function("() => document.activeElement?.dataset.component === 'alpha-experience'")
 
         page.locator("#accountBtn").focus()
         page.keyboard.press("Enter")
@@ -526,6 +586,182 @@ def case_keyboard_and_mobile_layers(browser: Browser) -> None:
         for selector in ["#mobileSidebarBtn", '[data-project-toggle]', '[data-project-menu]', '[data-project-view="overview"]']:
             box = page.locator(selector).first.bounding_box()
             assert box and box["width"] >= 44 and box["height"] >= 44, (selector, box)
+        assert not errors, errors
+
+
+def case_task_architecture_navigation(browser: Browser) -> None:
+    backend = FakeBackend([project("task-nav", "Task Navigation")])
+    linked = task("task-nav", "task-linked", "Open the agent composer architecture", "TODO")
+    linked["related_component"] = "task-nav-composer"
+    unlinked = task("task-nav", "task-unlinked", "Keep this task in the queue", "TODO")
+    unlinked["related_component"] = None
+    backend.contexts["task-nav"]["tasks"] = [linked, unlinked]
+    identity = "email:task-nav@example.com"
+    context, page, errors = open_page(browser, backend, identity=identity, project_id="task-nav")
+    with diagnostic_scope(context.close):
+        page.locator('[data-project-id="task-nav"] [data-project-view="tasks"]').click()
+        page.locator("#view-tasks").wait_for(state="visible")
+
+        linked_row = page.locator('[data-task-navigate="task-linked"]')
+        assert linked_row.count() == 1
+        assert linked_row.get_attribute("tabindex") == "0"
+        assert page.locator('[data-task-navigate="task-unlinked"]').count() == 0
+
+        start_button = linked_row.locator('[data-task-action="start"]')
+        if start_button.count():
+            start_button.dispatch_event("dblclick")
+            assert page.locator("#view-tasks").is_visible()
+
+        context_button = linked_row.locator('[data-task-select]')
+        context_button.dispatch_event("dblclick")
+        assert page.locator("#view-tasks").is_visible()
+
+        linked_row.dblclick(position={"x": 20, "y": 20})
+        page.locator("#view-architecture").wait_for(state="visible")
+        target = page.locator('[data-component="task-nav-composer"]')
+        target.wait_for(state="visible")
+        page.wait_for_function("() => document.querySelector('[data-component=\"task-nav-composer\"]')?.classList.contains('selected')")
+        assert "selected" in (target.get_attribute("class") or "")
+        assert page.locator('[data-component="task-nav-experience"][data-projection-role="SCOPE"]').is_visible()
+
+        page.locator('[data-project-id="task-nav"] [data-project-view="tasks"]').click()
+        linked_row = page.locator('[data-task-navigate="task-linked"]')
+        linked_row.focus()
+        page.keyboard.press("Enter")
+        page.locator("#view-architecture").wait_for(state="visible")
+        target = page.locator('[data-component="task-nav-composer"]')
+        target.wait_for(state="visible")
+        page.wait_for_function("() => document.querySelector('[data-component=\"task-nav-composer\"]')?.classList.contains('selected')")
+        assert "selected" in (target.get_attribute("class") or "")
+        page.wait_for_function("() => document.activeElement?.dataset.component === 'task-nav-composer'")
+        assert not errors, errors
+
+
+def case_architecture_inspector_disclosure(browser: Browser) -> None:
+    project_id = "inspector"
+    backend = FakeBackend([project(project_id, "Inspector Disclosure")])
+    fixture = architecture(project_id)
+    leaf = fixture["components"][0]["children"][0]
+    leaf["id"] = "inspector-collaboration_and_notification_schema_with_a_deliberately_long_canonical_identifier"
+    leaf["name"] = "Collaboration and Notification Schema Boundary"
+    leaf["responsibility"] = (
+        "Persist durable collaboration cursors, notification inbox entries, audit-relevant event metadata, "
+        "reconnect recovery state, and deliberately verbose ownership details without escaping the inspector card."
+    )
+    fixture["decisions"] = [
+        "Keep durable collaboration state independently evolvable from realtime transport while preserving explicit audit ownership."
+    ]
+    fixture["risks"] = [
+        "A deliberately long risk description verifies that populated inspector cards grow naturally instead of overlapping adjacent panels."
+    ]
+    fixture["assumptions"] = [
+        "Canonical identifiers may be substantially longer than their human-facing component labels."
+    ]
+    backend.contexts[project_id]["architecture"] = fixture
+    linked = [
+        task(project_id, "T11", "Implement durable outbox dispatch and ordered realtime fanout", "TODO"),
+        task(project_id, "T16", "Generate in-app notifications from committed events", "TODO"),
+    ]
+    for item in linked:
+        item["related_component"] = leaf["id"]
+    backend.contexts[project_id]["tasks"] = linked
+    identity = "email:inspector@example.com"
+    context, page, errors = open_page(browser, backend, viewport={"width": 1440, "height": 900}, identity=identity, project_id=project_id)
+
+    def assert_inspector_geometry() -> None:
+        result = page.evaluate("""
+        () => {
+          const visible = (node) => {
+            if (!node) return false;
+            const style = getComputedStyle(node);
+            const rect = node.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+          };
+          const panels = [...document.querySelectorAll('.graph-side > .graph-side-panel')].filter(visible);
+          const overlap = [];
+          for (let i = 0; i < panels.length; i += 1) {
+            const a = panels[i].getBoundingClientRect();
+            for (let j = i + 1; j < panels.length; j += 1) {
+              const b = panels[j].getBoundingClientRect();
+              const x = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+              const y = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+              if (x > 1 && y > 1) overlap.push([panels[i].id, panels[j].id, Math.round(x), Math.round(y)]);
+            }
+          }
+          const overflow = [];
+          const scrollOverflow = [];
+          for (const panel of panels) {
+            const owned = panel.getBoundingClientRect();
+            for (const child of panel.querySelectorAll('*')) {
+              if (!visible(child)) continue;
+              const rect = child.getBoundingClientRect();
+              if (rect.left < owned.left - 1 || rect.right > owned.right + 1 || rect.top < owned.top - 1 || rect.bottom > owned.bottom + 1) {
+                overflow.push({panel: panel.id, child: child.id || child.className || child.tagName, right: Math.round(rect.right - owned.right), bottom: Math.round(rect.bottom - owned.bottom)});
+              }
+              if (child.clientWidth > 0 && child.scrollWidth > child.clientWidth + 1) {
+                scrollOverflow.push({panel: panel.id, child: child.id || child.className || child.tagName, scrollWidth: child.scrollWidth, clientWidth: child.clientWidth});
+              }
+            }
+          }
+          return {overlap, overflow, scrollOverflow, mode: document.querySelector('.graph-side')?.dataset.readingMode || null};
+        }
+        """)
+        assert result["overlap"] == [], result
+        assert result["overflow"] == [], result
+        assert result["scrollOverflow"] == [], result
+
+    with diagnostic_scope(context.close):
+        page.locator(f'[data-project-id="{project_id}"] [data-project-view="architecture"]').click()
+        page.locator("#view-architecture").wait_for(state="visible")
+        drill_node = page.locator(f'[data-component="{project_id}-experience"][data-node-action="drill"]')
+        drill_node.click()
+        assert "selected" in (drill_node.get_attribute("class") or "")
+        assert page.locator(f'[data-component="{project_id}-experience"][data-projection-role="SCOPE"]').count() == 0
+        drill_node.dblclick()
+        leaf_node = page.locator('[data-projection-role="PRIMARY"][data-node-action="inspect"]').first
+        leaf_node.wait_for(state="visible")
+        leaf_node.click()
+        page.locator("#graphEvidencePanel").wait_for(state="visible")
+        assert page.locator(".graph-side > #selectedNode").count() == 1
+        assert page.locator(".graph-panel > #selectedNode").count() == 0
+        evidence_box = page.locator("#graphEvidencePanel").bounding_box()
+        selected_box = page.locator("#selectedNode").bounding_box()
+        assert evidence_box and selected_box and selected_box["y"] >= evidence_box["y"] + evidence_box["height"] - 1
+        assert page.locator(".inspector-status-label").evaluate("el => getComputedStyle(el).fontSize") == "12px"
+        task_rows = page.locator(".inspector-task-row")
+        assert task_rows.count() == 2
+        assert "Implement durable outbox dispatch" in task_rows.nth(0).inner_text()
+        assert "Generate in-app notifications" in task_rows.nth(1).inner_text()
+        for index in range(task_rows.count()):
+            style = task_rows.nth(index).evaluate("el => ({border: getComputedStyle(el).borderTopWidth, radius: getComputedStyle(el).borderRadius})")
+            assert style["border"] == "1px"
+            assert style["radius"] == "10px"
+
+        viewports = [
+            {"width": 1600, "height": 900},
+            {"width": 1280, "height": 800},
+            {"width": 1024, "height": 768},
+            {"width": 768, "height": 900},
+            {"width": 390, "height": 844},
+        ]
+        for mode in ["MAP", "READ", "FULL"]:
+            page.locator(f'button[data-reading-mode="{mode}"]').click()
+            assert page.locator(".graph-side").get_attribute("data-reading-mode") == mode
+            if mode == "MAP":
+                assert page.locator("#graphDecisionPanel").is_hidden()
+                assert page.locator("#graphRiskPanel").is_hidden()
+                assert page.locator(".inspector-read").is_hidden()
+                assert page.locator(".inspector-full").is_hidden()
+            else:
+                assert page.locator("#graphDecisionPanel").is_visible()
+                assert page.locator("#graphRiskPanel").is_visible()
+                assert page.locator(".inspector-read").is_visible()
+                assert page.locator(".inspector-full").is_visible() if mode == "FULL" else page.locator(".inspector-full").is_hidden()
+            for viewport in viewports:
+                page.set_viewport_size(viewport)
+                page.wait_for_timeout(80)
+                assert_inspector_geometry()
+        assert "inspector-collaboration_and_notification" in page.locator("#nodeEvidence").inner_text()
         assert not errors, errors
 
 
@@ -919,7 +1155,9 @@ def case_autonomous_surface_sweep(browser: Browser) -> None:
             capture_surface(f"desktop_1440_account_{section}")
             page.locator('#accountSettingsDialog [data-close-dialog="accountSettingsDialog"]').first.click()
 
-        page.locator("#mcpConnectionsBtn").click()
+        page.locator("#accountBtn").click()
+        page.locator("#accountMcpConnectionsBtn").wait_for(state="visible")
+        page.locator("#accountMcpConnectionsBtn").click()
         page.locator("#mcpConnectionsDialog").wait_for(state="visible")
         page.locator("#mcpSearch").fill("google")
         assert page.locator('[data-mcp-preset="google-drive"]').is_visible()
@@ -1026,6 +1264,8 @@ CASES = [
     ("transactional_project_selection", case_transactional_project_selection),
     ("notifications_and_context", case_notifications_and_context),
     ("keyboard_and_mobile_layers", case_keyboard_and_mobile_layers),
+    ("task_architecture_navigation", case_task_architecture_navigation),
+    ("architecture_inspector_disclosure", case_architecture_inspector_disclosure),
     ("instruction_failure", case_instruction_failure),
     ("inline_rename_and_account", case_inline_rename_and_account),
     ("project_row_action_menu", case_project_row_action_menu),

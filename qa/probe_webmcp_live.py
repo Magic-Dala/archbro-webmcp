@@ -10,9 +10,9 @@ ARCHITECTURE = {
     "version": 1,
     "summary": "React frontend calls FastAPI, backed by PostgreSQL.",
     "components": [
-        {"id": "frontend", "name": "React frontend", "type": "frontend", "responsibility": "Project collaboration UI"},
-        {"id": "backend", "name": "FastAPI backend", "type": "backend", "responsibility": "REST API and orchestration"},
-        {"id": "database", "name": "PostgreSQL", "type": "database", "responsibility": "Persist project state"},
+        {"id": "frontend", "name": "React frontend", "type": "frontend", "responsibility": "Project collaboration UI", "children": [{"id": "workspace", "name": "Workspace", "type": "ui", "responsibility": "Render project workflows"}]},
+        {"id": "backend", "name": "FastAPI backend", "type": "backend", "responsibility": "REST API and orchestration", "children": [{"id": "api", "name": "API layer", "type": "service", "responsibility": "Serve project requests"}, {"id": "services", "name": "Application services", "type": "service", "responsibility": "Run project workflows"}]},
+        {"id": "database", "name": "Persistence", "type": "data platform", "responsibility": "Own durable project state", "children": [{"id": "postgresql", "name": "PostgreSQL", "type": "database", "responsibility": "Persist project state"}]},
     ],
     "relationships": [
         {"source": "frontend", "target": "backend", "relationship_type": "REST", "description": "Frontend invokes backend"},
@@ -54,7 +54,7 @@ with sync_playwright() as playwright:
           name: 'WebMCP Host Probe',
           goal: 'Build a React frontend, FastAPI backend, and PostgreSQL persistence.',
           architecture_summary: architecture.summary,
-          components: architecture.components.map(({id, name, type, responsibility}) => ({id, name, type, responsibility})),
+          components: architecture.components,
           relationships: architecture.relationships.map(({source, target, relationship_type, description}) => ({
             source: architecture.components.find((component) => component.id === source)?.name || source,
             target: architecture.components.find((component) => component.id === target)?.name || target,
@@ -66,11 +66,19 @@ with sync_playwright() as playwright:
             component: architecture.components.find((component) => component.id === related_component)?.name || related_component,
           })),
           planning_trace: {
-            system_map_root_ids: architecture.components.map((component) => component.id),
-            scope_expansions: architecture.components.map((component) => ({scope_component_id: component.id, descendant_ids: []})),
+            system_map_root_ids: ['frontend', 'backend', 'database'],
+            scope_evaluations: [
+              {scope_component_id: 'frontend', decomposition: 'EXPANDED', child_ids: ['workspace']},
+              {scope_component_id: 'workspace', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'The workspace is one user-facing interaction boundary with no independent architecture subsystem below it.'},
+              {scope_component_id: 'backend', decomposition: 'EXPANDED', child_ids: ['api', 'services']},
+              {scope_component_id: 'api', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'The API layer owns one request-boundary responsibility with no lower architecture boundary needed here.'},
+              {scope_component_id: 'services', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'Application services form one workflow boundary for this compact probe and need no further architecture split.'},
+              {scope_component_id: 'database', decomposition: 'EXPANDED', child_ids: ['postgresql']},
+              {scope_component_id: 'postgresql', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'PostgreSQL is the single durable persistence implementation boundary for this compact host probe.'}
+            ],
             reconciled: true
           },
-          reasoning: 'The current WebMCP host planned root boundaries, evaluated each root as an architecture-level leaf, then reconciled relationships and tasks.'
+          reasoning: 'The WebMCP host planned roots, recursively evaluated every canonical scope, justified true leaves, then reconciled relationships and tasks.'
         })""",
         {"architecture": ARCHITECTURE, "tasks": TASKS},
     ))

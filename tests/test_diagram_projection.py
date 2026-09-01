@@ -278,19 +278,19 @@ def test_root_projection_is_four_boundaries_with_truthful_aggregate_provenance()
     assert set(edges) == {
         ("node:web", "node:backend", "HTTPS"),
         ("node:backend", "node:data", "SQL"),
-        ("node:backend", "node:external", "HTTPS"),
-        ("node:backend", "node:external", "EVENT"),
+        ("node:backend", "node:external", "MULTIPLE"),
     }
     sql = edges[("node:backend", "node:data", "SQL")]
     assert sql.projection_kind == DiagramEdgeProjectionKind.DERIVED_CROSSING
     assert len(sql.provenance) == 2
     assert {item.source_component_id for item in sql.provenance} == {"validator", "worker"}
     assert [item.relationship_id for item in sql.provenance] == sorted(item.relationship_id for item in sql.provenance)
-    assert edges[("node:backend", "node:external", "HTTPS")].label == "HTTPS"
-    assert edges[("node:backend", "node:external", "EVENT")].label == "EVENT"
+    crossing = edges[("node:backend", "node:external", "MULTIPLE")]
+    assert crossing.label == "2 relationships"
+    assert {item.semantic_type for item in crossing.provenance} == {"HTTPS", "EVENT"}
 
 
-def test_component_scope_shows_immediate_primary_children_and_minimal_crossing_context():
+def test_component_scope_shows_only_scope_and_immediate_children_while_preserving_boundary_provenance():
     scoped = project_scoped_diagram(hierarchical_fixture(), scope_component_id="backend")
     assert scoped.scope.component_id == "backend"
     assert scoped.scope.node_id == "node:backend"
@@ -298,23 +298,32 @@ def test_component_scope_shows_immediate_primary_children_and_minimal_crossing_c
     assert [entry.component_id for entry in scoped.scope.ancestor_path] == ["backend"]
     roles = {node.component_id: node.projection_role for node in scoped.diagram.nodes}
     assert roles == {
+        "backend": DiagramProjectionRole.SCOPE,
         "api": DiagramProjectionRole.PRIMARY,
         "worker": DiagramProjectionRole.PRIMARY,
-        "web": DiagramProjectionRole.CONTEXT,
-        "data": DiagramProjectionRole.CONTEXT,
-        "external": DiagramProjectionRole.CONTEXT,
     }
     assert "validator" not in roles
+    scope_node = next(node for node in scoped.diagram.nodes if node.component_id == "backend")
+    assert scope_node.parent_id is None
+    assert scope_node.child_count == 2
+    assert next(node for node in scoped.diagram.nodes if node.component_id == "api").parent_id == "node:backend"
+    assert next(node for node in scoped.diagram.nodes if node.component_id == "worker").parent_id == "node:backend"
     assert next(node for node in scoped.diagram.nodes if node.component_id == "api").child_count == 1
+    assert scoped.diagram.edges == []
+    assert len(scoped.scope.direct_relationships) == 5
+    assert {item.source_component_id for item in scoped.scope.direct_relationships} == {"ui", "validator", "worker"}
 
 
 def test_api_scope_and_leaf_scope_do_not_fabricate_deeper_topology():
     architecture = hierarchical_fixture()
     api_scope = project_scoped_diagram(architecture, scope_component_id="api")
     roles = {node.component_id: node.projection_role for node in api_scope.diagram.nodes}
+    assert roles["api"] == DiagramProjectionRole.SCOPE
     assert roles["validator"] == DiagramProjectionRole.PRIMARY
-    assert roles["data"] == DiagramProjectionRole.CONTEXT
-    assert roles["external"] == DiagramProjectionRole.CONTEXT
+    assert next(node for node in api_scope.diagram.nodes if node.component_id == "validator").parent_id == "node:api"
+    assert set(roles) == {"api", "validator"}
+    assert api_scope.diagram.edges == []
+    assert len(api_scope.scope.direct_relationships) == 3
     assert "worker" not in roles
     leaf = project_scoped_diagram(architecture, scope_component_id="validator")
     assert leaf.scope.is_leaf is True

@@ -31,32 +31,53 @@ with sync_playwright() as playwright:
           goal: 'Build a collaborative issue tracker with React, FastAPI, PostgreSQL, and realtime collaboration.',
           architecture_summary: 'React uses FastAPI, PostgreSQL, and a custom realtime collaboration channel.',
           components: [
-            {id: 'react-web-client', name: 'React Web Client', type: 'Frontend SPA', responsibility: 'Collaborative issue tracking UI'},
-            {id: 'fastapi-application', name: 'FastAPI Application', type: 'Backend API', responsibility: 'Application API and privileged operations'},
-            {id: 'postgresql-database', name: 'PostgreSQL Database', type: 'Relational persistence', responsibility: 'Durable issue-tracking state'},
-            {id: 'realtime-collaboration-channel', name: 'Realtime Collaboration Channel', type: 'WebSocket service', responsibility: 'Custom realtime collaboration'}
+            {id: 'react-web-client', name: 'React Web Client', type: 'Frontend SPA', responsibility: 'Collaborative issue tracking UI', children: [
+              {id: 'issue-workspace', name: 'Issue Workspace', type: 'UI module', responsibility: 'Issue collaboration experience'},
+              {id: 'client-state-adapter', name: 'Client State Adapter', type: 'Client integration', responsibility: 'Client state and synchronization boundary'}
+            ]},
+            {id: 'fastapi-application', name: 'FastAPI Application', type: 'Backend API', responsibility: 'Application API and privileged operations', children: [
+              {id: 'api-layer', name: 'API Layer', type: 'HTTP boundary', responsibility: 'Receive application requests'},
+              {id: 'application-services', name: 'Application Services', type: 'Domain services', responsibility: 'Run issue tracking workflows'},
+              {id: 'integration-boundary', name: 'Integration Boundary', type: 'Backend integration', responsibility: 'Coordinate persistence and external integrations'}
+            ]},
+            {id: 'postgresql-database', name: 'PostgreSQL Database', type: 'Relational persistence', responsibility: 'Durable issue-tracking state', children: [
+              {id: 'project-state-store', name: 'Project State', type: 'Relational data', responsibility: 'Persist project and issue state'}
+            ]},
+            {id: 'realtime-collaboration-channel', name: 'Realtime Collaboration Channel', type: 'WebSocket service', responsibility: 'Custom realtime collaboration', children: [
+              {id: 'websocket-channel', name: 'WebSocket Channel', type: 'Realtime transport', responsibility: 'Deliver collaboration events'}
+            ]}
           ],
           relationships: [
-            {source: 'React Web Client', target: 'FastAPI Application', type: 'HTTPS JSON REST', description: 'Application requests'},
-            {source: 'FastAPI Application', target: 'PostgreSQL Database', type: 'SQL', description: 'Persistence'},
-            {source: 'React Web Client', target: 'Realtime Collaboration Channel', type: 'WebSocket', description: 'Realtime updates'}
+            {source: 'issue-workspace', target: 'client-state-adapter', type: 'STATE_ACTION', description: 'Workspace delegates state actions'},
+            {source: 'client-state-adapter', target: 'api-layer', type: 'HTTPS JSON REST', description: 'Application requests'},
+            {source: 'api-layer', target: 'application-services', type: 'APPLICATION_CALL', description: 'API delegates workflows'},
+            {source: 'application-services', target: 'integration-boundary', type: 'ADAPTER_CALL', description: 'Workflow invokes integrations'},
+            {source: 'integration-boundary', target: 'project-state-store', type: 'SQL', description: 'Persistence'},
+            {source: 'client-state-adapter', target: 'websocket-channel', type: 'WebSocket', description: 'Realtime updates'}
           ],
           tasks: [
-            {title: 'Build collaborative React interface', component: 'React Web Client'},
-            {title: 'Define PostgreSQL schema and migrations', component: 'PostgreSQL Database'},
-            {title: 'Add custom realtime updates', component: 'Realtime Collaboration Channel'}
+            {title: 'Build collaborative React interface', component: 'issue-workspace'},
+            {title: 'Define PostgreSQL schema and migrations', component: 'project-state-store'},
+            {title: 'Add custom realtime updates', component: 'websocket-channel'}
           ],
           planning_trace: {
             system_map_root_ids: ['react-web-client', 'fastapi-application', 'postgresql-database', 'realtime-collaboration-channel'],
-            scope_expansions: [
-              {scope_component_id: 'react-web-client', descendant_ids: []},
-              {scope_component_id: 'fastapi-application', descendant_ids: []},
-              {scope_component_id: 'postgresql-database', descendant_ids: []},
-              {scope_component_id: 'realtime-collaboration-channel', descendant_ids: []}
+            scope_evaluations: [
+              {scope_component_id: 'react-web-client', decomposition: 'EXPANDED', child_ids: ['issue-workspace', 'client-state-adapter']},
+              {scope_component_id: 'issue-workspace', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'Issue Workspace is one user-facing collaboration boundary with no independent architecture subsystem below it.'},
+              {scope_component_id: 'client-state-adapter', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'Client State Adapter is the single client synchronization boundary and requires no lower architecture split.'},
+              {scope_component_id: 'fastapi-application', decomposition: 'EXPANDED', child_ids: ['api-layer', 'application-services', 'integration-boundary']},
+              {scope_component_id: 'api-layer', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'API Layer is one HTTP application boundary and has no independently addressable subsystem below it.'},
+              {scope_component_id: 'application-services', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'Application Services owns the issue workflow boundary without another independently deployable architecture layer.'},
+              {scope_component_id: 'integration-boundary', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'Integration Boundary is the single backend adapter boundary for persistence and external access in this demo.'},
+              {scope_component_id: 'postgresql-database', decomposition: 'EXPANDED', child_ids: ['project-state-store']},
+              {scope_component_id: 'project-state-store', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'Project State is the single durable relational data boundary required by this demo architecture.'},
+              {scope_component_id: 'realtime-collaboration-channel', decomposition: 'EXPANDED', child_ids: ['websocket-channel']},
+              {scope_component_id: 'websocket-channel', decomposition: 'JUSTIFIED_LEAF', child_ids: [], leaf_reason: 'WebSocket Channel is one realtime transport boundary and needs no further architecture decomposition.'}
             ],
             reconciled: true
           },
-          reasoning: 'The host agent planned the system map first, evaluated each root scope, then reconciled relationships and tasks before committing Architecture v1.'
+          reasoning: 'The host planned SYSTEM_MAP roots, recursively evaluated every canonical scope, justified true leaves, then reconciled endpoint-level relationships and tasks.'
         })"""
     ))
     project_id = bootstrap["project"]["id"]

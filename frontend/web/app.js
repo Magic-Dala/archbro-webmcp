@@ -707,7 +707,7 @@ function normalizeDiagramGraph(payload) {
     const childCount = Number(node.child_count || 0);
     if (!Number.isInteger(childCount) || childCount < 0) throw new Error(`Invalid child_count for ${node.id}.`);
     const projectionRole = node.projection_role || 'PRIMARY';
-    if (!['PRIMARY','CONTEXT'].includes(projectionRole)) throw new Error(`Invalid projection_role for ${node.id}.`);
+    if (!['SCOPE','PRIMARY','CONTEXT'].includes(projectionRole)) throw new Error(`Invalid projection_role for ${node.id}.`);
     return {...node, projectionRole, childCount, x:numbers[0], y:numbers[1], width:numbers[2], height:numbers[3], layer:Number(positioned.layer || 0), order:Number(positioned.order || 0), hierarchyPath:positioned.hierarchy_path || []};
   });
   if (nodes.length !== positionedById.size) throw new Error('DiagramView and PositionedGraph node sets do not match.');
@@ -1643,6 +1643,17 @@ function renderTasks() {
   $('overviewTasks').innerHTML = sorted.filter((t) => t.status !== 'DONE').slice(0, 3).map((task) => taskRow(task, false)).join('') || '<p class="muted">No active tasks.</p>';
   document.querySelectorAll('[data-task-action]').forEach((btn) => btn.addEventListener('click', () => updateTask(btn.dataset.taskId, btn.dataset.taskAction)));
   document.querySelectorAll('#taskList [data-task-select]').forEach((button) => button.addEventListener('click', () => selectTaskContext(button.dataset.taskSelect)));
+  document.querySelectorAll('#taskList [data-task-navigate]').forEach((row) => {
+    row.addEventListener('dblclick', (event) => {
+      if (event.target.closest('[data-task-action], [data-task-select]')) return;
+      navigateTaskToArchitecture(row.dataset.taskNavigate);
+    });
+    row.addEventListener('keydown', (event) => {
+      if (event.target !== row || event.key !== 'Enter') return;
+      event.preventDefault();
+      navigateTaskToArchitecture(row.dataset.taskNavigate);
+    });
+  });
 }
 
 function selectTaskContext(taskId) {
@@ -1652,6 +1663,25 @@ function selectTaskContext(taskId) {
   renderTasks();
   updateInstructionContext();
   setTimeout(() => document.querySelector(`[data-task-select="${CSS.escape(taskId)}"]`)?.focus(), 0);
+}
+
+async function navigateTaskToArchitecture(taskId) {
+  const task = state.tasks.find((item) => item.id === taskId);
+  if (!task?.related_component) return false;
+  const node = findArchitectureNode(task.related_component);
+  if (!node) {
+    toast(`Architecture component not found for ${task.title}.`, true);
+    return false;
+  }
+  switchView('architecture');
+  const parentScopeComponentId = findArchitectureParentId(node.id);
+  const opened = await navigateGraphScope(parentScopeComponentId ?? null, {focusComponentId:node.id});
+  if (!opened || !diagramNodeByComponentId(node.id)) return false;
+  state.selectedComponentId = node.id;
+  state.graphFocusMode = 'connected';
+  renderGraph();
+  setTimeout(() => document.querySelector(`[data-component="${CSS.escape(node.id)}"]`)?.focus(), 0);
+  return true;
 }
 
 function taskRow(t, selectable = false) {
@@ -1665,7 +1695,9 @@ function taskRow(t, selectable = false) {
   const content = selectable
     ? `<button class="task-context-button" type="button" data-task-select="${escapeHtml(t.id)}" aria-pressed="${selected}" aria-label="Use ${escapeHtml(t.title)} as Agent context"><strong>${escapeHtml(t.title)}</strong><p>${escapeHtml(t.description || `${t.owner} · ${t.source}`)}</p></button>${action}`
     : `<div><strong>${escapeHtml(t.title)}</strong><p>${escapeHtml(t.description || `${t.owner} · ${t.source}`)}</p>${action}</div>`;
-  return `<div class="task-row${selected ? ' context-selected' : ''}"><i class="status-dot ${statusClass(t.status)}"></i><div>${content}</div><span class="status-pill ${t.status}">${t.status.replace('_', ' ')}</span></div>`;
+  const navigable = selectable && Boolean(t.related_component);
+  const navigationAttrs = navigable ? ` data-task-navigate="${escapeHtml(t.id)}" tabindex="0" aria-label="${escapeHtml(`Task ${t.title}. Double-click or press Enter to open its architecture component.`)}" title="Double-click to open related architecture component"` : '';
+  return `<div class="task-row${selected ? ' context-selected' : ''}${navigable ? ' is-architecture-linked' : ''}"${navigationAttrs}><i class="status-dot ${statusClass(t.status)}"></i><div>${content}</div><span class="status-pill ${t.status}">${t.status.replace('_', ' ')}</span></div>`;
 }
 
 async function updateTask(taskId, action) {
@@ -1814,17 +1846,41 @@ function diagramNodeHealth(node) {
 }
 
 function wrapGraphText(text, maxChars, maxLines = 2) {
-  const words = String(text || '').trim().split(' ').filter(Boolean);
+  const source = String(text || '').trim();
+  if (!source || maxChars < 2 || maxLines < 1) return [];
+  const words = source.split(/\s+/).filter(Boolean);
   const lines = [];
   let line = '';
-  for (const word of words) {
+  let consumed = 0;
+  const fitWord = (word) => word.length <= maxChars ? word : `${word.slice(0, Math.max(1, maxChars - 1))}…`;
+  for (const rawWord of words) {
     if (lines.length >= maxLines) break;
+    const word = fitWord(rawWord);
     const next = line ? `${line} ${word}` : word;
-    if (line && next.length > maxChars) { lines.push(line); line = word; } else line = next;
+    if (line && next.length > maxChars) {
+      lines.push(line);
+      if (lines.length >= maxLines) break;
+      line = word;
+    } else {
+      line = next;
+      consumed += 1;
+    }
   }
   if (line && lines.length < maxLines) lines.push(line);
-  if (lines.length === maxLines && lines.join(' ').length < String(text || '').length - 2) lines[maxLines - 1] = `${lines[maxLines - 1].replace(/[.…]+$/, '')}…`;
+  const rendered = lines.join(' ').replace(/…/g, '');
+  if ((consumed < words.length || rendered.length < source.length - 2) && lines.length) {
+    const last = lines.length - 1;
+    const base = lines[last].replace(/[.…]+$/, '');
+    lines[last] = `${base.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+  }
   return lines;
+}
+
+function graphNodeKindMarkup(node) {
+  const label = `${String(node.semantic_kind || 'COMPONENT')} · ${node.semantic_type || 'component'}`;
+  const maxChars = Math.max(12, Math.floor((node.width - 56) / 7.2));
+  const line = wrapGraphText(label, maxChars, 1)[0] || 'COMPONENT';
+  return `<text class="node-kind" x="${node.x+18}" y="${node.y+25}">${escapeHtml(line)}</text>`;
 }
 
 function graphFocusState(selectedNode) {
@@ -1871,8 +1927,9 @@ function parentGraphScopeComponentId(diagram = state.diagram) {
 }
 
 function nextReadingModeForScope(currentMode, nextScopeComponentId) {
-  if (!nextScopeComponentId) return currentMode === 'FULL' ? 'FULL' : 'MAP';
-  return currentMode === 'MAP' ? 'READ' : currentMode;
+  void currentMode;
+  void nextScopeComponentId;
+  return 'MAP';
 }
 
 function graphNodeAction(node) {
@@ -1910,11 +1967,15 @@ function setGraphReadingMode(mode, {render = renderGraph} = {}) {
 
 async function activateGraphNode(node, {navigate = navigateGraphScope, render = renderGraph} = {}) {
   if (!node) return false;
-  if (graphNodeAction(node) === 'drill') return navigate(node.component_id, {focusComponentId:node.component_id});
   state.selectedComponentId = node.component_id;
   state.graphFocusMode = 'connected';
   render();
   return true;
+}
+
+async function drillGraphNode(node, {navigate = navigateGraphScope} = {}) {
+  if (!node || graphNodeAction(node) !== 'drill') return false;
+  return navigate(node.component_id, {focusComponentId:node.component_id});
 }
 
 function graphBreadcrumbMarkup(diagram) {
@@ -1946,6 +2007,11 @@ function setArchitectureGraphKind(kind, {render = renderGraph} = {}) {
 
 function renderArchitectureChrome() {
   const codeMode = state.architectureGraphKind === 'code';
+  const graphSide = document.querySelector('.graph-side');
+  if (graphSide) {
+    graphSide.dataset.graphKind = state.architectureGraphKind;
+    graphSide.dataset.readingMode = state.readingMode;
+  }
   document.querySelectorAll('[data-architecture-graph-kind]').forEach((button) => {
     const active = button.dataset.architectureGraphKind === state.architectureGraphKind;
     button.classList.toggle('active', active);
@@ -2031,9 +2097,9 @@ function renderCodeGraph() {
   }).join('');
   const nodes = diagram.nodes.map((node) => {
     const active = state.selectedCodeNodeId === node.id;
-    const names = wrapGraphText(node.label, Math.max(14, Math.floor((node.width-34)/8)), 2).map((line,index) => `<text class="node-name" x="${node.x+18}" y="${node.y+55+index*17}">${escapeHtml(line)}</text>`).join('');
-    const responsibility = wrapGraphText(node.responsibility, Math.max(20, Math.floor((node.width-34)/6.5)), 2).map((line,index) => `<text class="node-responsibility" x="${node.x+18}" y="${node.y+96+index*14}">${escapeHtml(line)}</text>`).join('');
-    return `<g class="node-card code-node-card${active ? ' selected' : ''}" data-code-node="${escapeHtml(node.id)}" role="button" tabindex="0" aria-label="Inspect code evidence for ${escapeHtml(node.label)}"><rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/><text class="node-kind" x="${node.x+18}" y="${node.y+25}">${escapeHtml(String(node.semantic_kind || 'COMPONENT'))} · ${escapeHtml(node.semantic_type || 'component')}</text>${names}${responsibility}<text class="code-node-evidence-count" x="${node.x+18}" y="${node.y+node.height-13}">${node.sources.length} source${node.sources.length === 1 ? '' : 's'} · depth ${node.depth}</text></g>`;
+    const names = wrapGraphText(node.label, Math.max(13, Math.floor((node.width-40)/8.2)), 2).map((line,index) => `<text class="node-name" x="${node.x+18}" y="${node.y+55+index*17}">${escapeHtml(line)}</text>`).join('');
+    const responsibility = wrapGraphText(node.responsibility, Math.max(18, Math.floor((node.width-40)/6.8)), 2).map((line,index) => `<text class="node-responsibility" x="${node.x+18}" y="${node.y+96+index*14}">${escapeHtml(line)}</text>`).join('');
+    return `<g class="node-card code-node-card${active ? ' selected' : ''}" data-code-node="${escapeHtml(node.id)}" role="button" tabindex="0" aria-label="Inspect code evidence for ${escapeHtml(node.label)}"><rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/>${graphNodeKindMarkup(node)}${names}${responsibility}<text class="code-node-evidence-count" x="${node.x+18}" y="${node.y+node.height-13}">${node.sources.length} source${node.sources.length === 1 ? '' : 's'} · depth ${node.depth}</text></g>`;
   }).join('');
   $('graphVersion').textContent = `@${diagram.repository.revision.slice(0, 8)}`;
   $('graphReviewState').textContent = `${diagram.nodes.length} implementation node${diagram.nodes.length === 1 ? '' : 's'}`;
@@ -2086,15 +2152,15 @@ function renderGraph() {
   }).join('');
   const edges = diagram.edges.map((edge) => {
     const highlighted=!focus || focus.edges.has(edge.id); const anchor=edge.points[Math.floor((edge.points.length-1)/2)]; const label=edge.label || edge.semantic_type || '';
-    return `<g class="graph-edge projection-${escapeHtml(String(edge.projection_kind || 'AUTHORED').toLowerCase())}${highlighted ? ' is-focused' : ' is-dimmed'}" data-edge="${escapeHtml(edge.id)}"><path d="${graphPathData(edge.points)}" marker-end="url(#arrow)"/>${label ? `<text class="graph-detail-read" x="${anchor.x}" y="${anchor.y-7}" text-anchor="middle">${escapeHtml(label)}</text>` : ''}</g>`;
+    return `<g class="graph-edge projection-${escapeHtml(String(edge.projection_kind || 'AUTHORED').toLowerCase())}${highlighted ? ' is-focused' : ' is-dimmed'}" data-edge="${escapeHtml(edge.id)}"><path d="${graphPathData(edge.points)}" marker-end="url(#arrow)"/>${label ? `<text class="graph-detail-full" x="${anchor.x}" y="${anchor.y-7}" text-anchor="middle">${escapeHtml(label)}</text>` : ''}</g>`;
   }).join('');
   const nodes = diagram.nodes.map((node) => {
     const health=diagramNodeHealth(node), selectedNode=state.selectedComponentId===node.component_id, highlighted=!focus || focus.nodes.has(node.id);
-    const names=wrapGraphText(node.label,Math.max(14,Math.floor((node.width-34)/8)),2).map((line,index)=>`<text class="node-name" x="${node.x+18}" y="${node.y+55+index*17}">${escapeHtml(line)}</text>`).join('');
-    const responsibility=wrapGraphText(node.responsibility,Math.max(20,Math.floor((node.width-34)/6.5)),2).map((line,index)=>`<text class="node-responsibility graph-detail-read" x="${node.x+18}" y="${node.y+96+index*14}">${escapeHtml(line)}</text>`).join('');
+    const names=wrapGraphText(node.label,Math.max(12,Math.floor((node.width-48)/8.8)),2).map((line,index)=>`<text class="node-name" x="${node.x+18}" y="${node.y+55+index*17}">${escapeHtml(line)}</text>`).join('');
+    const responsibility=wrapGraphText(node.responsibility,Math.max(16,Math.floor((node.width-48)/7.4)),2).map((line,index)=>`<text class="node-responsibility graph-detail-read" x="${node.x+18}" y="${node.y+96+index*14}">${escapeHtml(line)}</text>`).join('');
     const drillable=graphNodeAction(node)==='drill', role=node.projectionRole || 'PRIMARY', action=drillable ? 'drill' : 'inspect';
-    const cue=drillable ? `<g class="node-drill-action" aria-hidden="true"><rect x="${node.x+node.width-126}" y="${node.y+node.height-31}" width="110" height="22" rx="11"/><text class="node-drill-cue" x="${node.x+node.width-25}" y="${node.y+node.height-16}" text-anchor="end">OPEN · ${node.childCount} CHILD${node.childCount===1?'':'REN'} ›</text></g>` : role==='CONTEXT' ? `<text class="node-context-cue" x="${node.x+node.width-16}" y="${node.y+node.height-13}" text-anchor="end">CONTEXT</text>` : '';
-    return `<g class="node-card projection-${role.toLowerCase()} health-${health.key} is-${action}${selectedNode ? ' selected' : ''}${highlighted ? ' is-focused' : ' is-dimmed'}" data-node="${escapeHtml(node.id)}" data-component="${escapeHtml(node.component_id)}" data-child-count="${node.childCount}" data-projection-role="${role}" data-node-action="${action}" role="button" aria-label="${escapeHtml(drillable ? `Open ${node.label} subsystem with ${node.childCount} child${node.childCount===1?'':'ren'}` : `Inspect ${node.label}`)}" tabindex="0"><rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/><text class="node-kind" x="${node.x+18}" y="${node.y+25}">${escapeHtml(String(node.semantic_kind || 'COMPONENT'))} · ${escapeHtml(node.semantic_type || 'component')}</text><circle class="node-health-dot" cx="${node.x+node.width-20}" cy="${node.y+21}" r="4.5"/>${names}${responsibility}<text class="node-status graph-detail-full" x="${node.x+18}" y="${node.y+node.height-13}">${escapeHtml(health.label)} · depth ${node.depth}</text>${cue}</g>`;
+    const cue=drillable ? `<g class="node-drill-action" aria-hidden="true"><rect x="${node.x+node.width-126}" y="${node.y+node.height-31}" width="110" height="22" rx="11"/><text class="node-drill-cue" x="${node.x+node.width-25}" y="${node.y+node.height-16}" text-anchor="end">OPEN · ${node.childCount} CHILD${node.childCount===1?'':'REN'} ›</text></g>` : role==='SCOPE' ? `<text class="node-scope-cue" x="${node.x+node.width-16}" y="${node.y+node.height-13}" text-anchor="end">CURRENT SCOPE</text>` : role==='CONTEXT' ? `<text class="node-context-cue" x="${node.x+node.width-16}" y="${node.y+node.height-13}" text-anchor="end">CONTEXT</text>` : '';
+    return `<g class="node-card projection-${role.toLowerCase()} health-${health.key} is-${action}${selectedNode ? ' selected' : ''}${highlighted ? ' is-focused' : ' is-dimmed'}" data-node="${escapeHtml(node.id)}" data-component="${escapeHtml(node.component_id)}" data-child-count="${node.childCount}" data-projection-role="${role}" data-node-action="${action}" role="button" aria-label="${escapeHtml(drillable ? `Inspect ${node.label}; double click to open subsystem with ${node.childCount} child${node.childCount===1?'':'ren'}` : `Inspect ${node.label}`)}" tabindex="0"><rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/>${graphNodeKindMarkup(node)}<circle class="node-health-dot" cx="${node.x+node.width-20}" cy="${node.y+21}" r="4.5"/>${names}${responsibility}<text class="node-status graph-detail-full" x="${node.x+18}" y="${node.y+node.height-13}">${escapeHtml(health.label)} · depth ${node.depth}</text>${cue}</g>`;
   }).join('');
   $('graphReviewState').textContent=attentionNodes.length ? `${attentionNodes.length} node${attentionNodes.length===1?'':'s'} need attention` : 'All projected nodes aligned';
   const meta=`<div class="graph-meta"><span>${diagram.nodes.length} visible nodes</span><span>${diagram.edges.length} projected relationship${diagram.edges.length===1?'':'s'}</span><span>${activeTaskCount} task${activeTaskCount===1?'':'s'} active</span><span>Accepted v${diagram.architectureVersion}</span>${attentionNodes.length ? `<span class="graph-meta-attention">${attentionNodes.length} need attention</span>` : '<span class="graph-meta-ok">No action needed</span>'}</div>`;
@@ -2102,8 +2168,17 @@ function renderGraph() {
   canvas.querySelectorAll('[data-reading-mode]').forEach((button)=>button.addEventListener('click',()=>setGraphReadingMode(button.dataset.readingMode)));
   canvas.querySelector('[data-graph-back]')?.addEventListener('click',()=>navigateGraphScope(parentGraphScopeComponentId(diagram),{focusComponentId:state.scopeComponentId}));
   canvas.querySelectorAll('[data-scope-target]').forEach((button)=>button.addEventListener('click',()=>navigateGraphScope(button.dataset.scopeTarget || null,{focusComponentId:state.scopeComponentId})));
-  const focusNode=async(el)=>{ const node=diagramNodeById(el.dataset.node); await activateGraphNode(node); if (graphNodeAction(node)==='inspect') setTimeout(()=>document.querySelector(`[data-component="${CSS.escape(node.component_id)}"]`)?.focus(),0); };
-  canvas.querySelectorAll('[data-node]').forEach((el)=>{ el.addEventListener('click',()=>{focusNode(el);}); el.addEventListener('keydown',(event)=>{ if(event.key==='Enter'||event.key===' '){event.preventDefault();focusNode(el);} }); });
+  const focusNode=async(el)=>{ const node=diagramNodeById(el.dataset.node); await activateGraphNode(node); setTimeout(()=>document.querySelector(`[data-component="${CSS.escape(node.component_id)}"]`)?.focus(),0); };
+  const drillNode=async(el)=>{ const node=diagramNodeById(el.dataset.node); await drillGraphNode(node); };
+  canvas.querySelectorAll('[data-node]').forEach((el)=>{
+    el.addEventListener('click',()=>{focusNode(el);});
+    el.addEventListener('dblclick',(event)=>{ event.preventDefault(); drillNode(el); });
+    el.addEventListener('keydown',(event)=>{
+      if(event.key==='Enter' && event.shiftKey){event.preventDefault();drillNode(el);return;}
+      if(event.key==='ArrowRight' && graphNodeAction(diagramNodeById(el.dataset.node))==='drill'){event.preventDefault();drillNode(el);return;}
+      if(event.key==='Enter'||event.key===' '){event.preventDefault();focusNode(el);}
+    });
+  });
   renderSelectedNode(); renderLists(); updateInstructionContext();
 }
 
@@ -2120,14 +2195,27 @@ function renderSelectedNode() {
   const controls=`<div class="graph-focus-controls" role="group" aria-label="Graph focus">${['connected','upstream','downstream','all'].map((mode)=>`<button type="button" data-graph-focus="${mode}" class="${state.graphFocusMode===mode?'active':''}">${mode[0].toUpperCase()+mode.slice(1)}</button>`).join('')}<button type="button" data-graph-focus="clear">Clear</button></div>`;
   const provenance=[...incoming,...outgoing].flatMap((edge)=>(edge.provenance || []).map((item)=>({edge,item})));
   $('selectedNode').innerHTML=`<small>SELECTED COMPONENT · ${escapeHtml(String(c.semantic_kind))} · ${escapeHtml(state.readingMode)}</small><div class="selected-node-title"><h3>${escapeHtml(c.label)}</h3><span class="health-pill health-${health.key}">${escapeHtml(health.label)}</span></div><p>${escapeHtml(c.responsibility)}</p>${controls}<div class="component-children-summary"><strong>Scope facts</strong><span>Projection role · ${escapeHtml(c.projectionRole)}</span><span>Canonical children · ${c.childCount}</span><span>Current scope · ${escapeHtml(diagram.scope?.label || 'Overview')}</span></div><div class="component-task-summary"><strong>${linkedTasks.length} linked task${linkedTasks.length===1?'':'s'}</strong>${linkedTasks.length ? linkedTasks.map((task)=>`<span><i class="status-dot ${statusClass(task.status)}"></i>${escapeHtml(task.title)} · ${escapeHtml(task.status.replace('_',' '))}</span>`).join('') : '<span class="muted">No execution task is linked to this component.</span>'}</div><div class="component-connections">${incoming.length||outgoing.length ? `<ul>${incoming.map((edge)=>connectionLine(edge,'in')).join('')}${outgoing.map((edge)=>connectionLine(edge,'out')).join('')}</ul>` : '<p class="muted">No projected relationships for this node in the current scope.</p>'}</div>`;
-  $('nodeEvidence').innerHTML=`<p><strong>${escapeHtml(health.label)}</strong></p><p class="muted">${escapeHtml(health.detail)}</p><p><strong>Accepted responsibility</strong></p><p class="muted">${escapeHtml(c.responsibility)}</p><p><strong>Stable Diagram ID</strong></p><p class="muted">${escapeHtml(c.id)}</p><p><strong>Canonical component ID</strong></p><p class="muted">${escapeHtml(c.component_id)}</p><p><strong>Projection role</strong></p><p class="muted">${escapeHtml(c.projectionRole)} · ${c.childCount} canonical child${c.childCount===1?'':'ren'}</p>${provenance.length ? `<p><strong>Relationship provenance</strong></p><p class="muted">${provenance.map(({edge,item})=>`${escapeHtml(edge.id)} ← ${escapeHtml(item.relationship_id || 'canonical relationship')} · ${escapeHtml(item.semantic_type || edge.semantic_type || '')}`).join('<br>')}</p>` : ''}<p><strong>Architecture status</strong></p><p class="muted">${escapeHtml(c.status?.canonical_status || 'UNKNOWN')} — projected from Architecture v${diagram.architectureVersion}.</p>`;
+  const provenanceMarkup=provenance.length ? `<div class="inspector-technical-block"><h4>Relationship provenance</h4><div class="inspector-provenance">${provenance.map(({edge,item})=>`<span>${escapeHtml(edge.id)} ← ${escapeHtml(item.relationship_id || 'canonical relationship')} · ${escapeHtml(item.semantic_type || edge.semantic_type || '')}</span>`).join('')}</div></div>` : '';
+  const projectedTaskEvidence=(c.supporting_text || []).map((text)=>{
+    const match=/^Task\s+([A-Z_]+):\s*(.+)$/i.exec(String(text || '').trim());
+    return match ? {status:match[1].toUpperCase(), title:match[2]} : null;
+  }).filter(Boolean);
+  const inspectorTasks=linkedTasks.length
+    ? linkedTasks.map((task)=>({status:task.status,title:task.title}))
+    : projectedTaskEvidence;
+  const nonTaskEvidence=(c.supporting_text || []).filter((text)=>!/^Task\s+[A-Z_]+:\s*/i.test(String(text || '').trim()));
+  const inspectorTaskMarkup=inspectorTasks.length
+    ? `<div class="inspector-task-list">${inspectorTasks.map((task)=>`<div class="inspector-task-row"><i class="status-dot ${statusClass(task.status)}" aria-hidden="true"></i><span>${escapeHtml(task.title)}</span></div>`).join('')}</div>`
+    : `<p class="inspector-status-detail">${escapeHtml(nonTaskEvidence.join(' · ') || c.status?.canonical_status || 'No additional status evidence.')}</p>`;
+  $('nodeEvidence').innerHTML=`<div class="inspector-summary"><span class="inspector-status-label">${escapeHtml(health.label)}</span>${inspectorTaskMarkup}</div><section class="inspector-responsibility"><h4>Accepted responsibility</h4><p>${escapeHtml(c.responsibility)}</p></section><dl class="inspector-facts inspector-map-facts"><div><dt>Role</dt><dd>${escapeHtml(c.projectionRole)}</dd></div><div><dt>Children</dt><dd>${c.childCount}</dd></div><div><dt>Architecture</dt><dd>v${diagram.architectureVersion}</dd></div></dl><div class="inspector-read"><dl class="inspector-facts"><div><dt>Canonical status</dt><dd>${escapeHtml(c.status?.canonical_status || 'UNKNOWN')}</dd></div><div><dt>Current scope</dt><dd>${escapeHtml(diagram.scope?.label || 'Overview')}</dd></div></dl></div><div class="inspector-full"><div class="inspector-divider"></div><dl class="inspector-facts inspector-technical-facts"><div><dt>Stable Diagram ID</dt><dd><code>${escapeHtml(c.id)}</code></dd></div><div><dt>Component ID</dt><dd><code>${escapeHtml(c.component_id)}</code></dd></div></dl>${provenanceMarkup}</div>`;
   $('selectedNode').querySelectorAll('[data-graph-focus]').forEach((button)=>button.addEventListener('click',()=>{ const mode=button.dataset.graphFocus; if(mode==='clear'){state.selectedComponentId=null;state.graphFocusMode='all';} else state.graphFocusMode=mode; renderGraph(); }));
 }
 
 function renderLists() {
-  const list = (items, empty) => items?.length ? `<ul>${items.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : `<p class="muted">${empty}</p>`;
-  $('decisionList').innerHTML = list(state.architecture.decisions, 'No recorded architecture decisions.');
-  $('riskList').innerHTML = list([...(state.architecture.risks || []), ...(state.architecture.assumptions || []).map((x) => `Assumption: ${x}`)], 'No recorded risks or assumptions.');
+  const list = (items, empty) => items?.length ? `<ul>${items.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : `<p class="muted graph-side-empty">${empty}</p>`;
+  const architecture = state.architecture || {};
+  $('decisionList').innerHTML = list(architecture.decisions, 'No recorded decisions.');
+  $('riskList').innerHTML = list([...(architecture.risks || []), ...(architecture.assumptions || []).map((x) => `Assumption: ${x}`)], 'None recorded.');
 }
 
 function renderRecentActivity() {
@@ -3029,41 +3117,53 @@ function normalizeInitialPlanningTrace(rawTrace, normalizedComponents) {
     throw new Error('planning_trace.reconciled must be true after relationships and tasks are reconciled.');
   }
   const rootIds = normalizedComponents.map((component) => component.id);
+  const leafRoots = normalizedComponents.filter((component) => !(component.children || []).length).map((component) => component.id);
+  if (leafRoots.length) {
+    throw new Error(`WebMCP SYSTEM_MAP roots must be expanded architecture boundaries; atomic components belong below a root: ${leafRoots.join(', ')}.`);
+  }
   const systemMapRootIds = Array.isArray(rawTrace.system_map_root_ids)
     ? rawTrace.system_map_root_ids.map((value) => String(value || '').trim())
     : [];
   if (systemMapRootIds.length !== rootIds.length || systemMapRootIds.some((id, index) => id !== rootIds[index])) {
     throw new Error('planning_trace.system_map_root_ids must exactly match final architecture roots in order.');
   }
-  const rawExpansions = Array.isArray(rawTrace.scope_expansions) ? rawTrace.scope_expansions : [];
-  if (rawExpansions.length !== rootIds.length) {
-    throw new Error('planning_trace.scope_expansions must cover every SYSTEM_MAP root exactly once in order.');
+  const flattenPreorder = (components) => components.flatMap((component) => [component, ...flattenPreorder(component.children || [])]);
+  const plannedComponents = flattenPreorder(normalizedComponents);
+  const rawEvaluations = Array.isArray(rawTrace.scope_evaluations) ? rawTrace.scope_evaluations : [];
+  if (rawEvaluations.length !== plannedComponents.length) {
+    throw new Error('planning_trace.scope_evaluations must cover every canonical component exactly once in preorder.');
   }
-  const descendantIds = (component) => {
-    const result = [];
-    for (const child of component.children || []) result.push(child.id, ...descendantIds(child));
-    return result;
-  };
-  const scopeExpansions = rawExpansions.map((expansion, index) => {
-    const scopeComponentId = String(expansion?.scope_component_id || '').trim();
-    if (scopeComponentId !== rootIds[index]) {
-      throw new Error('planning_trace.scope_expansions must follow SYSTEM_MAP root order.');
+  const scopeEvaluations = rawEvaluations.map((evaluation, index) => {
+    const component = plannedComponents[index];
+    const scopeComponentId = String(evaluation?.scope_component_id || '').trim();
+    if (scopeComponentId !== component.id) {
+      throw new Error('planning_trace.scope_evaluations must follow canonical component preorder.');
     }
-    const suppliedDescendants = Array.isArray(expansion?.descendant_ids)
-      ? expansion.descendant_ids.map((value) => String(value || '').trim())
+    const decomposition = String(evaluation?.decomposition || '').trim();
+    const childIds = Array.isArray(evaluation?.child_ids)
+      ? evaluation.child_ids.map((value) => String(value || '').trim())
       : [];
-    const expectedDescendants = descendantIds(normalizedComponents[index]);
-    if (
-      suppliedDescendants.length !== expectedDescendants.length
-      || suppliedDescendants.some((id, descendantIndex) => id !== expectedDescendants[descendantIndex])
-    ) {
-      throw new Error(`planning_trace descendant ids do not match final hierarchy for scope ${scopeComponentId}.`);
+    if (childIds.some((id) => !id) || new Set(childIds).size !== childIds.length) {
+      throw new Error(`planning_trace child_ids must be non-empty and unique for scope ${scopeComponentId}.`);
     }
-    return {scope_component_id: scopeComponentId, descendant_ids: suppliedDescendants};
+    const expectedChildIds = (component.children || []).map((child) => child.id);
+    const leafReason = String(evaluation?.leaf_reason || '').trim();
+    if (expectedChildIds.length) {
+      if (decomposition !== 'EXPANDED') throw new Error(`Scope ${scopeComponentId} has children and must be EXPANDED.`);
+      if (leafReason) throw new Error(`EXPANDED scope ${scopeComponentId} must not provide leaf_reason.`);
+      if (childIds.length !== expectedChildIds.length || childIds.some((id, childIndex) => id !== expectedChildIds[childIndex])) {
+        throw new Error(`planning_trace child_ids do not match immediate final children for scope ${scopeComponentId}.`);
+      }
+    } else {
+      if (decomposition !== 'JUSTIFIED_LEAF') throw new Error(`Scope ${scopeComponentId} has no children and must be JUSTIFIED_LEAF.`);
+      if (childIds.length) throw new Error(`JUSTIFIED_LEAF scope ${scopeComponentId} must not provide child_ids.`);
+      if (leafReason.length < 24) throw new Error(`JUSTIFIED_LEAF scope ${scopeComponentId} requires a specific leaf_reason of at least 24 characters.`);
+    }
+    return {scope_component_id: scopeComponentId, decomposition, child_ids: childIds, ...(leafReason ? {leaf_reason: leafReason} : {})};
   });
   return {
     system_map_root_ids: systemMapRootIds,
-    scope_expansions: scopeExpansions,
+    scope_evaluations: scopeEvaluations,
     reconciled: true,
   };
 }
@@ -3228,13 +3328,15 @@ window.ArchBroWebBridge = {
     };
   },
 
-  async submitInitialArchitecture({architecture, tasks = [], reasoning} = {}) {
+  async submitInitialArchitecture({architecture, tasks = [], planningTrace, reasoning} = {}) {
     webMcpRequireProject();
     if (!architecture || typeof architecture !== 'object') throw new Error('Architecture v1 is required.');
     if (!Array.isArray(tasks) || !tasks.length) throw new Error('At least one initial task is required.');
+    const {components: normalizedComponents} = normalizeWebMcpArchitectureComponents(architecture.components || [], {requireIds: true});
+    const normalizedPlanningTrace = normalizeInitialPlanningTrace(planningTrace, normalizedComponents);
     const result = await api(`/projects/${state.projectId}/interactive-initial-architecture`, {
       method: 'POST',
-      body: JSON.stringify({architecture, tasks, reasoning: String(reasoning || '').trim()}),
+      body: JSON.stringify({architecture: {...architecture, components: normalizedComponents}, tasks, planning_trace: normalizedPlanningTrace, reasoning: String(reasoning || '').trim()}),
     });
     await refresh();
     return {
@@ -3660,7 +3762,7 @@ $('newProjectBtn').addEventListener('click', () => {
   closeMobileSidebar();
   startOnboarding();
 });
-$('mcpConnectionsBtn').addEventListener('click', openMcpConnections);
+$('accountMcpConnectionsBtn').addEventListener('click', () => { closeTopMenus(); openMcpConnections(); });
 document.querySelectorAll('[data-mcp-preset]').forEach((card) => card.addEventListener('click', async () => selectMcpPreset(card.dataset.mcpPreset)));
 document.querySelectorAll('[data-mcp-tab]').forEach((button) => button.addEventListener('click', async () => {
   setMcpPickerTab(button.dataset.mcpTab);

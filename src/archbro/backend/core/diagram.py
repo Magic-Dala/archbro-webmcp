@@ -37,6 +37,7 @@ class DiagramHealth(StrEnum):
 
 
 class DiagramProjectionRole(StrEnum):
+    SCOPE = "SCOPE"
     PRIMARY = "PRIMARY"
     CONTEXT = "CONTEXT"
 
@@ -415,6 +416,7 @@ def _project_edges(
     scope_key: str,
     representative_for: Callable[[str], tuple[str, bool] | None],
     include_record: Callable[[_AuthoredRelationship], bool],
+    aggregate_by_pair: bool = False,
 ) -> tuple[list[DiagramEdge], set[str]]:
     authored: list[DiagramEdge] = []
     grouped: dict[tuple[str, str, str], list[_AuthoredRelationship]] = defaultdict(list)
@@ -443,15 +445,19 @@ def _project_edges(
             source_component_id != relationship.source
             or target_component_id != relationship.target
         )
-        if not collapsed:
+        if not collapsed and not aggregate_by_pair:
             authored.append(_authored_edge(record))
             continue
-        grouped[(source_node_id, target_node_id, relationship.relationship_type)].append(record)
+        group_semantic = "" if aggregate_by_pair else relationship.relationship_type
+        grouped[(source_node_id, target_node_id, group_semantic)].append(record)
 
     derived: list[DiagramEdge] = []
-    for (source_node_id, target_node_id, semantic_type), group in sorted(grouped.items()):
+    for (source_node_id, target_node_id, grouped_semantic_type), group in sorted(grouped.items()):
         ordered = sorted(group, key=lambda item: item.relationship_id)
         relationship_ids = [item.relationship_id for item in ordered]
+        semantic_types = sorted({item.relationship.relationship_type for item in ordered})
+        semantic_type = semantic_types[0] if len(semantic_types) == 1 else "MULTIPLE"
+        label = semantic_type if len(semantic_types) == 1 else f"{len(ordered)} relationships"
         derived.append(
             DiagramEdge(
                 id=_derived_edge_id(
@@ -464,7 +470,7 @@ def _project_edges(
                 source=source_node_id,
                 target=target_node_id,
                 semantic_type=semantic_type,
-                label=semantic_type,
+                label=label,
                 supporting_text="",
                 projection_kind=DiagramEdgeProjectionKind.DERIVED_CROSSING,
                 provenance=[item.provenance for item in ordered],
@@ -559,6 +565,7 @@ def project_scoped_diagram(
             scope_key="root",
             representative_for=root_representative,
             include_record=lambda _record: True,
+            aggregate_by_pair=any(component.children for component in architecture.components),
         )
         nodes = [
             _diagram_node(
@@ -636,31 +643,39 @@ def project_scoped_diagram(
     def representative(component_id: str) -> tuple[str, bool] | None:
         if is_descendant(component_id):
             return index.paths[component_id][scope_path_length], False
-        endpoint_path = index.paths[component_id]
-        return (
-            _external_representative(
-                scope_path=scope_path,
-                endpoint_path=endpoint_path,
-            ),
-            True,
-        )
+        return None
 
     def include_record(record: _AuthoredRelationship) -> bool:
         relationship = record.relationship
-        if relationship.source == scope_component_id or relationship.target == scope_component_id:
-            return False
-        return is_descendant(relationship.source) or is_descendant(relationship.target)
+        return is_descendant(relationship.source) and is_descendant(relationship.target)
 
-    edges, context_component_ids = _project_edges(
+    direct_relationships = [
+        record.provenance
+        for record in records
+        if (
+            record.relationship.source == scope_component_id
+            or record.relationship.target == scope_component_id
+            or is_descendant(record.relationship.source) != is_descendant(record.relationship.target)
+        )
+    ]
+
+    edges, _ = _project_edges(
         records=records,
         scope_key=scope_component_id,
         representative_for=representative,
         include_record=include_record,
+        aggregate_by_pair=True,
     )
-    context_component_ids.difference_update(primary_component_ids)
-    context_component_ids.discard(scope_component_id)
 
     nodes = [
+        _diagram_node(
+            scope,
+            role=DiagramProjectionRole.SCOPE,
+            index=index,
+            tasks_by_component=tasks_by_component,
+            proposals_by_component=proposals_by_component,
+        )
+    ] + [
         _diagram_node(
             index.components[component_id],
             role=DiagramProjectionRole.PRIMARY,
@@ -669,15 +684,6 @@ def project_scoped_diagram(
             proposals_by_component=proposals_by_component,
         )
         for component_id in primary_component_ids
-    ] + [
-        _diagram_node(
-            index.components[component_id],
-            role=DiagramProjectionRole.CONTEXT,
-            index=index,
-            tasks_by_component=tasks_by_component,
-            proposals_by_component=proposals_by_component,
-        )
-        for component_id in sorted(context_component_ids)
     ]
 
     return ScopedDiagramProjection(

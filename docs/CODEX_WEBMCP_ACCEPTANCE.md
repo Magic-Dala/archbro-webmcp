@@ -27,7 +27,7 @@ The `?mode=webmcp` query parameter enables the acceptance-safe UI. It disables U
 
 - `ok=true`
 - `surface=archbro-webmcp`
-- `surface_version=archbro.semantic-webmcp.v3`
+- `surface_version=archbro.semantic-webmcp.v4`
 - `expected_tool_count=14`
 - `connected_mcp_gateway_configured=false`
 - `stale_client=false`
@@ -48,7 +48,7 @@ Use only discovered `archbro_*` tools.
 5. `archbro_find_architecture_path`
 6. `archbro_get_architecture_decision_context`
 
-Create a clearly named disposable project with one hierarchical Architecture v1. Before bootstrap, plan SYSTEM_MAP roots, EXPAND_SCOPE for each root, then RECONCILE relationships and tasks. The supplied `planning_trace` must match the submitted hierarchy.
+Create a clearly named disposable project with one hierarchical Architecture v1. Before bootstrap, plan SYSTEM_MAP roots, recursively evaluate every scope as EXPANDED or JUSTIFIED_LEAF, then RECONCILE relationships and tasks. The supplied `planning_trace` must cover every canonical component in preorder and match the submitted hierarchy.
 
 Verify:
 

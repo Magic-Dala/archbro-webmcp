@@ -115,7 +115,7 @@ def test_architecture_diagram_endpoint_returns_frozen_root_envelope_and_layout(d
     assert_matching_graph_contracts(body)
 
 
-def test_architecture_diagram_scoped_route_returns_primary_children_context_and_provenance(dsn):
+def test_architecture_diagram_scoped_route_returns_one_depth_and_boundary_provenance(dsn):
     repository, client = make_client(dsn)
     project = save_hierarchical_fixture(repository)
     response = client.get(
@@ -132,20 +132,16 @@ def test_architecture_diagram_scoped_route_returns_primary_children_context_and_
     ]
     roles = {node["component_id"]: node["projection_role"] for node in body["diagram"]["nodes"]}
     assert roles == {
+        "backend": "SCOPE",
         "api": "PRIMARY",
         "worker": "PRIMARY",
-        "data": "CONTEXT",
-        "external": "CONTEXT",
-        "web": "CONTEXT",
     }
-    sql = next(
-        edge
-        for edge in body["diagram"]["edges"]
-        if edge["source"] == "node:api" and edge["target"] == "node:data" and edge["semantic_type"] == "SQL"
-    )
-    assert sql["projection_kind"] == "DERIVED_CROSSING"
-    assert sql["provenance"][0]["source_component_id"] == "validator"
-    assert sql["provenance"][0]["target_component_id"] == "db"
+    by_component = {node["component_id"]: node for node in body["diagram"]["nodes"]}
+    assert by_component["api"]["parent_id"] == "node:backend"
+    assert by_component["worker"]["parent_id"] == "node:backend"
+    assert body["diagram"]["edges"] == []
+    assert len(body["scope"]["direct_relationships"]) == 5
+    assert {item["target_component_id"] for item in body["scope"]["direct_relationships"]} == {"api", "db", "search"}
     assert_matching_graph_contracts(body)
 
 

@@ -34,10 +34,10 @@ Archbro exposes **14 tools by default**. Connected-MCP gateway tools are a separ
 | --- | --- | --- |
 | `archbro_ping` | Verify native WebMCP connectivity without mutation or model use | Read-only |
 | `archbro_get_agent_context` | Read compact project/agent context and connected sources | Read-only |
-| `archbro_get_architecture_diagram` | Read the backend-authored root or one Living Architecture subsystem projection, including PRIMARY/CONTEXT nodes, provenance, and positioned graph | Read-only |
+| `archbro_get_architecture_diagram` | Read the backend-authored root or one Living Architecture subsystem projection, including SCOPE/PRIMARY nodes, provenance, and positioned graph | Read-only |
 | `archbro_get_architecture_node_context` | Read bounded upstream/downstream canonical dependency context for a stable `node:<component_id>` | Read-only |
 | `archbro_find_architecture_path` | Find a deterministic directed path using authored architecture relationships | Read-only |
-| `archbro_bootstrap_project` | Atomically save the final hierarchical Architecture v1 only after the host records SYSTEM_MAP roots, one EXPAND_SCOPE pass per root, and RECONCILE in `planning_trace` | Deterministic project/bootstrap APIs; trace must match final topology |
+| `archbro_bootstrap_project` | Atomically save the final hierarchical Architecture v1 only after the host records SYSTEM_MAP roots, recursive evaluation of every scope as EXPANDED or JUSTIFIED_LEAF, and RECONCILE in `planning_trace` | Deterministic project/bootstrap APIs; trace must match final topology |
 | `archbro_expand_architecture_scope` | Propose one additive child level under an existing canonical component; grandchildren are expanded in a later call | `PENDING` proposal / human approval |
 | `archbro_get_architecture_decision_context` | Read accepted Living Architecture, execution state, evidence, pending review, and governance rules | Read-only |
 | `archbro_submit_architecture_recommendation` | Submit architecture-specific host reasoning; architecture changes become pending human review | Proposal boundary only |
@@ -61,7 +61,7 @@ When an external MCP gateway is configured, Archbro adds exactly three tools: `a
 8. The host must use `archbro_get_architecture_diagram` for hierarchical drill-down. It must not infer, crop, or manufacture child topology from a full-tree browser snapshot.
 9. Code Architecture is not Living Architecture. Code nodes use `code-node:*`, require exact 40-character Git revision provenance plus source excerpts, and cannot alter accepted `node:<component_id>` topology or version.
 10. Before publishing Code Architecture, the host must inspect the connected GitHub repository at the exact revision. File names, folder proximity, or an unpinned branch HEAD are insufficient implementation evidence.
-11. Initial WebMCP planning is progressive even though persistence is atomic: the host must first choose stable SYSTEM_MAP root ids, then evaluate/expand every root against that draft, then reconcile authored relationships and initial tasks. `planning_trace` must exactly match the submitted hierarchy; post-bootstrap structural changes still use reviewable `archbro_expand_architecture_scope` proposals.
+11. Initial WebMCP planning is recursive even though persistence is atomic: the host must first choose stable SYSTEM_MAP roots, then evaluate every canonical component in preorder. Every SYSTEM_MAP root must be EXPANDED with at least one child. Below those roots, each scope must be EXPANDED with its exact immediate child ids or a JUSTIFIED_LEAF with a specific reason; only then may the host reconcile authored relationships and tasks. `planning_trace` must exactly match the submitted hierarchy; post-bootstrap structural changes still use reviewable `archbro_expand_architecture_scope` proposals.
 
 ## Living Architecture vs Code Architecture
 

@@ -39,7 +39,7 @@ Default semantic Site Tools (14 when no connected MCP gateway is configured):
 | `archbro_get_architecture_diagram` | Read root/subsystem projections from the backend-authored Living Architecture graph |
 | `archbro_get_architecture_node_context` | Read bounded upstream/downstream dependency context for a stable Living Architecture node |
 | `archbro_find_architecture_path` | Find a directed authored dependency path between architecture nodes |
-| `archbro_bootstrap_project` | Atomically commit a host-designed Architecture v1 only after SYSTEM_MAP → per-root EXPAND_SCOPE → RECONCILE planning; the required trace is validated against the final hierarchy |
+| `archbro_bootstrap_project` | Atomically commit a host-designed Architecture v1 only after SYSTEM_MAP → recursive per-scope evaluation → RECONCILE planning; every SYSTEM_MAP root must expand, and every component must be EXPANDED or a JUSTIFIED_LEAF and the trace is validated against the final hierarchy |
 | `archbro_expand_architecture_scope` | Propose an additive one-level decomposition under an existing component; human acceptance remains required |
 | `archbro_get_architecture_decision_context` | Read accepted Living Architecture, execution state, evidence, and governance rules |
 | `archbro_submit_architecture_recommendation` | Submit architecture-specific reasoning; changes become `PENDING` human review |
@@ -170,7 +170,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m uvicorn archbro.main:app --host 127.0.0.1 --port 8011
 ```
 
-Open `http://127.0.0.1:8011/` or `http://127.0.0.1:8011/?mode=webmcp` for the WebMCP acceptance mode.
+Open `http://127.0.0.1:8011/` for the normal local product surface, or `http://127.0.0.1:8011/?mode=webmcp` for the stricter WebMCP acceptance mode.
 
 ## Environment
 

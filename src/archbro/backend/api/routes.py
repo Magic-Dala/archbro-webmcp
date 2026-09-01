@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -126,9 +126,11 @@ class EventRequest(BaseModel):
         return self
 
 
-class InitialScopePlanningTrace(BaseModel):
+class InitialScopePlanningEvaluation(BaseModel):
     scope_component_id: str
-    descendant_ids: list[str] = Field(default_factory=list, max_length=40)
+    decomposition: Literal["EXPANDED", "JUSTIFIED_LEAF"]
+    child_ids: list[str] = Field(default_factory=list, max_length=12)
+    leaf_reason: str | None = Field(default=None, max_length=280)
 
     @field_validator("scope_component_id")
     @classmethod
@@ -138,20 +140,39 @@ class InitialScopePlanningTrace(BaseModel):
             raise ValueError("must not be empty")
         return value
 
-    @field_validator("descendant_ids")
+    @field_validator("child_ids")
     @classmethod
-    def normalize_descendant_ids(cls, values: list[str]) -> list[str]:
+    def normalize_child_ids(cls, values: list[str]) -> list[str]:
         normalized = [value.strip() for value in values]
         if any(not value for value in normalized):
-            raise ValueError("descendant ids must not be empty")
+            raise ValueError("child ids must not be empty")
         if len(set(normalized)) != len(normalized):
-            raise ValueError("descendant ids must be unique")
+            raise ValueError("child ids must be unique")
         return normalized
+
+    @field_validator("leaf_reason")
+    @classmethod
+    def normalize_leaf_reason(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_decomposition(self) -> "InitialScopePlanningEvaluation":
+        if self.decomposition == "EXPANDED":
+            if not self.child_ids:
+                raise ValueError("EXPANDED scope must name at least one immediate child")
+            if self.leaf_reason:
+                raise ValueError("EXPANDED scope must not provide leaf_reason")
+        else:
+            if self.child_ids:
+                raise ValueError("JUSTIFIED_LEAF scope must not name child ids")
+            if len(self.leaf_reason or "") < 24:
+                raise ValueError("JUSTIFIED_LEAF requires a specific leaf_reason of at least 24 characters")
+        return self
 
 
 class InitialArchitecturePlanningTrace(BaseModel):
     system_map_root_ids: list[str] = Field(min_length=1, max_length=8)
-    scope_expansions: list[InitialScopePlanningTrace] = Field(min_length=1, max_length=8)
+    scope_evaluations: list[InitialScopePlanningEvaluation] = Field(min_length=1, max_length=80)
     reconciled: bool
 
     @field_validator("system_map_root_ids")
@@ -175,7 +196,7 @@ class InteractiveInitialArchitectureRequest(BaseModel):
     architecture: Architecture
     tasks: list[TaskProposal]
     reasoning: str
-    planning_trace: InitialArchitecturePlanningTrace | None = None
+    planning_trace: InitialArchitecturePlanningTrace
 
     @field_validator("reasoning")
     @classmethod
@@ -199,38 +220,44 @@ class InteractiveInitialArchitectureRequest(BaseModel):
         })
         if unknown_task_components:
             raise ValueError(f"initial tasks reference unknown architecture component ids: {unknown_task_components}")
-        if self.planning_trace is not None:
-            root_ids = [component.id for component in self.architecture.components]
-            if self.planning_trace.system_map_root_ids != root_ids:
-                raise ValueError(
-                    "planning_trace.system_map_root_ids must exactly match final architecture roots in order"
-                )
-            expansion_scope_ids = [
-                expansion.scope_component_id for expansion in self.planning_trace.scope_expansions
-            ]
-            if expansion_scope_ids != root_ids:
-                raise ValueError(
-                    "planning_trace.scope_expansions must cover every SYSTEM_MAP root exactly once in order"
-                )
+        root_ids = [component.id for component in self.architecture.components]
+        leaf_roots = [component.id for component in self.architecture.components if not component.children]
+        if leaf_roots:
+            raise ValueError(
+                "WebMCP SYSTEM_MAP roots must be expanded architecture boundaries; "
+                f"atomic components belong below a root: {leaf_roots}"
+            )
+        if self.planning_trace.system_map_root_ids != root_ids:
+            raise ValueError(
+                "planning_trace.system_map_root_ids must exactly match final architecture roots in order"
+            )
 
-            def descendant_ids(component) -> list[str]:
-                result: list[str] = []
-                for child in component.children:
-                    result.append(child.id)
-                    result.extend(descendant_ids(child))
-                return result
+        def preorder_components(components) -> list:
+            result: list = []
+            for component in components:
+                result.append(component)
+                result.extend(preorder_components(component.children))
+            return result
 
-            for root, expansion in zip(
-                self.architecture.components,
-                self.planning_trace.scope_expansions,
-                strict=True,
-            ):
-                expected_descendants = descendant_ids(root)
-                if expansion.descendant_ids != expected_descendants:
+        planned_components = preorder_components(self.architecture.components)
+        evaluation_ids = [evaluation.scope_component_id for evaluation in self.planning_trace.scope_evaluations]
+        expected_ids = [component.id for component in planned_components]
+        if evaluation_ids != expected_ids:
+            raise ValueError(
+                "planning_trace.scope_evaluations must cover every canonical component exactly once in preorder"
+            )
+        for component, evaluation in zip(planned_components, self.planning_trace.scope_evaluations, strict=True):
+            expected_child_ids = [child.id for child in component.children]
+            if expected_child_ids:
+                if evaluation.decomposition != "EXPANDED":
+                    raise ValueError(f"planning_trace scope {component.id} has children and must be EXPANDED")
+                if evaluation.child_ids != expected_child_ids:
                     raise ValueError(
-                        "planning_trace descendant ids must exactly match the final hierarchy for scope "
-                        f"{root.id}"
+                        "planning_trace child ids must exactly match immediate final children for scope "
+                        f"{component.id}"
                     )
+            elif evaluation.decomposition != "JUSTIFIED_LEAF":
+                raise ValueError(f"planning_trace scope {component.id} has no children and must be JUSTIFIED_LEAF")
         return self
 
 
@@ -522,11 +549,7 @@ def build_router(
                 "intent": "INITIAL_ARCHITECTURE",
                 "summary": request.reasoning,
                 "provider": "webmcp-agent",
-                "planning_trace": (
-                    request.planning_trace.model_dump(mode="json")
-                    if request.planning_trace is not None
-                    else None
-                ),
+                "planning_trace": request.planning_trace.model_dump(mode="json", exclude_none=True),
             },
         )
         actions = [

@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 import re
 
@@ -29,18 +30,28 @@ def bootstrap_semantic_project(client: TestClient) -> str:
             "version": 1,
             "summary": "Web calls API.",
             "components": [
-                {"id": "web", "name": "Web", "type": "frontend", "responsibility": "Workspace UI"},
-                {"id": "api", "name": "API", "type": "backend", "responsibility": "Product API"},
+                {"id": "web", "name": "Web Experience", "type": "frontend system", "responsibility": "Own workspace interaction", "children": [{"id": "web-ui", "name": "Workspace UI", "type": "ui", "responsibility": "Render workspace workflows"}]},
+                {"id": "api", "name": "API Platform", "type": "backend system", "responsibility": "Own product API processing", "children": [{"id": "api-service", "name": "API Service", "type": "service", "responsibility": "Serve product requests"}]},
             ],
             "relationships": [
-                {"source": "web", "target": "api", "relationship_type": "HTTPS"},
+                {"source": "web-ui", "target": "api-service", "relationship_type": "HTTPS"},
             ],
             "decisions": [],
             "assumptions": [],
             "risks": [],
         },
-        "tasks": [{"title": "Build API", "related_component": "api"}],
-        "reasoning": "Host supplied the initial accepted plan.",
+        "tasks": [{"title": "Build API", "related_component": "api-service"}],
+        "planning_trace": {
+            "system_map_root_ids": ["web", "api"],
+            "scope_evaluations": [
+                {"scope_component_id": "web", "decomposition": "EXPANDED", "child_ids": ["web-ui"]},
+                {"scope_component_id": "web-ui", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Workspace UI owns one user interaction boundary with no independent architecture subsystem below it."},
+                {"scope_component_id": "api", "decomposition": "EXPANDED", "child_ids": ["api-service"]},
+                {"scope_component_id": "api-service", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "API Service owns one request-processing boundary with no independently addressable subsystem below it."},
+            ],
+            "reconciled": True,
+        },
+        "reasoning": "Host supplied the recursively evaluated initial accepted plan.",
     })
     assert bootstrap.status_code == 200, bootstrap.text
     return project_id
@@ -143,7 +154,7 @@ def test_webmcp_manifest_and_ping_have_server_build_identity(dsn, monkeypatch):
     assert manifest_response.headers["cache-control"] == "no-store, max-age=0"
     manifest = manifest_response.json()
     assert manifest["surface"] == "archbro-webmcp"
-    assert manifest["surface_version"] == "archbro.semantic-webmcp.v3"
+    assert manifest["surface_version"] == "archbro.semantic-webmcp.v4"
     assert manifest["expected_tool_count"] == 14
     assert manifest["connected_mcp_gateway_configured"] is False
     assert len(manifest["asset_sha256"]) == 64
@@ -389,24 +400,36 @@ def test_host_agent_can_supply_initial_architecture_without_model_provider_call(
             "version": 1,
             "summary": "React frontend calls FastAPI, backed by PostgreSQL.",
             "components": [
-                {"id": "frontend", "name": "React frontend", "type": "frontend", "responsibility": "Project collaboration UI"},
-                {"id": "backend", "name": "FastAPI backend", "type": "backend", "responsibility": "REST API and orchestration"},
-                {"id": "database", "name": "PostgreSQL", "type": "database", "responsibility": "Persist project state"},
+                {"id": "frontend", "name": "Frontend Experience", "type": "frontend system", "responsibility": "Own project collaboration UI", "children": [{"id": "workspace", "name": "Workspace", "type": "ui", "responsibility": "Render project workflows"}]},
+                {"id": "backend", "name": "Backend Platform", "type": "backend system", "responsibility": "Own API and application workflows", "children": [{"id": "api", "name": "FastAPI API", "type": "service", "responsibility": "Serve project requests"}]},
+                {"id": "data", "name": "Data Platform", "type": "data system", "responsibility": "Own durable project state", "children": [{"id": "postgresql", "name": "PostgreSQL", "type": "database", "responsibility": "Persist project state"}]},
             ],
             "relationships": [
-                {"source": "frontend", "target": "backend", "relationship_type": "REST", "description": "Frontend invokes backend"},
-                {"source": "backend", "target": "database", "relationship_type": "PERSISTENCE", "description": "Backend persists state"},
+                {"source": "workspace", "target": "api", "relationship_type": "REST", "description": "Workspace invokes backend API"},
+                {"source": "api", "target": "postgresql", "relationship_type": "PERSISTENCE", "description": "API persists state"},
             ],
             "decisions": ["Use React", "Use FastAPI", "Use PostgreSQL"],
             "assumptions": [],
             "risks": [],
         },
         "tasks": [
-            {"title": "Build FastAPI backend skeleton", "related_component": "backend", "acceptance_criteria": ["API starts"]},
-            {"title": "Build React frontend shell", "related_component": "frontend", "acceptance_criteria": ["UI renders"]},
-            {"title": "Prepare PostgreSQL persistence", "related_component": "database", "acceptance_criteria": ["Persistence works"]},
+            {"title": "Build FastAPI backend skeleton", "related_component": "api", "acceptance_criteria": ["API starts"]},
+            {"title": "Build React frontend shell", "related_component": "workspace", "acceptance_criteria": ["UI renders"]},
+            {"title": "Prepare PostgreSQL persistence", "related_component": "postgresql", "acceptance_criteria": ["Persistence works"]},
         ],
-        "reasoning": "The host agent derived Architecture v1 directly from the stored goal.",
+        "planning_trace": {
+            "system_map_root_ids": ["frontend", "backend", "data"],
+            "scope_evaluations": [
+                {"scope_component_id": "frontend", "decomposition": "EXPANDED", "child_ids": ["workspace"]},
+                {"scope_component_id": "workspace", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Workspace owns one user interaction boundary with no independent architecture subsystem below it."},
+                {"scope_component_id": "backend", "decomposition": "EXPANDED", "child_ids": ["api"]},
+                {"scope_component_id": "api", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "FastAPI API owns one request boundary with no independently addressable subsystem below it."},
+                {"scope_component_id": "data", "decomposition": "EXPANDED", "child_ids": ["postgresql"]},
+                {"scope_component_id": "postgresql", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "PostgreSQL is the durable persistence implementation boundary and needs no lower architecture split."},
+            ],
+            "reconciled": True,
+        },
+        "reasoning": "The host agent derived Architecture v1 recursively from the stored goal.",
     })
     assert bootstrap.status_code == 200
     body = bootstrap.json()
@@ -418,13 +441,33 @@ def test_host_agent_can_supply_initial_architecture_without_model_provider_call(
     activity = client.get(f"/projects/{project_id}/events?limit=10").json()
     assert activity[-1]["payload"]["external_source"] == "WEBMCP_AGENT"
     assert activity[-1]["payload"]["intent"] == "INITIAL_ARCHITECTURE"
+    assert activity[-1]["payload"]["planning_trace"]["reconciled"] is True
 
 
-def test_external_initial_planning_trace_is_validated_against_final_hierarchy_when_supplied(dsn):
+def test_external_initial_architecture_rejects_missing_planning_trace(dsn):
+    client = make_client(dsn)
+    project = client.post("/projects", json={"name": "No trace", "goal": "Build a small web system.", "description": ""})
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+    rejected = client.post(f"/projects/{project_id}/interactive-initial-architecture", json={
+        "architecture": {
+            "version": 1,
+            "summary": "Attempted untraced architecture",
+            "components": [{"id": "backend", "name": "Backend", "type": "system", "responsibility": "Own backend work", "children": [{"id": "api", "name": "API", "type": "service", "responsibility": "Serve requests"}]}],
+            "relationships": [], "decisions": [], "assumptions": [], "risks": [],
+        },
+        "tasks": [{"title": "Build API", "related_component": "api"}],
+        "reasoning": "This intentionally omits the required recursive planning trace.",
+    })
+    assert rejected.status_code == 422
+    assert client.get(f"/projects/{project_id}/architecture").json()["version"] == 0
+
+
+def test_external_initial_planning_trace_requires_recursive_scope_evaluation(dsn):
     client = make_client(dsn)
     project = client.post("/projects", json={
         "name": "Outside-in trace",
-        "goal": "Validate a root-first external architecture plan.",
+        "goal": "Validate recursive external architecture planning.",
         "description": "",
     })
     assert project.status_code == 200
@@ -432,7 +475,7 @@ def test_external_initial_planning_trace_is_validated_against_final_hierarchy_wh
     payload = {
         "architecture": {
             "version": 1,
-            "summary": "Root-first plan",
+            "summary": "Root-first recursive plan",
             "components": [
                 {
                     "id": "experience",
@@ -440,42 +483,66 @@ def test_external_initial_planning_trace_is_validated_against_final_hierarchy_wh
                     "type": "system",
                     "responsibility": "Own interaction.",
                     "children": [
-                        {
-                            "id": "workspace",
-                            "name": "Workspace",
-                            "type": "ui",
-                            "responsibility": "Render project workflows.",
-                        }
+                        {"id": "workspace", "name": "Workspace", "type": "ui", "responsibility": "Render project workflows."}
                     ],
                 },
-                {
-                    "id": "backend",
-                    "name": "Backend",
-                    "type": "system",
-                    "responsibility": "Own services.",
-                },
+                {"id": "backend", "name": "Backend", "type": "system", "responsibility": "Own request processing.", "children": [{"id": "request-handler", "name": "Request Handler", "type": "service", "responsibility": "Handle one request-processing boundary."}]},
             ],
-            "relationships": [],
-            "decisions": [],
-            "assumptions": [],
-            "risks": [],
+            "relationships": [], "decisions": [], "assumptions": [], "risks": [],
         },
         "tasks": [{"title": "Build workspace", "related_component": "workspace"}],
-        "reasoning": "SYSTEM_MAP, scoped expansion, then reconciliation.",
+        "reasoning": "SYSTEM_MAP, recursive scope evaluation, then reconciliation.",
         "planning_trace": {
             "system_map_root_ids": ["experience", "backend"],
-            "scope_expansions": [
-                {"scope_component_id": "experience", "descendant_ids": ["WRONG"]},
-                {"scope_component_id": "backend", "descendant_ids": []},
+            "scope_evaluations": [
+                {"scope_component_id": "experience", "decomposition": "EXPANDED", "child_ids": ["workspace"]},
+                {"scope_component_id": "workspace", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "The workspace is one user-facing interaction boundary with no independent subsystem below it."},
+                {"scope_component_id": "backend", "decomposition": "EXPANDED", "child_ids": ["request-handler"]},
+                {"scope_component_id": "request-handler", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "Request Handler owns one request-processing boundary and has no independently addressable subsystem below it."},
             ],
             "reconciled": True,
         },
     }
-    rejected = client.post(f"/projects/{project_id}/interactive-initial-architecture", json=payload)
+
+    missing_nested = copy.deepcopy(payload)
+    missing_nested["planning_trace"]["scope_evaluations"].pop(1)
+    rejected = client.post(f"/projects/{project_id}/interactive-initial-architecture", json=missing_nested)
     assert rejected.status_code == 422
     assert client.get(f"/projects/{project_id}/architecture").json()["version"] == 0
 
-    payload["planning_trace"]["scope_expansions"][0]["descendant_ids"] = ["workspace"]
+    fake_leaf = copy.deepcopy(payload)
+    fake_leaf["planning_trace"]["scope_evaluations"][0] = {
+        "scope_component_id": "experience", "decomposition": "JUSTIFIED_LEAF", "child_ids": [],
+        "leaf_reason": "This deliberately incorrect leaf claim is long enough to pass only text-length validation.",
+    }
+    rejected = client.post(f"/projects/{project_id}/interactive-initial-architecture", json=fake_leaf)
+    assert rejected.status_code == 422
+
+    weak_leaf = copy.deepcopy(payload)
+    weak_leaf["planning_trace"]["scope_evaluations"][1]["leaf_reason"] = "leaf"
+    rejected = client.post(f"/projects/{project_id}/interactive-initial-architecture", json=weak_leaf)
+    assert rejected.status_code == 422
+
+    wrong_children = copy.deepcopy(payload)
+    wrong_children["planning_trace"]["scope_evaluations"][0]["child_ids"] = ["backend"]
+    rejected = client.post(f"/projects/{project_id}/interactive-initial-architecture", json=wrong_children)
+    assert rejected.status_code == 422
+
+    flat_root = copy.deepcopy(payload)
+    flat_root["architecture"]["components"][1]["children"] = []
+    flat_root["planning_trace"]["scope_evaluations"] = [
+        evaluation for evaluation in flat_root["planning_trace"]["scope_evaluations"]
+        if evaluation["scope_component_id"] != "request-handler"
+    ]
+    flat_root["planning_trace"]["scope_evaluations"][2] = {
+        "scope_component_id": "backend",
+        "decomposition": "JUSTIFIED_LEAF",
+        "child_ids": [],
+        "leaf_reason": "This long explanation deliberately attempts to keep a SYSTEM_MAP root flat despite the hierarchy contract.",
+    }
+    rejected = client.post(f"/projects/{project_id}/interactive-initial-architecture", json=flat_root)
+    assert rejected.status_code == 422
+
     accepted = client.post(f"/projects/{project_id}/interactive-initial-architecture", json=payload)
     assert accepted.status_code == 200, accepted.text
     events = client.get(f"/projects/{project_id}/events?limit=10").json()
@@ -547,17 +614,29 @@ def test_webmcp_agent_can_create_reviewable_recommendation_without_model_provide
             "version": 1,
             "summary": "React frontend calls FastAPI, backed by PostgreSQL.",
             "components": [
-                {"id": "frontend", "name": "React frontend", "type": "frontend", "responsibility": "UI"},
-                {"id": "backend", "name": "FastAPI backend", "type": "backend", "responsibility": "API"},
-                {"id": "database", "name": "PostgreSQL", "type": "database", "responsibility": "Persistence"},
+                {"id": "frontend", "name": "Frontend Experience", "type": "frontend system", "responsibility": "Own user interaction", "children": [{"id": "react-ui", "name": "React UI", "type": "ui", "responsibility": "Render application workflows"}]},
+                {"id": "backend", "name": "Backend Platform", "type": "backend system", "responsibility": "Own application API", "children": [{"id": "fastapi-service", "name": "FastAPI Service", "type": "service", "responsibility": "Serve application requests"}]},
+                {"id": "database", "name": "Persistence Platform", "type": "data system", "responsibility": "Own durable application state", "children": [{"id": "postgresql", "name": "PostgreSQL", "type": "database", "responsibility": "Persist application state"}]},
             ],
             "relationships": [],
             "decisions": [],
             "assumptions": [],
             "risks": [],
         },
-        "tasks": [{"title": "Prepare persistence", "related_component": "database"}],
-        "reasoning": "Host-generated initial architecture.",
+        "tasks": [{"title": "Prepare persistence", "related_component": "postgresql"}],
+        "planning_trace": {
+            "system_map_root_ids": ["frontend", "backend", "database"],
+            "scope_evaluations": [
+                {"scope_component_id": "frontend", "decomposition": "EXPANDED", "child_ids": ["react-ui"]},
+                {"scope_component_id": "react-ui", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "React UI is one user-facing rendering boundary with no independent architecture subsystem below it."},
+                {"scope_component_id": "backend", "decomposition": "EXPANDED", "child_ids": ["fastapi-service"]},
+                {"scope_component_id": "fastapi-service", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "FastAPI Service is one request-serving boundary with no independently addressable subsystem below it."},
+                {"scope_component_id": "database", "decomposition": "EXPANDED", "child_ids": ["postgresql"]},
+                {"scope_component_id": "postgresql", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "PostgreSQL is the durable persistence implementation boundary and requires no lower architecture split."},
+            ],
+            "reconciled": True,
+        },
+        "reasoning": "Host-generated recursively evaluated initial architecture.",
     })
     assert bootstrap.status_code == 200
 
@@ -586,4 +665,4 @@ def test_webmcp_agent_can_create_reviewable_recommendation_without_model_provide
 
     architecture = client.get(f"/projects/{project_id}/architecture").json()
     assert architecture["version"] == 1
-    assert any(component["name"] == "PostgreSQL" for component in architecture["components"])
+    assert architecture["components"][2]["children"][0]["name"] == "PostgreSQL"

@@ -45,15 +45,17 @@ def create_project_with_architecture(client: TestClient) -> str:
                 "components": [
                     {
                         "id": "web",
-                        "name": "React Web",
-                        "type": "frontend",
-                        "responsibility": "Human workspace",
+                        "name": "Web Experience",
+                        "type": "frontend system",
+                        "responsibility": "Own human workspace interaction",
+                        "children": [{"id": "react-workspace", "name": "React Workspace", "type": "ui", "responsibility": "Render workspace workflows"}],
                     },
                     {
                         "id": "api",
-                        "name": "FastAPI",
-                        "type": "backend",
-                        "responsibility": "Product API",
+                        "name": "API Platform",
+                        "type": "backend system",
+                        "responsibility": "Own product API processing",
+                        "children": [{"id": "fastapi-service", "name": "FastAPI Service", "type": "service", "responsibility": "Serve product requests"}],
                     },
                 ],
                 "relationships": [],
@@ -62,10 +64,20 @@ def create_project_with_architecture(client: TestClient) -> str:
                 "risks": [],
             },
             "tasks": [
-                {"title": "Build API boundary", "related_component": "api"},
-                {"title": "Build web workspace", "related_component": "web"},
+                {"title": "Build API boundary", "related_component": "fastapi-service"},
+                {"title": "Build web workspace", "related_component": "react-workspace"},
             ],
-            "reasoning": "Host-generated architecture for context testing.",
+            "planning_trace": {
+                "system_map_root_ids": ["web", "api"],
+                "scope_evaluations": [
+                    {"scope_component_id": "web", "decomposition": "EXPANDED", "child_ids": ["react-workspace"]},
+                    {"scope_component_id": "react-workspace", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "React Workspace is one user interaction boundary with no independent architecture subsystem below it."},
+                    {"scope_component_id": "api", "decomposition": "EXPANDED", "child_ids": ["fastapi-service"]},
+                    {"scope_component_id": "fastapi-service", "decomposition": "JUSTIFIED_LEAF", "child_ids": [], "leaf_reason": "FastAPI Service is one request-serving boundary with no independently addressable subsystem below it."},
+                ],
+                "reconciled": True,
+            },
+            "reasoning": "Host-generated recursively evaluated architecture for context testing.",
         },
     )
     assert bootstrap.status_code == 200

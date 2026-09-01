@@ -1,7 +1,7 @@
 import {getFirebaseIdToken} from './firebase-auth.js';
 
 const TOOL_PREFIX = 'archbro_';
-const WEBMCP_SURFACE_VERSION = 'archbro.semantic-webmcp.v3';
+const WEBMCP_SURFACE_VERSION = 'archbro.semantic-webmcp.v4';
 const WEBMCP_MANIFEST_URL = '/webmcp-manifest.json';
 const WEBMCP_RUNTIME_CHECK_INTERVAL_MS = 10_000;
 let staleReloadScheduled = false;
@@ -131,33 +131,35 @@ function architectureComponentInputSchema(depth = 1) {
 function initialPlanningTraceInputSchema() {
   return {
     type: 'object',
-    description: 'Auditable outside-in planning trace. Plan roots first, expand each root against the accepted draft, then reconcile relationships/tasks before the single atomic Architecture v1 commit.',
+    description: 'Auditable recursive outside-in planning trace. Plan SYSTEM_MAP roots, then evaluate every canonical component in preorder. A scope is EXPANDED only when it has real child architecture boundaries; otherwise it must be a JUSTIFIED_LEAF with a specific reason. Reconcile relationships/tasks only after every scope is evaluated.',
     properties: {
       system_map_root_ids: {
         type: 'array', minItems: 1, maxItems: 6,
         items: {type: 'string', minLength: 1},
-        description: 'Stable root ids from the SYSTEM_MAP phase, in final root order.',
+        description: 'Stable root ids from the SYSTEM_MAP phase, in final root order. Every SYSTEM_MAP root is a broad architecture boundary and must be EXPANDED with at least one child; atomic services/components belong below a root.',
       },
-      scope_expansions: {
-        type: 'array', minItems: 1, maxItems: 6,
-        description: 'Exactly one EXPAND_SCOPE trace per SYSTEM_MAP root, in the same order. descendant_ids are preorder ids actually added beneath that root; [] is valid for an architecture-level leaf.',
+      scope_evaluations: {
+        type: 'array', minItems: 1, maxItems: 80,
+        description: 'Exactly one evaluation for every submitted canonical component in preorder. Do not mark a multi-responsibility boundary as a leaf merely to avoid decomposition.',
         items: {
           type: 'object',
           properties: {
             scope_component_id: {type: 'string', minLength: 1},
-            descendant_ids: {type: 'array', maxItems: 40, items: {type: 'string', minLength: 1}},
+            decomposition: {type: 'string', enum: ['EXPANDED', 'JUSTIFIED_LEAF']},
+            child_ids: {type: 'array', maxItems: 12, items: {type: 'string', minLength: 1}, description: 'Immediate child ids in final order. Non-empty for EXPANDED; empty for JUSTIFIED_LEAF.'},
+            leaf_reason: {type: 'string', minLength: 24, maxLength: 280, description: 'Required only for JUSTIFIED_LEAF. Explain why no independently addressable architecture boundary remains below this component.'},
           },
-          required: ['scope_component_id', 'descendant_ids'],
+          required: ['scope_component_id', 'decomposition', 'child_ids'],
           additionalProperties: false,
         },
       },
       reconciled: {
         type: 'boolean',
         enum: [true],
-        description: 'Must be true only after the host reconciled final authored relationships and initial tasks against the immutable planned topology.',
+        description: 'Must be true only after every scope is evaluated and final authored relationships/tasks are reconciled against the complete topology.',
       },
     },
-    required: ['system_map_root_ids', 'scope_expansions', 'reconciled'],
+    required: ['system_map_root_ids', 'scope_evaluations', 'reconciled'],
     additionalProperties: false,
   };
 }
@@ -384,7 +386,7 @@ function createCoreTools(bridge) {
     {
       name: `${TOOL_PREFIX}get_architecture_diagram`,
       title: 'Get Living Architecture diagram',
-      description: 'Read the backend-authored root or one canonical subsystem projection, including PRIMARY/CONTEXT nodes, aggregate-edge provenance, scope metadata, and deterministic positioned graph. Use this to drill architecture one level at a time instead of inferring hierarchy in the host.',
+      description: 'Read the backend-authored root or one canonical subsystem projection, including SCOPE/PRIMARY nodes, aggregate-edge provenance, scope metadata, and deterministic positioned graph. Use this to drill architecture one level at a time instead of inferring hierarchy in the host.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -460,7 +462,7 @@ function createCoreTools(bridge) {
     {
       name: `${TOOL_PREFIX}bootstrap_project`,
       title: 'Create and save ArchBro project',
-      description: 'Agent-facing initial planning commit. Before calling, reason outside-in in three explicit phases: SYSTEM_MAP roots only; EXPAND_SCOPE each root without redefining accepted draft nodes; then RECONCILE relationships and tasks. Submit the resulting hierarchical Architecture v1 plus a planning_trace proving those phases agree. ArchBro validates the trace against the final hierarchy and commits the complete initial plan atomically, so the user does not approve every initial layer separately.',
+      description: 'Agent-facing initial planning commit. Infer a useful hierarchical Architecture v1 from the user goal even when the prompt does not ask for hierarchy. First author SYSTEM_MAP roots, then recursively evaluate every canonical scope in preorder. Mark a scope EXPANDED when independently addressable architecture responsibilities remain below it; mark JUSTIFIED_LEAF only when no meaningful architecture boundary remains and provide a specific reason. Every SYSTEM_MAP root must be EXPANDED; if the user goal names an atomic service directly, place it beneath an appropriate root boundary. Do not stop at broad multi-responsibility containers such as a backend application, web client, or data platform merely because the prompt was brief. During RECONCILE, author each dependency at the deepest canonical endpoints that actually own the interaction; use root-to-root relationships only for true boundary-level interactions. Hierarchy is expressed by children, never by fabricated containment relationships. Archbro validates complete scope coverage and commits Architecture v1 atomically.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -477,8 +479,8 @@ function createCoreTools(bridge) {
             items: {
               type: 'object',
               properties: {
-                source: {type: 'string', minLength: 1, description: 'Source component name or stable id.'},
-                target: {type: 'string', minLength: 1, description: 'Target component name or stable id.'},
+                source: {type: 'string', minLength: 1, description: 'Source component name or stable id. Prefer the deepest canonical component that actually owns the interaction.'},
+                target: {type: 'string', minLength: 1, description: 'Target component name or stable id. Prefer the deepest canonical component that actually receives the interaction.'},
                 type: {type: 'string', minLength: 1},
                 description: {type: 'string'},
               },
