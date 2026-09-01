@@ -202,11 +202,37 @@ identity or its public browser config is missing; the local-development principa
 cannot be activated in production. The separate remote `archbro-dev` staging stack
 may remain explicit `local/local` until Firebase is provisioned for that environment.
 
-`qa/setup_archbro_identity_platform.ps1` provisions the anonymous browser identity
-boundary directly through Google Cloud Identity Platform. Its browser API key is
-restricted to Identity Toolkit/Secure Token and the configured production/staging hostnames;
-the generated local config file is gitignored. This keeps auth independent from
-Firebase Hosting while remaining compatible with Firebase Admin ID-token verification.
+`qa/setup_archbro_identity_platform.ps1` provisions the complete browser login
+boundary directly through Google Cloud Identity Platform. It enables email/password,
+disables anonymous login, configures Google and GitHub, authorizes the requested
+hostnames, and creates a browser API key restricted to Identity Toolkit/Secure Token.
+The required `-AuthDomain` is written into the generated, gitignored
+`.archbro-firebase-public.json`; an empty popup-auth domain is never emitted.
+
+Before running the setup script, inject these setup-only values from the approved
+secret store into the PowerShell process environment:
+
+```text
+ARCHBRO_FIREBASE_GOOGLE_OAUTH_CLIENT_ID
+ARCHBRO_FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET
+ARCHBRO_FIREBASE_GITHUB_OAUTH_CLIENT_ID
+ARCHBRO_FIREBASE_GITHUB_OAUTH_CLIENT_SECRET
+```
+
+Then run, for example:
+
+```powershell
+.\qa\setup_archbro_identity_platform.ps1 `
+  -ProjectId "your-firebase-project" `
+  -AuthDomain "your-firebase-project.firebaseapp.com" `
+  -PublicHost "archbro.magicdala.com" `
+  -StagingHost "archbro-dev.magicdala.com"
+```
+
+Do not place the OAuth client secrets on the command line, in the generated public
+JSON, or in repository environment examples. The setup process sends them only to
+Identity Platform. This keeps auth independent from Firebase Hosting while remaining
+compatible with Firebase Admin ID-token verification.
 
 Privileged project state remains behind FastAPI + Firebase Admin ID-token
 verification + project authorization; the browser never reaches the database

@@ -172,9 +172,27 @@ test('the browser wiring removes anonymous auth and loads the testable client be
   assert.match(firebaseModule, /return client \? client\.getIdToken\(\) : null/);
   assert.match(app, /prototype\.startSession\(localStorage, identity\)/);
   assert.match(app, /await signOutFromFirebase\(\)/);
-  assert.match(app, /GitHub login is not enabled yet/);
+  assert.match(app, /\['github', signInWithGitHubAccount\]/);
+  assert.match(app, /AUTH_PROVIDER_SIGN_INS\.get\(provider\)/);
+  assert.match(app, /if \(!providerSignIn\)/);
+  assert.doesNotMatch(app, /provider === 'github'[\s\S]+signInWithGoogleAccount/);
   assert.ok(html.indexOf('/static/firebase-auth-client.js') < html.indexOf('/static/app.js'));
   assert.match(html, /id="authFormMessage"[^>]+aria-live="polite"/);
+});
+
+test('restored linked accounts do not infer an active provider from array order', async () => {
+  const {auth, client, user} = fakeClient();
+  auth.currentUser = {
+    ...user,
+    providerData: [{providerId: 'github.com'}, {providerId: 'google.com'}],
+  };
+
+  const firstOrder = await client.restoreIdentity();
+  auth.currentUser.providerData.reverse();
+  const reversedOrder = await client.restoreIdentity();
+
+  assert.equal(firstOrder.provider, 'firebase');
+  assert.equal(reversedOrder.provider, 'firebase');
 });
 
 test('Firebase WebMCP mode prompts for login and enters the workspace after authentication', async () => {

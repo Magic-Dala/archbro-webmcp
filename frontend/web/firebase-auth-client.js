@@ -7,7 +7,16 @@
     return normalizeText(value).toLowerCase();
   }
 
-  function identityFromUser(user, {name = ''} = {}) {
+  function restoredProviderFromUser(user) {
+    const providerIds = [...new Set(
+      (Array.isArray(user?.providerData) ? user.providerData : [])
+        .map((entry) => normalizeText(entry?.providerId))
+        .filter(Boolean),
+    )];
+    return providerIds.length === 1 ? providerIds[0] : 'firebase';
+  }
+
+  function identityFromUser(user, {name = '', provider = ''} = {}) {
     if (user?.isAnonymous === true) {
       const error = new Error('Anonymous Firebase identities are not accepted.');
       error.code = 'auth/anonymous-user-not-allowed';
@@ -15,11 +24,11 @@
     }
     const uid = normalizeText(user?.uid);
     if (!uid) throw new Error('Firebase returned a user without a trusted UID.');
-    // Firebase reports which provider signed the person in. Reading it rather
-    // than hardcoding keeps one source of truth as providers are added, and
-    // falls back to password for the email flow, whose fake user in tests
-    // carries no providerData.
-    const providerId = normalizeText(user?.providerData?.[0]?.providerId) || 'password';
+    // Sign-in operations pass their provider explicitly. During session restore
+    // there is no new sign-in result, so a single linked provider can be shown;
+    // accounts with zero or multiple providers use a neutral Firebase label.
+    // Array order is not evidence of which provider performed the latest login.
+    const providerId = normalizeText(provider) || restoredProviderFromUser(user);
     return {
       id: uid,
       provider: providerId,
@@ -28,8 +37,11 @@
     };
   }
 
-  function authenticationErrorMessage(error) {
+  function authenticationErrorMessage(error, {provider = ''} = {}) {
     const code = normalizeText(error?.code);
+    const providerName = provider === 'github'
+      ? 'GitHub'
+      : (provider === 'google' ? 'Google' : '');
     if (['auth/invalid-credential', 'auth/user-not-found', 'auth/wrong-password'].includes(code)) {
       return 'The email or password is incorrect.';
     }
@@ -45,16 +57,32 @@
       return 'Archbro could not reach Firebase. Check your internet connection and try again.';
     }
     if (['auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(code)) {
-      return 'Sign-in was cancelled before it finished.';
+      return providerName
+        ? `${providerName} sign-in was cancelled.`
+        : 'Sign-in was cancelled before it finished.';
     }
     if (code === 'auth/popup-blocked') {
-      return 'Your browser blocked the sign-in window. Allow pop-ups for this site and try again.';
+      return providerName
+        ? `Your browser blocked the ${providerName} sign-in window. Allow pop-ups and try again.`
+        : 'Your browser blocked the sign-in window. Allow pop-ups for this site and try again.';
+    }
+    if (code === 'auth/unauthorized-domain') {
+      return providerName
+        ? `${providerName} sign-in is not authorized for this website.`
+        : 'This website is not authorized for provider sign-in.';
+    }
+    if (code === 'auth/missing-auth-domain') {
+      return providerName
+        ? `${providerName} sign-in is not configured for this environment.`
+        : 'Provider sign-in is not configured for this environment.';
     }
     if (code === 'auth/account-exists-with-different-credential') {
       return 'This email is already registered with a different sign-in method. Use that method instead.';
     }
     if (code === 'auth/operation-not-allowed') {
-      return 'Email/password authentication is not enabled for this Firebase project.';
+      return providerName
+        ? `${providerName} authentication is not enabled for this Firebase project.`
+        : 'Email/password authentication is not enabled for this Firebase project.';
     }
     if (code === 'auth/anonymous-user-not-allowed') {
       return 'Sign in with email and password to continue.';
@@ -70,6 +98,7 @@
     updateProfile,
     signInWithPopup,
     googleProvider,
+    githubProvider,
   }) {
     if (!auth) throw new TypeError('Firebase Auth is required.');
 
@@ -103,13 +132,16 @@
           profileSynced = false;
         }
       }
-      return {...identityFromUser(user, {name: displayName}), profileSynced};
+      return {
+        ...identityFromUser(user, {name: displayName, provider: 'password'}),
+        profileSynced,
+      };
     }
 
     async function signIn({email, password}) {
       const normalizedEmail = normalizeEmail(email);
       const credential = await signInWithEmailAndPassword(auth, normalizedEmail, password);
-      return identityFromUser(credential?.user);
+      return identityFromUser(credential?.user, {provider: 'password'});
     }
 
     async function signInWithGoogle() {
@@ -117,7 +149,15 @@
         throw new Error('Google sign-in is not available.');
       }
       const credential = await signInWithPopup(auth, googleProvider);
-      return identityFromUser(credential?.user);
+      return identityFromUser(credential?.user, {provider: 'google.com'});
+    }
+
+    async function signInWithGitHub() {
+      if (typeof signInWithPopup !== 'function' || !githubProvider) {
+        throw new Error('GitHub sign-in is not available.');
+      }
+      const credential = await signInWithPopup(auth, githubProvider);
+      return identityFromUser(credential?.user, {provider: 'github.com'});
     }
 
     async function getIdToken() {
@@ -130,7 +170,15 @@
       await signOut(auth);
     }
 
-    return Object.freeze({restoreIdentity, signUp, signIn, signInWithGoogle, getIdToken, endSession});
+    return Object.freeze({
+      restoreIdentity,
+      signUp,
+      signIn,
+      signInWithGoogle,
+      signInWithGitHub,
+      getIdToken,
+      endSession,
+    });
   }
 
   global.ArchbroFirebaseAuthClient = Object.freeze({

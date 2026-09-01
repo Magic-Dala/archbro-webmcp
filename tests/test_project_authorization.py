@@ -312,6 +312,8 @@ def test_runtime_config_is_no_store_and_security_headers_are_present(dsn):
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
     assert "default-src 'self'" in response.headers["content-security-policy"]
+    assert "https://apis.google.com" not in response.headers["content-security-policy"]
+    assert "frame-src 'none'" in response.headers["content-security-policy"]
     assert '"auth_mode": "local"' in response.text
 
 

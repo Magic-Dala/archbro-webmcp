@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -24,10 +25,30 @@ load_dotenv()
 WEBMCP_SURFACE_VERSION = "archbro.semantic-webmcp.v4"
 WEBMCP_DEFAULT_TOOL_COUNT = 14
 WEBMCP_GATEWAY_TOOL_COUNT = 3
+_FIREBASE_AUTH_DOMAIN_PATTERN = re.compile(
+    r"(?=.{1,253}\Z)"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
+    re.IGNORECASE,
+)
 
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[4]
+
+
+def _firebase_auth_origin(auth_domain: str) -> str | None:
+    """Return one safe CSP origin for Firebase's popup resolver iframe."""
+
+    normalized = auth_domain.strip().lower()
+    if not normalized:
+        return None
+    if _FIREBASE_AUTH_DOMAIN_PATTERN.fullmatch(normalized) is None:
+        raise ValueError(
+            "ARCHBRO_FIREBASE_AUTH_DOMAIN must be a hostname without a scheme, "
+            "port, path, query, or fragment"
+        )
+    return f"https://{normalized}"
 
 
 def create_app(
@@ -95,6 +116,7 @@ def create_app(
             )
 
     public_firebase_config: dict[str, str] | None = None
+    firebase_auth_origin: str | None = None
     if auth_mode == "firebase":
         public_firebase_config = {
             "apiKey": os.getenv("ARCHBRO_FIREBASE_API_KEY", "").strip(),
@@ -115,6 +137,9 @@ def create_app(
                 "Production Firebase browser configuration is incomplete: "
                 + ", ".join(missing)
             )
+        firebase_auth_origin = _firebase_auth_origin(
+            public_firebase_config["authDomain"]
+        )
 
     selected_provider = provider
     if selected_provider is None:
@@ -189,17 +214,26 @@ def create_app(
     @app.middleware("http")
     async def security_headers(request, call_next):
         response = await call_next(request)
+        script_sources = ["'self'", "https://www.gstatic.com"]
+        frame_sources = ["'none'"]
+        if auth_mode == "firebase":
+            # Firebase Auth 12.2.1 dynamically loads Google's popup bridge from
+            # https://apis.google.com/js/api.js during Google sign-in.
+            script_sources.append("https://apis.google.com")
+            frame_sources = ["https://*.firebaseapp.com"]
+            if firebase_auth_origin not in {None, "https://*.firebaseapp.com"}:
+                frame_sources.append(firebase_auth_origin)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' https://www.gstatic.com; "
+            f"script-src {' '.join(script_sources)}; "
             "style-src 'self'; img-src 'self' data:; "
             "connect-src 'self' https://identitytoolkit.googleapis.com "
             "https://securetoken.googleapis.com https://www.googleapis.com; "
-            "frame-src https://*.firebaseapp.com; object-src 'none'; "
+            f"frame-src {' '.join(frame_sources)}; object-src 'none'; "
             "base-uri 'self'; frame-ancestors 'none'"
         )
         if environment == "production":

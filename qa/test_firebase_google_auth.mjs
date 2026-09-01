@@ -36,7 +36,7 @@ const googleUser = {
   email: 'Human@Gmail.com',
   displayName: 'Human Builder',
   isAnonymous: false,
-  providerData: [{providerId: 'google.com'}],
+  providerData: [{providerId: 'password'}, {providerId: 'google.com'}],
   async getIdToken() { return 'google-id-token'; },
 };
 
@@ -96,6 +96,6 @@ test('Google sign-in is wired into the browser, not stubbed out', async () => {
 
   // The provider button must actually call it. The previous milestone answered
   // with a "not enabled yet" message, which is what this replaces.
-  assert.match(app, /signInWithGoogleAccount\(\)/);
+  assert.match(app, /\['google', signInWithGoogleAccount\]/);
   assert.doesNotMatch(app, /Google login is not enabled yet/);
 });

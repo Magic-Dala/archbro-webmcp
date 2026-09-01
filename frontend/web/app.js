@@ -4,15 +4,20 @@ import {
   getFirebaseIdToken,
   restoreFirebaseIdentity,
   signInWithFirebaseEmail,
+  signInWithGitHubAccount,
   signInWithGoogleAccount,
   signOutFromFirebase,
   usesFirebaseAuthentication,
-} from './firebase-auth.js?v=20260901-google-signin';
+} from './firebase-auth.js?v=20260901-auth-providers';
 
 const prototype = window.ArchbroPrototype;
 const storedProjectId = localStorage.getItem('archbro-project-id');
 const WEBMCP_PUBLIC_HOSTS = new Set(['archbro-dev.magicdala.com', 'archbro.magicdala.com']);
 const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp' || WEBMCP_PUBLIC_HOSTS.has(window.location.hostname);
+const AUTH_PROVIDER_SIGN_INS = new Map([
+  ['google', signInWithGoogleAccount],
+  ['github', signInWithGitHubAccount],
+]);
 
 function loadExpandedProjectIds(storage = localStorage) {
   try {
@@ -3907,19 +3912,20 @@ $('authCloseBtn').addEventListener('click', () => closeAuthentication());
 document.querySelectorAll('[data-password-target]').forEach((button) => button.addEventListener('click', () => togglePasswordVisibility(button)));
 document.querySelectorAll('[data-auth-provider]').forEach((button) => button.addEventListener('click', async () => {
   const provider = button.dataset.authProvider;
+  const providerSignIn = AUTH_PROVIDER_SIGN_INS.get(provider);
+  if (!providerSignIn) {
+    writeAuthMessage('This sign-in method is not supported.');
+    return;
+  }
   if (usesFirebaseAuthentication()) {
-    if (provider !== 'google') {
-      writeAuthMessage('GitHub login is not enabled yet. Use Google, or email and password.');
-      return;
-    }
     writeAuthMessage('');
     setAuthenticationBusy(true);
     try {
-      const identity = await signInWithGoogleAccount();
+      const identity = await providerSignIn();
       prototype.startSession(localStorage, identity);
       await routeAfterAuthentication();
     } catch (error) {
-      writeAuthMessage(authenticationErrorMessage(error));
+      writeAuthMessage(authenticationErrorMessage(error, {provider}));
     } finally {
       setAuthenticationBusy(false);
     }

@@ -2,6 +2,7 @@ import {getApp, getApps, initializeApp} from 'https://www.gstatic.com/firebasejs
 import {
   createUserWithEmailAndPassword,
   getAuth,
+  GithubAuthProvider,
   GoogleAuthProvider,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -35,6 +36,7 @@ async function firebaseClient() {
   // popup is opened by the person's own click, so browsers allow it.
   const googleProvider = new GoogleAuthProvider();
   googleProvider.setCustomParameters({prompt: 'select_account'});
+  const githubProvider = new GithubAuthProvider();
 
   return factory({
     auth,
@@ -44,6 +46,7 @@ async function firebaseClient() {
     updateProfile,
     signInWithPopup,
     googleProvider,
+    githubProvider,
   });
 }
 
@@ -58,11 +61,18 @@ async function configuredClient() {
   return clientPromise;
 }
 
-export function authenticationErrorMessage(error) {
+export function authenticationErrorMessage(error, options = {}) {
   const messageFor = globalThis.ArchbroFirebaseAuthClient?.authenticationErrorMessage;
   return typeof messageFor === 'function'
-    ? messageFor(error)
+    ? messageFor(error, options)
     : 'Authentication could not be completed. Please try again.';
+}
+
+function requireAuthDomain(providerName) {
+  if (runtimeConfig().firebase?.authDomain) return;
+  const error = new Error(`Firebase authDomain is required for ${providerName} sign-in.`);
+  error.code = 'auth/missing-auth-domain';
+  throw error;
 }
 
 export async function restoreFirebaseIdentity() {
@@ -83,9 +93,17 @@ export async function signInWithFirebaseEmail({email, password}) {
 }
 
 export async function signInWithGoogleAccount() {
+  requireAuthDomain('Google');
   const client = await configuredClient();
   if (!client) throw new Error('Firebase authentication is not enabled.');
   return client.signInWithGoogle();
+}
+
+export async function signInWithGitHubAccount() {
+  requireAuthDomain('GitHub');
+  const client = await configuredClient();
+  if (!client) throw new Error('Firebase authentication is not enabled.');
+  return client.signInWithGitHub();
 }
 
 export async function signOutFromFirebase() {

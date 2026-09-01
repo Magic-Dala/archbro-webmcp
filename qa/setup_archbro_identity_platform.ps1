@@ -1,6 +1,9 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$ProjectId,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$')]
+    [string]$AuthDomain,
     [string]$PublicHost = "archbro.magicdala.com",
     [string]$StagingHost = "archbro-dev.magicdala.com"
 )
@@ -39,6 +42,45 @@ function Invoke-GoogleJson {
     return $text | ConvertFrom-Json
 }
 
+function Get-RequiredSetupEnvironmentValue {
+    param([string]$Name)
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "$Name is required to provision Firebase Authentication providers."
+    }
+    return $value.Trim()
+}
+
+function Set-DefaultIdentityProvider {
+    param(
+        [string]$ProviderId,
+        [string]$ClientIdEnvironmentVariable,
+        [string]$ClientSecretEnvironmentVariable
+    )
+
+    $clientId = Get-RequiredSetupEnvironmentValue -Name $ClientIdEnvironmentVariable
+    $clientSecret = Get-RequiredSetupEnvironmentValue -Name $ClientSecretEnvironmentVariable
+    $providerName = "projects/$ProjectId/defaultSupportedIdpConfigs/$ProviderId"
+    $providerUri = "https://identitytoolkit.googleapis.com/admin/v2/$providerName"
+    $providerBody = @{
+        name = $providerName
+        enabled = $true
+        clientId = $clientId
+        clientSecret = $clientSecret
+    }
+
+    try {
+        return Invoke-GoogleJson `
+            -Method "Patch" `
+            -Uri ($providerUri + "?updateMask=enabled,clientId,clientSecret") `
+            -Body $providerBody
+    } catch {
+        if ($_.Exception.Message -notmatch "HTTP 404") { throw }
+        $createUri = "https://identitytoolkit.googleapis.com/admin/v2/projects/$ProjectId/defaultSupportedIdpConfigs?idpId=$ProviderId"
+        return Invoke-GoogleJson -Method "Post" -Uri $createUri -Body $providerBody
+    }
+}
+
 $configUri = "https://identitytoolkit.googleapis.com/admin/v2/projects/$ProjectId/config"
 try {
     $config = Invoke-GoogleJson -Method "Get" -Uri $configUri
@@ -50,16 +92,31 @@ try {
 }
 
 $domains = @($config.authorizedDomains)
-foreach ($domain in @($PublicHost, $StagingHost)) {
+foreach ($domain in @($PublicHost, $StagingHost, $AuthDomain)) {
     if ($domain -and $domains -notcontains $domain) { $domains += $domain }
 }
 
-$updateUri = $configUri + "?updateMask=signIn.anonymous.enabled,authorizedDomains"
+$updateUri = $configUri + "?updateMask=signIn.anonymous.enabled,signIn.email.enabled,signIn.email.passwordRequired,authorizedDomains"
 $config = Invoke-GoogleJson -Method "Patch" -Uri $updateUri -Body @{
     name = "projects/$ProjectId/config"
-    signIn = @{ anonymous = @{ enabled = $true } }
+    signIn = @{
+        anonymous = @{ enabled = $false }
+        email = @{
+            enabled = $true
+            passwordRequired = $true
+        }
+    }
     authorizedDomains = $domains
 }
+
+$googleProvider = Set-DefaultIdentityProvider `
+    -ProviderId "google.com" `
+    -ClientIdEnvironmentVariable "ARCHBRO_FIREBASE_GOOGLE_OAUTH_CLIENT_ID" `
+    -ClientSecretEnvironmentVariable "ARCHBRO_FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET"
+$githubProvider = Set-DefaultIdentityProvider `
+    -ProviderId "github.com" `
+    -ClientIdEnvironmentVariable "ARCHBRO_FIREBASE_GITHUB_OAUTH_CLIENT_ID" `
+    -ClientSecretEnvironmentVariable "ARCHBRO_FIREBASE_GITHUB_OAUTH_CLIENT_SECRET"
 
 function Get-ArchBroBrowserApiKeys {
     $json = ((& $gcloud services api-keys list --project $ProjectId --format=json) -join "`n").Trim()
@@ -75,11 +132,12 @@ function Get-ArchBroBrowserApiKeys {
 
 $matchingKeys = @(Get-ArchBroBrowserApiKeys)
 $keyName = if ($matchingKeys.Count -gt 0) { [string]$matchingKeys[0].name } else { "" }
+$allowedReferrers = @()
+foreach ($domain in @($PublicHost, $StagingHost, $AuthDomain)) {
+    if ($domain) { $allowedReferrers += "https://$domain/*" }
+}
 
 if (-not $keyName) {
-    $allowedReferrers = @("https://$PublicHost/*")
-    if ($StagingHost) { $allowedReferrers += "https://$StagingHost/*" }
-
     # Do not capture create output: gcloud may emit the completed operation payload,
     # including the key string. Resolve the resource name separately via JSON list.
     & $gcloud services api-keys create `
@@ -100,21 +158,37 @@ if (-not $keyName) {
 }
 
 if (-not $keyName) { throw "ArchBro browser API key was not created." }
+
+# Reconcile restrictions on every run. This also upgrades a key created before
+# AuthDomain became part of the browser popup contract.
+& $gcloud services api-keys update $keyName `
+    --project $ProjectId `
+    --api-target=service=identitytoolkit.googleapis.com `
+    --api-target=service=securetoken.googleapis.com `
+    --allowed-referrers=($allowedReferrers -join ",") `
+    --quiet 1>$null 2>$null
+if ($LASTEXITCODE -ne 0) { throw "ArchBro browser API key restrictions could not be updated." }
+
 $apiKey = ((& $gcloud services api-keys get-key-string $keyName --format='value(keyString)') -join "").Trim()
 if ($LASTEXITCODE -ne 0 -or -not $apiKey) { throw "ArchBro browser API key string could not be read." }
 
 @{
     apiKey = $apiKey
-    authDomain = ""
+    authDomain = $AuthDomain
     projectId = $ProjectId
     appId = ""
 } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 ".archbro-firebase-public.json"
 
 [pscustomobject]@{
     projectId = $ProjectId
+    authDomain = $AuthDomain
+    emailPasswordEnabled = [bool]$config.signIn.email.enabled -and [bool]$config.signIn.email.passwordRequired
     anonymousEnabled = [bool]$config.signIn.anonymous.enabled
+    googleEnabled = [bool]$googleProvider.enabled
+    githubEnabled = [bool]$githubProvider.enabled
     authorizedPublicDomain = @($config.authorizedDomains) -contains $PublicHost
     authorizedStagingDomain = (-not $StagingHost) -or (@($config.authorizedDomains) -contains $StagingHost)
+    authorizedAuthDomain = @($config.authorizedDomains) -contains $AuthDomain
     apiKeyRestricted = $true
     configSaved = $true
 } | ConvertTo-Json -Compress

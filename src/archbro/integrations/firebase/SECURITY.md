@@ -47,8 +47,12 @@ Still requiring owner-specific implementation or configuration:
   intended environment.
 - Each intended Firebase Authentication provider must be enabled in the correct
   project and its security settings reviewed.
-- Google and GitHub login still require their separate Firebase provider setup and
-  browser wiring. GitHub here means login only, not webhook or event integration.
+- Google and GitHub login are wired through Firebase in the browser and reuse the
+  existing ID-token verification and trusted-principal boundary. Each environment
+  still needs the canonical identity setup run with that environment's authorized
+  domains and OAuth credentials.
+- Google and GitHub popup login fails closed with a configuration error when the
+  public Firebase `authDomain` is absent.
 
 Therefore, merging this guide does not by itself make deployed authentication live.
 
@@ -122,6 +126,27 @@ It should not become the application's runtime identity and should not gain ordi
 
 Enable only the providers required by the intended environment and review their settings before production use.
 
+The canonical setup command is `qa/setup_archbro_identity_platform.ps1`. It requires
+an explicit Firebase `-AuthDomain`, enables email/password, disables anonymous login,
+and creates or updates the Google and GitHub provider records through the Identity
+Platform Admin API. It reads the OAuth credentials from setup-only process
+environment variables:
+
+```text
+ARCHBRO_FIREBASE_GOOGLE_OAUTH_CLIENT_ID
+ARCHBRO_FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET
+ARCHBRO_FIREBASE_GITHUB_OAUTH_CLIENT_ID
+ARCHBRO_FIREBASE_GITHUB_OAUTH_CLIENT_SECRET
+```
+
+Populate those values from an approved secret store immediately before setup. They
+must not be added to frontend runtime configuration, `.env.example`, command-line
+arguments, logs, or the generated `.archbro-firebase-public.json`. The generated
+file contains only public browser configuration and must be translated into the
+deployment values: `projectId` to `FIREBASE_PROJECT_ID`, `apiKey` to
+`ARCHBRO_FIREBASE_API_KEY`, and `authDomain` to
+`ARCHBRO_FIREBASE_AUTH_DOMAIN`.
+
 ### Email/password
 
 - Let Firebase handle passwords; Archbro must never receive or store user passwords.
@@ -130,11 +155,19 @@ Enable only the providers required by the intended environment and review their 
 ### Google login
 
 - Configure the OAuth consent screen and authorized domains for the correct environment.
+- Configure the public Firebase `authDomain` used by the popup flow.
+- The browser uses Firebase's Google popup and passes only the resulting Firebase
+  ID token to Archbro. The verified Firebase UID remains canonical.
 - Browser-facing client IDs are configuration; OAuth client secrets are secrets and must never be shipped to the browser.
 
 ### GitHub login
 
 - GitHub as a Firebase Authentication provider is separate from Archbro's GitHub repository/event integration.
+- Configure the public Firebase `authDomain` used by the popup flow.
+- The browser uses Firebase's GitHub popup and passes only the resulting Firebase
+  ID token to Archbro. A GitHub username or OAuth access token is never used as
+  `TrustedPrincipal.user_id`.
+- Do not request `repo` or other repository permissions for ordinary login.
 - Configure the callback URL exactly as Firebase requires.
 - Store the OAuth client secret in Firebase/provider configuration or an approved secret manager, never source or frontend code.
 

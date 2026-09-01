@@ -16,8 +16,36 @@ def test_identity_platform_public_and_staging_hosts_remain_parameter_driven() ->
     script = IDENTITY_SCRIPT.read_text(encoding="utf-8")
     lowered = script.lower()
     assert '\n$publichost =' not in lowered
-    assert 'foreach ($domain in @($PublicHost, $StagingHost))' in script
-    assert '$allowedReferrers = @("https://$PublicHost/*")' in script
+    assert 'foreach ($domain in @($PublicHost, $StagingHost, $AuthDomain))' in script
+    assert '$allowedReferrers += "https://$domain/*"' in script
+
+
+def test_identity_platform_setup_requires_and_publishes_a_real_auth_domain() -> None:
+    script = IDENTITY_SCRIPT.read_text(encoding="utf-8")
+
+    assert "[Parameter(Mandatory = $true)]\n    [ValidatePattern(" in script
+    assert "authDomain = $AuthDomain" in script
+    assert 'authDomain = ""' not in script
+    assert "authorizedAuthDomain" in script
+
+
+def test_identity_platform_setup_reproduces_all_login_providers_without_exporting_secrets() -> None:
+    script = IDENTITY_SCRIPT.read_text(encoding="utf-8")
+
+    assert "anonymous = @{ enabled = $false }" in script
+    assert "email = @{" in script
+    assert "passwordRequired = $true" in script
+    assert '-ProviderId "google.com"' in script
+    assert '-ProviderId "github.com"' in script
+    assert "ARCHBRO_FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET" in script
+    assert "ARCHBRO_FIREBASE_GITHUB_OAUTH_CLIENT_SECRET" in script
+    assert "defaultSupportedIdpConfigs" in script
+
+    public_config_block = script.split("@{\n    apiKey = $apiKey", maxsplit=1)[1].split(
+        "Set-Content", maxsplit=1
+    )[0]
+    assert "clientSecret" not in public_config_block
+    assert "OAUTH_CLIENT_SECRET" not in public_config_block
 
 
 def _validate(tmp_path: Path, stack: str, env_text: str) -> subprocess.CompletedProcess[str]:
