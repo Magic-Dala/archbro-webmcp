@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 from fastapi.testclient import TestClient
 
@@ -60,7 +61,8 @@ def test_webmcp_asset_uses_current_imperative_document_model_context_surface(dsn
     index = client.get("/")
     assert index.status_code == 200
     assert 'src="/runtime-config.js"' in index.text
-    assert 'type="module" src="/static/app.js?v=20260831-webmcp-build-watchdog"' in index.text
+    assert 'src="/static/firebase-auth-client.js?v=20260901-email-password"' in index.text
+    assert 'type="module" src="/static/app.js?v=20260901-firebase-email-webmcp-v3"' in index.text
     assert 'type="module" src="/static/archbro-webmcp.js?v=20260831-webmcp-build-watchdog"' in index.text
     assert index.headers["cache-control"] == "no-store, max-age=0"
 

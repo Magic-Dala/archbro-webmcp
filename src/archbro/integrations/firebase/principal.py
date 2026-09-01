@@ -46,6 +46,9 @@ class FirebasePrincipalProvider:
         if authentication_error is not None:
             raise authentication_error
 
+        if authenticated_user.sign_in_provider == "anonymous":
+            raise InvalidCredentialsError("Firebase ID token is invalid.")
+
         return TrustedPrincipal(
             user_id=authenticated_user.uid,
             team_ids=[],

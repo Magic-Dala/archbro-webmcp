@@ -92,6 +92,21 @@ def test_invalid_firebase_token_maps_to_backend_invalid_credentials_error():
     assert sensitive_token not in formatted_error
 
 
+def test_anonymous_firebase_identity_is_not_trusted():
+    async def verifier(_token: str, _project_id: str) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            uid="anonymous-firebase-uid",
+            sign_in_provider="anonymous",
+        )
+
+    provider = FirebasePrincipalProvider("archbro-test", verifier=verifier)
+
+    with pytest.raises(InvalidCredentialsError) as raised:
+        asyncio.run(provider("anonymous-firebase-token"))
+
+    assert str(raised.value) == "Firebase ID token is invalid."
+
+
 def test_firebase_outage_maps_to_backend_identity_provider_unavailable_error():
     sensitive_detail = "internal Firebase outage detail"
 

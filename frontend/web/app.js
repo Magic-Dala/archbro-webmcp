@@ -1,4 +1,12 @@
-import {getFirebaseIdToken} from './firebase-auth.js';
+import {
+  authenticationErrorMessage,
+  createFirebaseEmailAccount,
+  getFirebaseIdToken,
+  restoreFirebaseIdentity,
+  signInWithFirebaseEmail,
+  signOutFromFirebase,
+  usesFirebaseAuthentication,
+} from './firebase-auth.js';
 
 const prototype = window.ArchbroPrototype;
 const storedProjectId = localStorage.getItem('archbro-project-id');
@@ -97,13 +105,19 @@ function showExperience(phase) {
   }
 }
 
-function closeAuthentication({returnFocus = true} = {}) {
+function authenticationBusy() {
+  return $('authForm')?.getAttribute('aria-busy') === 'true';
+}
+
+function closeAuthentication({returnFocus = true, force = false} = {}) {
+  if (authenticationBusy() && !force) return false;
   const authDialog = $('authView');
   const shouldReturnToLanding = returnFocus && state.experience.phase === 'auth';
   state.experience.authClosingReturnFocus = returnFocus;
   if (authDialog.open) authDialog.close();
   else if (returnFocus) $('landingAuthTeaser').focus();
   if (shouldReturnToLanding) showExperience('landing');
+  return true;
 }
 
 function openAuthentication(trigger = document.activeElement) {
@@ -120,9 +134,13 @@ function setAuthMode(mode) {
   $('authConfirmField').classList.toggle('hidden', !signingUp);
   $('authPassword').autocomplete = signingUp ? 'new-password' : 'current-password';
   $('authTitle').textContent = signingUp ? 'Create your account' : 'Welcome back';
-  $('authSubtitle').textContent = signingUp ? 'Create a local demo profile to continue building with Archbro.' : 'Sign in to continue building with Archbro.';
+  $('authSubtitle').textContent = signingUp
+    ? (usesFirebaseAuthentication() ? 'Create your Archbro account with email and password.' : 'Create a local demo profile to continue building with Archbro.')
+    : 'Sign in to continue building with Archbro.';
   $('authSubmitBtn').textContent = signingUp ? 'Create account' : 'Continue with email';
   $('authModeToggle').textContent = signingUp ? 'Already have an account? Log in' : 'New to Archbro? Create an account';
+  writeAuthErrors({});
+  writeAuthMessage('');
 }
 
 function togglePasswordVisibility(button) {
@@ -145,16 +163,36 @@ function writeAuthErrors(errors) {
   }
 }
 
+function writeAuthMessage(message) {
+  $('authFormMessage').textContent = message;
+}
+
+function setAuthenticationBusy(busy) {
+  $('authForm').setAttribute('aria-busy', String(busy));
+  $('authSubmitBtn').disabled = busy;
+  $('authModeToggle').disabled = busy;
+  $('authCloseBtn').disabled = busy;
+  $('authBackBtn').disabled = busy;
+  document.querySelectorAll('[data-auth-provider]').forEach((button) => { button.disabled = busy; });
+  $('authSubmitBtn').textContent = busy
+    ? (state.experience.authMode === 'signup' ? 'Creating account…' : 'Signing in…')
+    : (state.experience.authMode === 'signup' ? 'Create account' : 'Continue with email');
+}
+
 async function routeAfterAuthentication() {
   const profile = prototype.currentProfile(localStorage);
   if (!profile) {
     state.experience.workspaceInitialized = false;
     closeAuthentication();
     showExperience('landing');
-    toast('That local demo session could not be restored. Sign in again to continue.', true);
+    toast('That session could not be restored. Sign in again to continue.', true);
     return false;
   }
-  closeAuthentication({returnFocus: false});
+  closeAuthentication({returnFocus: false, force: true});
+  if (WEBMCP_AGENT_MODE) {
+    await enterWorkspace();
+    return true;
+  }
   if (profile && !profile.onboardingComplete && $('preferenceView')) {
     showExperience('preference');
     return true;
@@ -220,9 +258,29 @@ async function submitAuthentication(event) {
   };
   const errors = signingUp ? prototype.validateSignUp(values) : prototype.validateSignIn(values);
   writeAuthErrors(errors);
+  writeAuthMessage('');
   if (Object.keys(errors).length) return;
-  prototype.startSession(localStorage, {provider: 'password', email: values.email, name: values.name});
-  await routeAfterAuthentication();
+  setAuthenticationBusy(true);
+  try {
+    if (usesFirebaseAuthentication()) {
+      const identity = signingUp
+        ? await createFirebaseEmailAccount(values)
+        : await signInWithFirebaseEmail(values);
+      prototype.startSession(localStorage, identity);
+      if (identity.profileSynced === false) {
+        toast('Your account was created. Your display name is saved in this browser.', false);
+      }
+    } else {
+      prototype.startSession(localStorage, {provider: 'password', email: values.email, name: values.name});
+    }
+    $('authPassword').value = '';
+    $('authConfirmPassword').value = '';
+    await routeAfterAuthentication();
+  } catch (error) {
+    writeAuthMessage(authenticationErrorMessage(error));
+  } finally {
+    setAuthenticationBusy(false);
+  }
 }
 
 async function enterWorkspace() {
@@ -1459,12 +1517,17 @@ function resetEphemeralSessionState() {
   $('instructionError').textContent = '';
 }
 
-function logout() {
-  prototype.endSession(localStorage);
-  state.experience.workspaceInitialized = false;
-  resetEphemeralSessionState();
-  showExperience('landing');
-  $('landingAuthTeaser').focus();
+async function logout() {
+  try {
+    await signOutFromFirebase();
+    prototype.endSession(localStorage);
+    state.experience.workspaceInitialized = false;
+    resetEphemeralSessionState();
+    showExperience('landing');
+    $('landingAuthTeaser').focus();
+  } catch (error) {
+    toast(authenticationErrorMessage(error), true);
+  }
 }
 
 function openAccountSection(section) {
@@ -3741,6 +3804,11 @@ $('authCloseBtn').addEventListener('click', () => closeAuthentication());
 document.querySelectorAll('[data-password-target]').forEach((button) => button.addEventListener('click', () => togglePasswordVisibility(button)));
 document.querySelectorAll('[data-auth-provider]').forEach((button) => button.addEventListener('click', async () => {
   const provider = button.dataset.authProvider;
+  if (usesFirebaseAuthentication()) {
+    const name = provider === 'github' ? 'GitHub' : 'Google';
+    writeAuthMessage(`${name} login is not enabled yet. Use email and password for this milestone.`);
+    return;
+  }
   prototype.startSession(localStorage, {
     provider,
     email: `${provider}@demo.archbro.local`,
@@ -3792,15 +3860,38 @@ async function initializeWorkspace() {
 }
 
 async function initializeApp() {
-  if (WEBMCP_AGENT_MODE) {
+  if (WEBMCP_AGENT_MODE && !usesFirebaseAuthentication()) {
     showExperience('workspace');
     state.experience.workspaceInitialized = await initializeWorkspace();
     syncMobileSidebarLayers();
     return state.experience.workspaceInitialized;
   }
   const hadStoredSession = localStorage.getItem(prototype.KEYS.session) !== null;
-  const session = prototype.loadSession(localStorage);
   localStorage.removeItem('archbro-pending-goal');
+  if (usesFirebaseAuthentication()) {
+    let identity = null;
+    try {
+      identity = await restoreFirebaseIdentity();
+    } catch (error) {
+      prototype.endSession(localStorage);
+      showExperience('landing');
+      toast(authenticationErrorMessage(error), true);
+      syncMobileSidebarLayers();
+      return false;
+    }
+    if (!identity) {
+      prototype.endSession(localStorage);
+      showExperience('landing');
+      if (WEBMCP_AGENT_MODE) openAuthentication($('landingLoginBtn'));
+      syncMobileSidebarLayers();
+      return true;
+    }
+    prototype.startSession(localStorage, identity);
+    await routeAfterAuthentication();
+    syncMobileSidebarLayers();
+    return true;
+  }
+  const session = prototype.loadSession(localStorage);
   if (!session) {
     showExperience('landing');
     if (hadStoredSession) toast('That local demo session was invalid and has been cleared. Your projects are still available.', true);

@@ -46,6 +46,7 @@
         <label class="auth-field">Email<input id="authEmail" type="email" autocomplete="email" /><span id="authEmailError" class="field-error"></span></label>
         <label class="auth-field">Password<span class="password-field"><input id="authPassword" type="password" autocomplete="current-password" /><button type="button" data-password-target="authPassword" aria-label="Show password">Show</button></span><span id="authPasswordError" class="field-error"></span></label>
         <label id="authConfirmField" class="auth-field hidden">Confirm password<span class="password-field"><input id="authConfirmPassword" type="password" autocomplete="new-password" /><button type="button" data-password-target="authConfirmPassword" aria-label="Show password">Show</button></span><span id="authConfirmPasswordError" class="field-error"></span></label>
+        <p id="authFormMessage" class="field-error" aria-live="polite"></p>
         <button id="authSubmitBtn" class="btn primary" type="submit">Continue with email</button>
         <div class="auth-divider"><span>or</span></div>
         <div class="auth-providers">
@@ -394,8 +395,9 @@
 
   <div id="toast" class="toast hidden"></div>
   <script src="/runtime-config.js"></script>
-  <script src="/static/prototype.js?v=20260829-4"></script>
-  <script type="module" src="/static/app.js?v=20260831-webmcp-build-watchdog"></script>
+  <script src="/static/prototype.js?v=20260901-firebase-uid"></script>
+  <script src="/static/firebase-auth-client.js?v=20260901-email-password"></script>
+  <script type="module" src="/static/app.js?v=20260901-firebase-email-webmcp-v3"></script>
   <script type="module" src="/static/archbro-webmcp.js?v=20260831-webmcp-build-watchdog"></script>
 </body>
 </html>

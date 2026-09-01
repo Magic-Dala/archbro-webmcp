@@ -82,9 +82,11 @@
     return value;
   }
 
-  function startSession(storage, {provider = 'password', email = '', name = ''}) {
+  function startSession(storage, {id: trustedId = '', provider = 'password', email = '', name = ''}) {
     const normalizedProvider = typeof provider === 'string' && provider.trim() ? provider.trim() : 'password';
-    const id = identityFor({provider: normalizedProvider, email});
+    const id = typeof trustedId === 'string' && trustedId.trim()
+      ? trustedId.trim()
+      : identityFor({provider: normalizedProvider, email});
     const session = {
       id,
       provider: normalizedProvider,

@@ -21,6 +21,37 @@ Responsibilities are separated by boundary:
 
 Authentication proves who the user is. It does not by itself grant project ownership, membership, or permissions.
 
+## Current implementation versus remaining deployment work
+
+Already present in the repository:
+
+- Firebase Admin initialization accepts an explicit project ID and uses ADC.
+- Firebase ID tokens are verified asynchronously and unsafe provider details are
+  removed from public errors.
+- The backend accepts an async principal provider, extracts the Bearer token, and
+  preserves the `401` / `403` / `503` boundary.
+- The runtime makes authentication mode explicit, constructs the Firebase
+  provider, publishes only public browser configuration, and prevents a deployed
+  local-principal fallback.
+- The browser supports Firebase email/password account creation, sign-in, session
+  restoration, ID-token handoff, and sign-out. Its local UI profile is keyed by
+  the verified Firebase UID but is never treated as authorization evidence.
+- Persisted anonymous browser sessions are cleared, and the trusted-principal
+  adapter rejects anonymous Firebase tokens before backend authorization.
+- Firebase-backed WebMCP visits require a real Firebase login, then continue
+  directly into the authenticated agent workspace. Local WebMCP mode is unchanged.
+
+Still requiring owner-specific implementation or configuration:
+
+- The runtime service account and deployment identity must be configured for the
+  intended environment.
+- Each intended Firebase Authentication provider must be enabled in the correct
+  project and its security settings reviewed.
+- Google and GitHub login still require their separate Firebase provider setup and
+  browser wiring. GitHub here means login only, not webhook or event integration.
+
+Therefore, merging this guide does not by itself make deployed authentication live.
+
 ## Environment modes
 
 | Environment | Identity behavior | Credential source | Safety rule |
