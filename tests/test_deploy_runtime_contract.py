@@ -77,6 +77,7 @@ def test_dev_accepts_complete_firebase_cutover_contract(tmp_path: Path) -> None:
                 "ARCHBRO_AUTH_MODE=firebase",
                 "FIREBASE_PROJECT_ID=archbro-dev-example",
                 "ARCHBRO_FIREBASE_API_KEY=example-key",
+                "ARCHBRO_FIREBASE_AUTH_DOMAIN=archbro-main-example.firebaseapp.com",
                 "",
             ]
         ),
@@ -116,6 +117,29 @@ def test_main_rejects_incomplete_firebase_contract_before_recreate(tmp_path: Pat
     assert "FIREBASE_PROJECT_ID or GOOGLE_CLOUD_PROJECT" in result.stdout + result.stderr
 
 
+def test_main_rejects_a_firebase_contract_without_the_browser_auth_domain(
+    tmp_path: Path,
+) -> None:
+    # Google sign-in opens https://<authDomain>/__/auth/handler, so a contract
+    # missing it deploys and boots but breaks the button. Catch it here, where
+    # the message names the key, rather than at container start.
+    result = _validate(
+        tmp_path,
+        "archbro-main",
+        "\n".join(
+            [
+                "ARCHBRO_ENV=production",
+                "ARCHBRO_AUTH_MODE=firebase",
+                "FIREBASE_PROJECT_ID=archbro-main-example",
+                "ARCHBRO_FIREBASE_API_KEY=example-key",
+                "",
+            ]
+        ),
+    )
+    assert result.returncode != 0
+    assert "ARCHBRO_FIREBASE_AUTH_DOMAIN" in result.stdout + result.stderr
+
+
 def test_main_accepts_complete_firebase_contract_with_google_project_alias(tmp_path: Path) -> None:
     result = _validate(
         tmp_path,
@@ -126,6 +150,7 @@ def test_main_accepts_complete_firebase_contract_with_google_project_alias(tmp_p
                 "ARCHBRO_AUTH_MODE=firebase",
                 "GOOGLE_CLOUD_PROJECT=archbro-main-example",
                 "ARCHBRO_FIREBASE_API_KEY=example-key",
+                "ARCHBRO_FIREBASE_AUTH_DOMAIN=archbro-main-example.firebaseapp.com",
                 "",
             ]
         ),
@@ -247,6 +272,7 @@ def test_main_accepts_complete_contract_with_crlf(tmp_path: Path) -> None:
                 "ARCHBRO_AUTH_MODE=firebase",
                 "FIREBASE_PROJECT_ID=archbro-main-example",
                 "ARCHBRO_FIREBASE_API_KEY=example-key",
+                "ARCHBRO_FIREBASE_AUTH_DOMAIN=archbro-main-example.firebaseapp.com",
                 "",
             ]
         ),
@@ -264,6 +290,7 @@ def test_main_accepts_quoted_contract_with_inline_comments(tmp_path: Path) -> No
                 " ARCHBRO_AUTH_MODE = 'firebase' # auth mode",
                 ' FIREBASE_PROJECT_ID = "archbro-main-example" # project',
                 " ARCHBRO_FIREBASE_API_KEY = 'example-key' # browser key",
+                " ARCHBRO_FIREBASE_AUTH_DOMAIN = 'archbro.firebaseapp.com' # auth host",
                 "",
             ]
         ),

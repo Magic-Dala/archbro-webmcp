@@ -60,8 +60,10 @@ pushes roughly 600KB rather than 155MB.
 `.env` files are placed **by hand** and are never written by the deploy workflow.
 `archbro-main` fails closed unless it has the complete production/Firebase
 contract (`ARCHBRO_ENV=production`, `ARCHBRO_AUTH_MODE=firebase`, a Firebase
-project id, and `ARCHBRO_FIREBASE_API_KEY`). `archbro-dev` may remain explicit
-`local/local` staging until Firebase is provisioned; mixed or incomplete
+project id, `ARCHBRO_FIREBASE_API_KEY`, and `ARCHBRO_FIREBASE_AUTH_DOMAIN` —
+Google sign-in opens `https://<authDomain>/__/auth/handler`, so without it the
+app boots and only the sign-in button is broken). `archbro-dev` may remain
+explicit `local/local` staging until Firebase is provisioned; mixed or incomplete
 configurations are rejected before the app container is recreated.
 
 Each environment is a separate Compose project (`archbro-main`, `archbro-dev`),

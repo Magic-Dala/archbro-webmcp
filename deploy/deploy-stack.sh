@@ -154,6 +154,7 @@ require_production_firebase() {
     local firebase_project_id
     local google_cloud_project
     local browser_api_key
+    local browser_auth_domain
 
     require_value ARCHBRO_ENV "$ARCHBRO_ENV_VALUE" production
     require_value ARCHBRO_AUTH_MODE "$ARCHBRO_AUTH_MODE_VALUE" firebase
@@ -170,6 +171,12 @@ require_production_firebase() {
 
     browser_api_key="$(read_env_value ARCHBRO_FIREBASE_API_KEY)"
     require_literal_nonempty ARCHBRO_FIREBASE_API_KEY "$browser_api_key"
+
+    # Google sign-in opens https://<authDomain>/__/auth/handler. Checking it
+    # here names the missing key while the old containers are still serving;
+    # left to container start it is a failed health check and a rollback.
+    browser_auth_domain="$(read_env_value ARCHBRO_FIREBASE_AUTH_DOMAIN)"
+    require_literal_nonempty ARCHBRO_FIREBASE_AUTH_DOMAIN "$browser_auth_domain"
 }
 
 case "$STACK" in

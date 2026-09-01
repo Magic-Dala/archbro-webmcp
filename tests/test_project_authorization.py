@@ -320,6 +320,7 @@ def test_required_edge_guard_blocks_direct_origin_requests(dsn, monkeypatch: pyt
     monkeypatch.setenv("ARCHBRO_AUTH_MODE", "firebase")
     monkeypatch.setenv("FIREBASE_PROJECT_ID", "test-project")
     monkeypatch.setenv("ARCHBRO_FIREBASE_API_KEY", "test-browser-key")
+    monkeypatch.setenv("ARCHBRO_FIREBASE_AUTH_DOMAIN", "test-project.firebaseapp.com")
     monkeypatch.setenv("ARCHBRO_EDGE_GUARD", "required")
     monkeypatch.setenv("ARCHBRO_EDGE_TOKEN", "test-edge-token")
 

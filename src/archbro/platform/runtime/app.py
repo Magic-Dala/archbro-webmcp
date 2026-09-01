@@ -102,11 +102,13 @@ def create_app(
             "projectId": firebase_project_id,
             "appId": os.getenv("ARCHBRO_FIREBASE_APP_ID", "").strip(),
         }
-        # Anonymous Firebase/Identity Platform auth only requires the project API
-        # key and project id. authDomain/appId are optional until redirect-based
-        # providers are enabled; keeping them optional avoids coupling production
-        # auth to Firebase Hosting or a Firebase Management WebApp resource.
-        required_public_keys = ("apiKey", "projectId")
+        # Google sign-in opens https://<authDomain>/__/auth/handler, so authDomain
+        # became load-bearing the moment that button started working: without it
+        # the SDK raises auth/auth-domain-config-required when someone clicks,
+        # which is a forgotten deployment setting reaching real users as a broken
+        # button on a server that booted cleanly. appId stays optional; it serves
+        # Analytics and installations, neither of which sign-in touches.
+        required_public_keys = ("apiKey", "projectId", "authDomain")
         missing = [key for key in required_public_keys if not public_firebase_config[key]]
         if missing and environment == "production":
             raise ValueError(
