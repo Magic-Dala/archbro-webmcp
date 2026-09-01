@@ -1,6 +1,6 @@
 # Codex Native WebMCP Acceptance
 
-Use this runbook for black-box acceptance through ArchBro's native browser WebMCP / Site Tools surface. The verifier must not use Playwright, shell commands, source inspection, direct HTTP calls, or unrelated MCP tools as a fallback.
+Use this runbook for black-box acceptance through Archbro's native browser WebMCP / Site Tools surface. The verifier must not use Playwright, shell commands, source inspection, direct HTTP calls, or unrelated MCP tools as a fallback.
 
 ## Target
 

@@ -1,6 +1,6 @@
 # Firebase Authentication security and IAM guide
 
-This document defines the security contract for ArchBro's Firebase Authentication boundary. It describes required outcomes for identity verification, runtime configuration, authorization, secrets, and production fail-closed behavior without assigning responsibilities to individual people.
+This document defines the security contract for Archbro's Firebase Authentication boundary. It describes required outcomes for identity verification, runtime configuration, authorization, secrets, and production fail-closed behavior without assigning responsibilities to individual people.
 
 ## Security boundary
 
@@ -75,7 +75,7 @@ Firebase Admin validates token signatures and claims such as issuer, audience, a
 
 ## Application Default Credentials
 
-Application Default Credentials (ADC) let ArchBro authenticate to Google services without embedding a private key in the repository.
+Application Default Credentials (ADC) let Archbro authenticate to Google services without embedding a private key in the repository.
 
 ### Local development
 
@@ -104,7 +104,7 @@ These identities perform different jobs and should remain separate.
 
 ### Runtime identity
 
-The runtime identity should receive only permissions needed while serving ArchBro requests.
+The runtime identity should receive only permissions needed while serving Archbro requests.
 
 - Do not grant broad `Owner` or `Editor` roles.
 - Token verification is not a reason to grant project-administration permissions.
@@ -114,7 +114,7 @@ The runtime identity should receive only permissions needed while serving ArchBr
 
 ### Deployment identity
 
-The deployment identity is the human or CI/CD principal that releases ArchBro. It may need permission to deploy a revision, attach the approved runtime identity, and configure environment or secret references.
+The deployment identity is the human or CI/CD principal that releases Archbro. It may need permission to deploy a revision, attach the approved runtime identity, and configure environment or secret references.
 
 It should not become the application's runtime identity and should not gain ordinary access to user/project data merely because it deploys code.
 
@@ -124,7 +124,7 @@ Enable only the providers required by the intended environment and review their 
 
 ### Email/password
 
-- Let Firebase handle passwords; ArchBro must never receive or store user passwords.
+- Let Firebase handle passwords; Archbro must never receive or store user passwords.
 - Configure account recovery and abuse controls appropriate for the environment.
 
 ### Google login
@@ -134,7 +134,7 @@ Enable only the providers required by the intended environment and review their 
 
 ### GitHub login
 
-- GitHub as a Firebase Authentication provider is separate from ArchBro's GitHub repository/event integration.
+- GitHub as a Firebase Authentication provider is separate from Archbro's GitHub repository/event integration.
 - Configure the callback URL exactly as Firebase requires.
 - Store the OAuth client secret in Firebase/provider configuration or an approved secret manager, never source or frontend code.
 
@@ -146,7 +146,7 @@ Enable only the providers required by the intended environment and review their 
 | Firebase browser config / web API key | Public client configuration, not authorization proof | Frontend runtime configuration |
 | OAuth client ID | Usually public configuration | Environment-specific configuration |
 | OAuth client secret | Secret | Provider configuration or approved secret manager |
-| Service-account private key JSON | Long-lived secret; avoid creating | Do not store in ArchBro |
+| Service-account private key JSON | Long-lived secret; avoid creating | Do not store in Archbro |
 | Firebase ID/refresh token | User credential | Request handling only |
 | Decoded claims such as email/name | Sensitive user data | Memory only when required; do not log by default |
 

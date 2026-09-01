@@ -1,6 +1,6 @@
-# ArchBro WebMCP
+# Archbro WebMCP
 
-ArchBro exposes a browser-native imperative WebMCP surface so an external host agent can operate on the same living project state as humans without guessing the DOM or bypassing product governance.
+Archbro exposes a browser-native imperative WebMCP surface so an external host agent can operate on the same living project state as humans without guessing the DOM or bypassing product governance.
 
 ## Architecture
 
@@ -11,24 +11,24 @@ ChatGPT / WebMCP-aware host agent
 document.modelContext.registerTool(...)
           |
           v
-ArchBro semantic Site Tools
+Archbro semantic Site Tools
           |
           v
 window.ArchBroWebBridge
           |
           v
-ArchBro API / ActionExecutor
+Archbro API / ActionExecutor
           |
           +--> project + task state
           +--> architecture proposals
           +--> human review boundary
 ```
 
-The calling host agent owns reasoning. ArchBro owns state, validation, governance, and deterministic execution. ArchBro's built-in model remains available for direct human UI flows and is not exposed as a WebMCP tool.
+The calling host agent owns reasoning. Archbro owns state, validation, governance, and deterministic execution. Archbro's built-in model remains available for direct human UI flows and is not exposed as a WebMCP tool.
 
 ## Default semantic Site Tools
 
-ArchBro exposes **14 tools by default**. Connected-MCP gateway tools are a separate optional module and are registered only when the deployment actually configures at least one external MCP server.
+Archbro exposes **14 tools by default**. Connected-MCP gateway tools are a separate optional module and are registered only when the deployment actually configures at least one external MCP server.
 
 | Tool | Purpose | Boundary |
 | --- | --- | --- |
@@ -47,7 +47,7 @@ ArchBro exposes **14 tools by default**. Connected-MCP gateway tools are a separ
 | `archbro_update_task_status` | Start or complete an existing ready task | Deterministic task transition; no model invocation |
 | `archbro_record_project_observation` | Persist external evidence or a project fact without classifying it as an architecture recommendation | Event write only; no model or canonical architecture mutation |
 
-When an external MCP gateway is configured, ArchBro adds exactly three tools: `archbro_list_connected_mcp_servers`, `archbro_list_connected_mcp_tools`, and `archbro_call_connected_mcp_tool`, for **17 total**. With no configured gateway those three tools are absent rather than returning empty discovery noise.
+When an external MCP gateway is configured, Archbro adds exactly three tools: `archbro_list_connected_mcp_servers`, `archbro_list_connected_mcp_tools`, and `archbro_call_connected_mcp_tool`, for **17 total**. With no configured gateway those three tools are absent rather than returning empty discovery noise.
 
 ## Governance invariants
 
@@ -56,7 +56,7 @@ When an external MCP gateway is configured, ArchBro adds exactly three tools: `a
 3. Operational incidents alone do not imply architecture drift. The host agent may submit `KEEP_CURRENT` when the accepted boundary still fits.
 4. Accepted architecture changes reconcile execution state. Replacement-component tasks are re-scoped to the replacement and become ready when still unfinished; removed-component tasks remain blocked for redefinition.
 5. Read tools refresh current backend state before returning decision context so external evidence is not hidden behind stale browser memory.
-6. WebMCP does not write canonical persistence directly and does not bypass ArchBro validation or authorization boundaries. A Code Architecture publish uses an authorized API to persist a derived evidence artifact only.
+6. WebMCP does not write canonical persistence directly and does not bypass Archbro validation or authorization boundaries. A Code Architecture publish uses an authorized API to persist a derived evidence artifact only.
 7. `update_component` remains metadata-only. Structural decomposition uses `archbro_expand_architecture_scope`, which is additive, one-level-at-a-time, stable-ID preserving, and reviewable before acceptance.
 8. The host must use `archbro_get_architecture_diagram` for hierarchical drill-down. It must not infer, crop, or manufacture child topology from a full-tree browser snapshot.
 9. Code Architecture is not Living Architecture. Code nodes use `code-node:*`, require exact 40-character Git revision provenance plus source excerpts, and cannot alter accepted `node:<component_id>` topology or version.
@@ -80,7 +80,7 @@ may change tasks after acceptance        never changes canonical tasks/state
 
 ```text
 Natural-language request
-  -> host agent discovers ArchBro Site Tools
+  -> host agent discovers Archbro Site Tools
   -> SYSTEM_MAP roots
   -> EXPAND_SCOPE each root in draft
   -> RECONCILE relationships + tasks
@@ -92,7 +92,7 @@ Natural-language request
   -> host reads project + decision context
   -> operational-only evidence can KEEP_CURRENT
   -> approved requirement change justifies a PENDING architecture proposal
-  -> human accepts in ArchBro
+  -> human accepts in Archbro
   -> Architecture v2 is applied
   -> tasks are reconciled
   -> host starts the next ready task
@@ -100,4 +100,4 @@ Natural-language request
 
 The acceptance-safe mode is available at `/?mode=webmcp`. In this mode the human project-creation flow, built-in architecture generation, built-in agent messaging, and manual task Start/Done controls are disabled so an acceptance run cannot silently fall back to DOM automation. Human architecture Accept/Reject remains enabled.
 
-For normal production use, Code Architecture evidence should come from source inspected at the pinned revision. A deterministic synthetic evidence fixture is acceptable only for black-box contract acceptance where the verifier is intentionally restricted to ArchBro's native WebMCP surface.
+For normal production use, Code Architecture evidence should come from source inspected at the pinned revision. A deterministic synthetic evidence fixture is acceptable only for black-box contract acceptance where the verifier is intentionally restricted to Archbro's native WebMCP surface.

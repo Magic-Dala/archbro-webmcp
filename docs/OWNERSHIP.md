@@ -1,4 +1,4 @@
-# ArchBro ownership and boundaries
+# Archbro ownership and boundaries
 
 This file maps product responsibilities to stable code boundaries. Ownership is described by role rather than by individual name so the structure survives team changes.
 

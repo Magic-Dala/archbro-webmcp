@@ -1,6 +1,6 @@
 # Core Backend / Agent
 
-Owns ArchBro product semantics and decision logic:
+Owns Archbro product semantics and decision logic:
 
 - `api/` — product REST/event contract
 - `core/` — Project/Goal/Architecture/Task contracts, action execution, persistence port

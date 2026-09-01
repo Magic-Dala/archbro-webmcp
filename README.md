@@ -1,10 +1,10 @@
-# ArchBro
+# Archbro
 
-ArchBro is a human-guided agentic project workspace where humans and AI agents share one living architecture, execution state, and review boundary.
+Archbro is a human-guided agentic project workspace where humans and AI agents share one living architecture, execution state, and review boundary.
 
 **Live WebMCP demo:** https://archbro-dev.magicdala.com/?mode=webmcp
 
-Instead of letting an agent guess the UI or maintain a separate plan, ArchBro exposes semantic browser-native WebMCP Site Tools. The host agent can read current project reality, reason about architecture drift, submit a reviewable recommendation, and continue execution after a human decision.
+Instead of letting an agent guess the UI or maintain a separate plan, Archbro exposes semantic browser-native WebMCP Site Tools. The host agent can read current project reality, reason about architecture drift, submit a reviewable recommendation, and continue execution after a human decision.
 
 ## Product loop
 
@@ -49,7 +49,7 @@ Default semantic Site Tools (14 when no connected MCP gateway is configured):
 | `archbro_update_task_status` | Start or complete an existing task through the deterministic task boundary without invoking the built-in model |
 | `archbro_record_project_observation` | Persist external evidence/project facts without pretending they are architecture recommendations |
 
-If the deployment configures connected MCP servers, three gateway tools are added: `archbro_list_connected_mcp_servers`, `archbro_list_connected_mcp_tools`, and `archbro_call_connected_mcp_tool`, for 17 total. They are absent when no gateway is configured. The calling host agent owns reasoning. ArchBro owns validation, state, governance, and deterministic execution. A WebMCP agent can recommend an architecture change but cannot approve it.
+If the deployment configures connected MCP servers, three gateway tools are added: `archbro_list_connected_mcp_servers`, `archbro_list_connected_mcp_tools`, and `archbro_call_connected_mcp_tool`, for 17 total. They are absent when no gateway is configured. The calling host agent owns reasoning. Archbro owns validation, state, governance, and deterministic execution. A WebMCP agent can recommend an architecture change but cannot approve it.
 
 The Architecture workspace has two deliberately separate views. **Living** is the human-approved canonical design intent and keeps stable `node:<component_id>` identities. **Code** is derived implementation evidence at one exact GitHub commit and uses the separate `code-node:*` namespace. Publishing a Code Architecture snapshot does not mutate the accepted Living Architecture; implementation drift still requires a normal reviewable architecture proposal.
 
@@ -61,7 +61,7 @@ See [`docs/WEBMCP.md`](docs/WEBMCP.md) for the complete contract and governance 
 External host agent
       |
       v
-ArchBro Site Tools
+Archbro Site Tools
       |
       +--> reads current project + evidence
       +--> reasons about architecture drift
@@ -77,7 +77,7 @@ Architecture version + tasks reconciled
 Agent continues execution
 ```
 
-The agent does not need DOM automation, and ArchBro does not expose an unsafe direct architecture-mutation tool.
+The agent does not need DOM automation, and Archbro does not expose an unsafe direct architecture-mutation tool.
 
 ## WebMCP acceptance mode
 

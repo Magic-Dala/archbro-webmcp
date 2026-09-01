@@ -1,6 +1,6 @@
 # Frontend / Product
 
-Owns the human-facing ArchBro experience:
+Owns the human-facing Archbro experience:
 
 - Goal / Ask
 - Living and Code Architecture views

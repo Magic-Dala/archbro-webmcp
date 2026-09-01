@@ -1,14 +1,14 @@
-# ArchBro WebMCP Demo Script (<3 minutes)
+# Archbro WebMCP Demo Script (<3 minutes)
 
 ## 0:00–0:20 — Problem
 
 Show a project with an accepted Living Architecture and active tasks.
 
-Voiceover: "Architecture gets stale when project reality changes faster than the documentation. ArchBro gives humans and agents one governed living architecture instead of separate plans."
+Voiceover: "Architecture gets stale when project reality changes faster than the documentation. Archbro gives humans and agents one governed living architecture instead of separate plans."
 
 ## 0:20–0:45 — Native WebMCP
 
-Open the production WebMCP acceptance URL and let a WebMCP-capable host discover ArchBro's semantic Site Tools. Do not name tools in the user prompt.
+Open the production WebMCP acceptance URL and let a WebMCP-capable host discover Archbro's semantic Site Tools. Do not name tools in the user prompt.
 
 Show that the host reads project state through structured Site Tools rather than DOM guessing.
 
@@ -49,16 +49,16 @@ Expected behavior:
 - the current accepted architecture remains unchanged;
 - there is no agent-accessible WebMCP Accept/Reject tool.
 
-The human may then review and accept or reject the proposal directly in ArchBro.
+The human may then review and accept or reject the proposal directly in Archbro.
 
 ## 2:40–2:55 — Closing
 
-Voiceover: "ArchBro lets agents observe project reality and continue execution, while humans keep control of consequential architecture decisions."
+Voiceover: "Archbro lets agents observe project reality and continue execution, while humans keep control of consequential architecture decisions."
 
 ## Recording rules
 
 - Keep total runtime below 3 minutes.
 - Use `https://archbro.magicdala.com/?mode=webmcp` for the public demo.
 - Use natural-language prompts; show tool activity only briefly when useful.
-- Do not substitute DOM automation, Playwright, shell commands, or unrelated MCP tools for ArchBro's native WebMCP surface.
+- Do not substitute DOM automation, Playwright, shell commands, or unrelated MCP tools for Archbro's native WebMCP surface.
 - Record only after the native WebMCP acceptance flow passes end to end.

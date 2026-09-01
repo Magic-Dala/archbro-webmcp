@@ -1,6 +1,6 @@
 # Persistence
 
-ArchBro backend code depends on `ProjectRepositoryPort`; concrete storage implementations belong here.
+Archbro backend code depends on `ProjectRepositoryPort`; concrete storage implementations belong here.
 
 - `postgres.py` — the PostgreSQL implementation, and the only one.
 

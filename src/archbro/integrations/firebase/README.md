@@ -15,7 +15,7 @@ Owned here:
 
 - Firebase Admin initialization using Google Cloud / Application Default Credentials.
 - Firebase ID-token verification and normalized user identity.
-- Mapping the verified Firebase UID to ArchBro's trusted identity contract.
+- Mapping the verified Firebase UID to Archbro's trusted identity contract.
 - Safe translation of Firebase credential and availability failures.
 - Authentication security and GCP IAM guidance.
 

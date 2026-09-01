@@ -75,7 +75,7 @@ reach them without anything being published on the host.
 | --- | --- |
 | Tunnel (main) | `archbro-main` |
 | Tunnel (dev) | `archbro-dev` |
-| Access application | `ArchBro dev` → `archbro-dev.magicdala.com` |
+| Access application | `Archbro dev` → `archbro-dev.magicdala.com` |
 | Access policy | team email allowlist |
 | Login method | One-time PIN |
 
