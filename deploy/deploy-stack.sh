@@ -180,6 +180,12 @@ require_production_firebase() {
 }
 
 case "$STACK" in
+    archbro-webmcp)
+        # The only stack this repository deploys. It is a production surface
+        # with no staging counterpart, so the local-auth fallback that the
+        # upstream dev stack allows must never apply here.
+        require_production_firebase
+        ;;
     archbro-main)
         # Main serves production traffic and must never fall back to local auth.
         require_production_firebase

@@ -1,7 +1,9 @@
 # Builds an image and deploys it to one of two stacks on the same VM.
 #
-# main -> archbro-main -> /opt/archbro/main -> archbro.magicdala.com
-# dev  -> archbro-dev  -> /opt/archbro/dev  -> archbro-dev.magicdala.com
+# main -> archbro-webmcp -> /opt/archbro/webmcp -> archbro-webmcp.magicdala.com
+#
+# This repository serves one production surface. There is no staging stack, so
+# there is no branch that deploys anywhere else.
 #
 # The stacks use separate Compose projects, containers, default networks, and
 # database volumes. They currently share only the external archbro-edge ingress
@@ -21,7 +23,7 @@ name: Deploy
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -78,12 +80,9 @@ jobs:
         id: target
         run: |
           case "${{ github.ref_name }}" in
-            main) echo "stack=archbro-main" >> "$GITHUB_OUTPUT"
-                  echo "dir=/opt/archbro/main" >> "$GITHUB_OUTPUT"
-                  echo "host=archbro.magicdala.com" >> "$GITHUB_OUTPUT" ;;
-            dev)  echo "stack=archbro-dev" >> "$GITHUB_OUTPUT"
-                  echo "dir=/opt/archbro/dev" >> "$GITHUB_OUTPUT"
-                  echo "host=archbro-dev.magicdala.com" >> "$GITHUB_OUTPUT" ;;
+            main) echo "stack=archbro-webmcp" >> "$GITHUB_OUTPUT"
+                  echo "dir=/opt/archbro/webmcp" >> "$GITHUB_OUTPUT"
+                  echo "host=archbro-webmcp.magicdala.com" >> "$GITHUB_OUTPUT" ;;
             *)    echo "::error::refusing to deploy branch ${{ github.ref_name }}"
                   exit 1 ;;
           esac
