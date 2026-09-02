@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import shutil
+import sys
+import time
 from collections.abc import Awaitable, Callable
 from html import escape
 from typing import Any
@@ -14,11 +16,57 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from archbro.backend.core.authorization import TrustedPrincipal
-from archbro.backend.mcp.provider_gateway import ExternalMcpGateway, McpConnectionConfig
+from archbro.backend.mcp.provider_gateway import McpConnectionConfig
 from archbro.backend.mcp.provider_oauth import McpOAuthManager, OAuthSetupRequired
+from archbro.backend.mcp.provider_policy import ReadOnlyExternalMcpGateway as ExternalMcpGateway
 
 
 PrincipalFor = Callable[[Request], Awaitable[TrustedPrincipal]]
+
+OAUTH_STATE_TTL_SECONDS = 600
+OAUTH_MAX_PENDING_PER_USER = 8
+OAUTH_START_WINDOW_SECONDS = 60
+OAUTH_MAX_STARTS_PER_WINDOW = 6
+PROVIDER_OAUTH_CLIENT_ID_ENVS = (
+    "ARCHBRO_GITHUB_OAUTH_CLIENT_ID",
+    "ARCHBRO_GOOGLE_DRIVE_OAUTH_CLIENT_ID",
+    "ARCHBRO_SLACK_OAUTH_CLIENT_ID",
+    "ARCHBRO_MICROSOFT_TEAMS_CLIENT_ID",
+)
+
+
+def _configured_worker_count() -> int:
+    counts = [1]
+    for name in ("WEB_CONCURRENCY", "UVICORN_WORKERS"):
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            continue
+        try:
+            counts.append(max(1, int(raw)))
+        except ValueError:
+            continue
+
+    argv = sys.argv[1:]
+    for index, argument in enumerate(argv):
+        raw = ""
+        if argument == "--workers" and index + 1 < len(argv):
+            raw = argv[index + 1]
+        elif argument.startswith("--workers="):
+            raw = argument.partition("=")[2]
+        if not raw:
+            continue
+        try:
+            counts.append(max(1, int(raw)))
+        except ValueError:
+            continue
+    return max(counts)
+
+
+def _request_uses_loopback_origin(request: Request) -> bool:
+    """Return true only for a browser request addressed to a loopback origin."""
+
+    request_host = (urlsplit(str(request.base_url)).hostname or "").lower()
+    return request_host in {"127.0.0.1", "localhost", "::1"}
 
 
 class McpToolCallRequest(BaseModel):
@@ -36,13 +84,69 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
     router = APIRouter()
     gateways: dict[str, ExternalMcpGateway] = {}
     oauth_managers: dict[str, McpOAuthManager] = {}
-    oauth_state_owners: dict[str, str] = {}
+    oauth_state_owners: dict[str, tuple[str, float]] = {}
+    oauth_start_attempts: dict[str, list[float]] = {}
+
+    async def provider_principal_for(request: Request) -> TrustedPrincipal:
+        principal = await principal_for(request)
+        if principal.local_development and not _request_uses_loopback_origin(request):
+            # The deterministic local-demo principal is safe only when the UI is
+            # actually local. A public tunnel would otherwise collapse every
+            # browser into one provider gateway and share OAuth-backed access.
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Public or tunneled provider connections require verified per-user authentication. "
+                    "Use Firebase authentication for public ArchBro origins."
+                ),
+            )
+        return principal
+
+    def prune_oauth_transient_state(now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        cutoff = current - OAUTH_STATE_TTL_SECONDS
+        for state, (_, created_at) in list(oauth_state_owners.items()):
+            if created_at < cutoff:
+                oauth_state_owners.pop(state, None)
+        start_cutoff = current - OAUTH_START_WINDOW_SECONDS
+        for user_id, attempts in list(oauth_start_attempts.items()):
+            fresh = [attempt for attempt in attempts if attempt >= start_cutoff]
+            if fresh:
+                oauth_start_attempts[user_id] = fresh
+            else:
+                oauth_start_attempts.pop(user_id, None)
+
+    def admit_oauth_start(user_id: str) -> float:
+        now = time.time()
+        prune_oauth_transient_state(now)
+        pending_count = sum(1 for owner_id, _ in oauth_state_owners.values() if owner_id == user_id)
+        if pending_count >= OAUTH_MAX_PENDING_PER_USER:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many pending OAuth authorizations; finish or retry after they expire.",
+            )
+        recent = oauth_start_attempts.setdefault(user_id, [])
+        if len(recent) >= OAUTH_MAX_STARTS_PER_WINDOW:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many OAuth authorization attempts; retry shortly.",
+            )
+        recent.append(now)
+        return now
     # Slack refuses a localhost redirect, and the OAuth popup has to post back
     # to the developer's UI origin, so both borrow fixed values during local
     # development. The condition is the environment itself: this used to be
     # inferred from the persistence backend being SQLite, which stopped meaning
     # anything once PostgreSQL became the only store.
-    local_environment = os.getenv("ARCHBRO_ENV", "local").strip().lower() == "local"
+    runtime_environment = os.getenv("ARCHBRO_ENV", "local").strip().lower()
+    local_environment = runtime_environment == "local"
+    production_environment = runtime_environment == "production"
+    provider_oauth_configured = any(os.getenv(name, "").strip() for name in PROVIDER_OAUTH_CLIENT_ID_ENVS)
+    if production_environment and provider_oauth_configured and _configured_worker_count() > 1:
+        raise RuntimeError(
+            "First-party provider OAuth uses process-memory state and requires a single worker. "
+            "Use one worker until a shared encrypted provider credential store is configured."
+        )
 
     def runtime_for(principal: TrustedPrincipal) -> tuple[ExternalMcpGateway, McpOAuthManager]:
         user_id = principal.user_id
@@ -61,15 +165,58 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
         return gateway, manager
 
     def oauth_redirect_uri(request: Request, provider_id: str) -> str:
-        if provider_id == "slack" and local_environment:
-            public_base = os.getenv(
-                "ARCHBRO_SLACK_OAUTH_REDIRECT_BASE_URL",
-                "https://archbro-dev.magicdala.com",
-            ).strip().rstrip("/")
+        public_base = os.getenv("ARCHBRO_OAUTH_REDIRECT_BASE_URL", "").strip().rstrip("/")
+        request_base = str(request.base_url).rstrip("/")
+        request_host = (urlsplit(request_base).hostname or "").lower()
+        request_is_loopback = request_host in {"127.0.0.1", "localhost", "::1"}
+        legacy_public_base = os.getenv("ARCHBRO_SLACK_OAUTH_REDIRECT_BASE_URL", "").strip().rstrip("/")
+
+        # Public OAuth callbacks must be pinned by deployment configuration, not
+        # by an attacker-controlled Host header. Reuse the legacy Slack public
+        # base as a backward-compatible production fallback while deployments
+        # migrate to ARCHBRO_OAUTH_REDIRECT_BASE_URL.
+        if not public_base and production_environment and provider_id == "slack" and legacy_public_base:
+            public_base = legacy_public_base
+        if (
+            not public_base
+            and provider_id == "slack"
+            and local_environment
+            and request_is_loopback
+        ):
+            public_base = legacy_public_base or "https://archbro-dev.magicdala.com"
+
+        if public_base:
             parsed = urlsplit(public_base)
-            if parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.query and not parsed.fragment:
-                return f"{public_base}/mcp/oauth/{provider_id}/callback"
-        return f"{str(request.base_url).rstrip('/')}/mcp/oauth/{provider_id}/callback"
+            valid_origin = (
+                parsed.scheme in {"http", "https"}
+                and parsed.netloc
+                and parsed.path in {"", "/"}
+                and not parsed.query
+                and not parsed.fragment
+            )
+            if not valid_origin or (production_environment and parsed.scheme != "https"):
+                raise HTTPException(
+                    status_code=503,
+                    detail="ARCHBRO_OAUTH_REDIRECT_BASE_URL must be a valid HTTPS public origin.",
+                )
+            return f"{public_base}/mcp/oauth/{provider_id}/callback"
+
+        provider_client_env = {
+            "github": "ARCHBRO_GITHUB_OAUTH_CLIENT_ID",
+            "google-drive": "ARCHBRO_GOOGLE_DRIVE_OAUTH_CLIENT_ID",
+            "slack": "ARCHBRO_SLACK_OAUTH_CLIENT_ID",
+            "microsoft-teams": "ARCHBRO_MICROSOFT_TEAMS_CLIENT_ID",
+        }.get(provider_id)
+        if (
+            production_environment
+            and provider_client_env
+            and os.getenv(provider_client_env, "").strip()
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="ARCHBRO_OAUTH_REDIRECT_BASE_URL is required when provider OAuth is enabled in production.",
+            )
+        return f"{request_base}/mcp/oauth/{provider_id}/callback"
 
     def oauth_popup_response(
         provider_id: str,
@@ -108,7 +255,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.get("/mcp/auth/github/status")
     async def get_github_auth_status(http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         connected = next(
             (
@@ -140,7 +287,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.post("/mcp/auth/github/start")
     async def start_github_authorization(http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         try:
             return await asyncio.to_thread(gateway.start_github_oauth_connection)
@@ -149,7 +296,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.post("/mcp/auth/github/{connection_id}/poll")
     async def poll_github_authorization(connection_id: str, http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         try:
             return await asyncio.to_thread(gateway.poll_github_oauth, connection_id)
@@ -160,7 +307,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.get("/mcp/auth/google-drive/status")
     async def get_google_drive_auth_status(http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         connected = next(
             (
@@ -192,7 +339,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.post("/mcp/auth/google-drive/start")
     async def start_google_drive_authorization(http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         try:
             return await asyncio.to_thread(gateway.start_google_drive_oauth_connection)
@@ -201,7 +348,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.post("/mcp/auth/google-drive/{connection_id}/poll")
     async def poll_google_drive_authorization(connection_id: str, http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         try:
             return await asyncio.to_thread(gateway.poll_google_drive_oauth, connection_id)
@@ -212,7 +359,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.get("/mcp/oauth/{provider_id}/status")
     async def get_mcp_oauth_status(provider_id: str, http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         _, manager = runtime_for(principal)
         try:
             return manager.provider_status(
@@ -223,9 +370,11 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
             raise HTTPException(status_code=404, detail="MCP OAuth provider not found")
 
     @router.get("/mcp/oauth/{provider_id}/start")
+    @router.post("/mcp/oauth/{provider_id}/start")
     async def start_mcp_oauth(provider_id: str, http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         _, manager = runtime_for(principal)
+        started_at = admit_oauth_start(principal.user_id)
         try:
             authorization_url = manager.start(
                 provider_id,
@@ -245,7 +394,9 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
         parsed_state = parse_qs(urlsplit(authorization_url).query).get("state", [])
         if not parsed_state:
             raise HTTPException(status_code=500, detail="OAuth provider did not return a state value")
-        oauth_state_owners[parsed_state[0]] = principal.user_id
+        oauth_state_owners[parsed_state[0]] = (principal.user_id, started_at)
+        if http_request.method == "POST":
+            return {"authorization_url": authorization_url}
         return RedirectResponse(
             authorization_url,
             status_code=302,
@@ -261,7 +412,9 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
         error: str | None = None,
         error_description: str | None = None,
     ):
-        owner_user_id = oauth_state_owners.pop(state, None) if state else None
+        prune_oauth_transient_state()
+        owner_record = oauth_state_owners.pop(state, None) if state else None
+        owner_user_id = owner_record[0] if owner_record else None
         if error:
             message = error_description or error
             return oauth_popup_response(
@@ -321,18 +474,18 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.get("/mcp/connections")
     async def list_mcp_connections(http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         return gateway.list_connections()
 
     @router.post("/mcp/connections")
     async def add_mcp_connection(request: McpConnectionConfig, http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         if not principal.local_development:
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    "Custom browser-supplied MCP endpoints are disabled outside local development. "
+                    "Custom browser-supplied MCP endpoints are disabled outside direct loopback local development. "
                     "Use a built-in provider or deployment-configured project MCP source."
                 ),
             )
@@ -341,7 +494,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.delete("/mcp/connections/{connection_id}", status_code=204)
     async def remove_mcp_connection(connection_id: str, http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         if not gateway.remove_connection(connection_id):
             raise HTTPException(status_code=404, detail="MCP connection not found")
@@ -349,7 +502,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.post("/mcp/connections/{connection_id}/probe")
     async def probe_mcp_connection(connection_id: str, http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         try:
             return await asyncio.to_thread(gateway.probe, connection_id)
@@ -360,7 +513,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
 
     @router.get("/mcp/connections/{connection_id}/tools")
     async def list_mcp_tools(connection_id: str, http_request: Request):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         try:
             return await asyncio.to_thread(gateway.list_tools, connection_id)
@@ -376,7 +529,7 @@ def build_provider_mcp_router(principal_for: PrincipalFor) -> APIRouter:
         request: McpToolCallRequest,
         http_request: Request,
     ):
-        principal = await principal_for(http_request)
+        principal = await provider_principal_for(http_request)
         gateway, _ = runtime_for(principal)
         try:
             return await asyncio.to_thread(

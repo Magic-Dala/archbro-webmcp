@@ -58,7 +58,7 @@ Voiceover: "Archbro lets agents observe project reality and continue execution, 
 ## Recording rules
 
 - Keep total runtime below 3 minutes.
-- Use `https://archbro.magicdala.com/?mode=webmcp` for the public demo.
+- Use the designated public WebMCP deployment for the recording.
 - Use natural-language prompts; show tool activity only briefly when useful.
 - Do not substitute DOM automation, Playwright, shell commands, or unrelated MCP tools for Archbro's native WebMCP surface.
 - Record only after the native WebMCP acceptance flow passes end to end.

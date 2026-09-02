@@ -13,6 +13,7 @@ from archbro.backend.core.contracts import (
     TaskStatus,
 )
 from archbro.backend.core.diagram import (
+    DiagramEdgeLayoutRole,
     DiagramEdgeProjectionKind,
     DiagramHealth,
     DiagramProjectionRole,
@@ -290,6 +291,28 @@ def test_root_projection_is_four_boundaries_with_truthful_aggregate_provenance()
     assert {item.semantic_type for item in crossing.provenance} == {"HTTPS", "EVENT"}
 
 
+def test_operational_relationships_are_cross_cutting_but_product_flow_remains_backbone():
+    architecture = Architecture(
+        components=[
+            Component(id="delivery", name="Delivery", type="infrastructure", responsibility="Operate the system"),
+            Component(id="web", name="Web", type="ui", responsibility="Serve users"),
+            Component(id="api", name="API", type="service", responsibility="Serve requests"),
+        ],
+        relationships=[
+            Relationship(source="delivery", target="api", relationship_type="RUNS", description="Runs the API"),
+            Relationship(source="delivery", target="web", relationship_type="VERIFIES", description="Verifies the web build"),
+            Relationship(source="web", target="api", relationship_type="QUERIES_AND_COMMANDS", description="Calls the API"),
+        ],
+    )
+
+    root = project_scoped_diagram(architecture)
+    roles = {(edge.source, edge.target): edge.layout_role for edge in root.diagram.edges}
+
+    assert roles[("node:delivery", "node:api")] == DiagramEdgeLayoutRole.CROSS_CUTTING
+    assert roles[("node:delivery", "node:web")] == DiagramEdgeLayoutRole.CROSS_CUTTING
+    assert roles[("node:web", "node:api")] == DiagramEdgeLayoutRole.BACKBONE
+
+
 def test_component_scope_shows_only_scope_and_immediate_children_while_preserving_boundary_provenance():
     scoped = project_scoped_diagram(hierarchical_fixture(), scope_component_id="backend")
     assert scoped.scope.component_id == "backend"
@@ -366,3 +389,88 @@ def test_canonical_architecture_has_no_presentation_state():
     presentation_fields = {"x", "y", "position", "color", "zoom", "layout", "viewer_state", "selected"}
     assert presentation_fields.isdisjoint(Architecture.model_fields)
     assert presentation_fields.isdisjoint(Component.model_fields)
+
+
+def test_generated_relationship_vocabulary_gets_stable_layout_roles():
+    from archbro.backend.core.diagram import _layout_role_for_semantic_types
+
+    assert _layout_role_for_semantic_types(["MONITORS"]).value == "CROSS_CUTTING"
+    assert _layout_role_for_semantic_types(["VALIDATES_MIGRATIONS"]).value == "CROSS_CUTTING"
+    assert _layout_role_for_semantic_types(["AUTHORIZES_WITH"]).value == "CROSS_CUTTING"
+    assert _layout_role_for_semantic_types(["MONITORS", "VERIFIES"]).value == "CROSS_CUTTING"
+    assert _layout_role_for_semantic_types(["PERSISTS_THROUGH", "APPENDS_ATOMICALLY"]).value == "BACKBONE"
+    assert _layout_role_for_semantic_types(["QUERIES", "COMMANDS", "AUTHENTICATES_WITH"]).value == "BACKBONE"
+    assert _layout_role_for_semantic_types(["SUBSCRIBES"]).value == "BACKBONE"
+    assert _layout_role_for_semantic_types(["TOTALLY_NEW_SUPPORT_RELATION"]).value == "CROSS_CUTTING"
+
+
+def test_map_collapses_parallel_backbone_semantics_to_one_connection():
+    from archbro.backend.core.diagram import map_edge_ids
+
+    architecture = Architecture(
+        version=1,
+        components=[
+            Component(id="web", name="Web", type="ui", responsibility="Serve users"),
+            Component(id="api", name="API", type="service", responsibility="Serve requests"),
+        ],
+        relationships=[
+            Relationship(source="web", target="api", relationship_type="CALLS"),
+            Relationship(source="web", target="api", relationship_type="PERSISTS"),
+        ],
+    )
+
+    diagram = project_scoped_diagram(architecture).diagram
+    parallel = [
+        edge
+        for edge in diagram.edges
+        if edge.source == "node:web" and edge.target == "node:api"
+    ]
+    assert len(parallel) == 2
+    assert all(edge.layout_role == DiagramEdgeLayoutRole.BACKBONE for edge in parallel)
+
+    selected = map_edge_ids(diagram)
+    chosen = [edge for edge in parallel if edge.id in selected]
+    assert len(chosen) == 1
+
+    reversed_architecture = architecture.model_copy(
+        update={"relationships": list(reversed(architecture.relationships))}
+    )
+    reversed_diagram = project_scoped_diagram(reversed_architecture).diagram
+    assert map_edge_ids(reversed_diagram) == selected
+
+
+def test_map_keeps_backbone_diamond_and_only_one_cross_cutting_connector():
+    from archbro.backend.core.diagram import map_edge_ids
+
+    architecture = Architecture(
+        version=1,
+        components=[
+            Component(id="delivery", name="Delivery", type="infrastructure", responsibility="Deliver and observe"),
+            Component(id="web", name="Web", type="ui", responsibility="Serve users"),
+            Component(id="realtime", name="Realtime", type="service", responsibility="Coordinate live state"),
+            Component(id="app", name="Application", type="service", responsibility="Serve application APIs"),
+            Component(id="data", name="Data", type="data_store", responsibility="Persist state"),
+        ],
+        relationships=[
+            Relationship(source="web", target="app", relationship_type="COMMANDS_AND_QUERIES"),
+            Relationship(source="web", target="realtime", relationship_type="SUBSCRIBES"),
+            Relationship(source="realtime", target="data", relationship_type="CONSUMES"),
+            Relationship(source="app", target="data", relationship_type="PERSISTS_THROUGH"),
+            Relationship(source="delivery", target="app", relationship_type="VERIFIES"),
+            Relationship(source="delivery", target="app", relationship_type="MONITORS"),
+            Relationship(source="delivery", target="data", relationship_type="VALIDATES_MIGRATIONS"),
+            Relationship(source="delivery", target="realtime", relationship_type="MONITORS"),
+            Relationship(source="realtime", target="app", relationship_type="AUTHORIZES_WITH"),
+        ],
+    )
+    diagram = project_scoped_diagram(architecture).diagram
+    selected = map_edge_ids(diagram)
+    chosen = {(edge.source, edge.target, edge.layout_role.value) for edge in diagram.edges if edge.id in selected}
+
+    assert chosen == {
+        ("node:web", "node:app", "BACKBONE"),
+        ("node:web", "node:realtime", "BACKBONE"),
+        ("node:realtime", "node:data", "BACKBONE"),
+        ("node:app", "node:data", "BACKBONE"),
+        ("node:delivery", "node:app", "CROSS_CUTTING"),
+    }

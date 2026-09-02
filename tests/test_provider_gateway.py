@@ -38,6 +38,36 @@ def test_provider_gateway_validates_connections_and_redacts_secrets():
         McpConnectionConfig(name="Unsafe", transport="streamable_http", url="http://example.com/mcp")
 
 
+def test_github_remote_connections_enforce_official_read_only_header():
+    gateway = ExternalMcpGateway(timeout_seconds=2)
+
+    bearer = gateway.add_bearer_connection(
+        provider="github",
+        name="GitHub",
+        url="https://api.githubcopilot.com/mcp/",
+        access_token="bearer-token",
+        auth_type="bearer",
+    )
+    bearer_headers = gateway._connections[bearer["id"]].config.headers
+    assert bearer_headers["Authorization"] == "Bearer bearer-token"
+    assert bearer_headers["X-MCP-Readonly"] == "true"
+
+    oauth = gateway.add_oauth_connection(
+        provider="github",
+        name="GitHub",
+        url="https://api.githubcopilot.com/mcp/",
+        access_token="oauth-token",
+        refresh_token="refresh-token",
+        expires_in=3600,
+        token_url="https://github.com/login/oauth/access_token",
+        client_id="client-id",
+        client_secret="client-secret",
+    )
+    oauth_headers = gateway._connections[oauth["id"]].config.headers
+    assert oauth_headers["Authorization"] == "Bearer oauth-token"
+    assert oauth_headers["X-MCP-Readonly"] == "true"
+
+
 def test_oauth_prompt_replaces_existing_prompt_and_preserves_query():
     from urllib.parse import parse_qs, urlparse
 
@@ -62,8 +92,14 @@ def test_github_oauth_start_forces_account_picker(monkeypatch):
     import archbro.backend.mcp.provider_gateway as provider_gateway
 
     gateway = ExternalMcpGateway(timeout_seconds=2)
+    captured = {}
+
+    def fake_start_persistent_stdio(config):
+        captured["config"] = config
+        return object()
+
     monkeypatch.setattr(provider_gateway.shutil, "which", lambda name: "docker" if name == "docker" else None)
-    monkeypatch.setattr(gateway, "_start_persistent_stdio", lambda config: object())
+    monkeypatch.setattr(gateway, "_start_persistent_stdio", fake_start_persistent_stdio)
     monkeypatch.setattr(gateway, "_state_list_tools", lambda state: [{"name": "get_me"}])
     monkeypatch.setattr(
         gateway,
@@ -84,6 +120,9 @@ def test_github_oauth_start_forces_account_picker(monkeypatch):
     query = parse_qs(urlparse(started["authorization_url"]).query)
     assert started["connected"] is False
     assert query["prompt"] == ["select_account"]
+    docker_args = captured["config"].args
+    readonly_index = docker_args.index("GITHUB_READ_ONLY=1")
+    assert docker_args[readonly_index - 1] == "-e"
 
 
 def test_google_login_url_forces_account_picker_and_consent(monkeypatch):
@@ -119,3 +158,28 @@ def test_google_login_url_forces_account_picker_and_consent(monkeypatch):
         assert query["client_id"] == ["abc"]
     finally:
         session.config_dir.cleanup()
+
+
+def test_google_drive_scope_check_accepts_readonly_but_not_drive_file(monkeypatch):
+    import archbro.backend.mcp.provider_gateway as provider_gateway
+
+    class FakeResponse:
+        def __init__(self, scope: str):
+            self.scope = scope
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def read(self):
+            return json.dumps({"scope": self.scope}).encode("utf-8")
+
+    scopes = iter([
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.file",
+    ])
+    monkeypatch.setattr(provider_gateway, "urlopen", lambda request, timeout: FakeResponse(next(scopes)))
+
+    assert ExternalMcpGateway._google_token_has_drive_scope("token") is True
+    assert ExternalMcpGateway._google_token_has_drive_scope("token") is True
+    assert ExternalMcpGateway._google_token_has_drive_scope("token") is False

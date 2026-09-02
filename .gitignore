@@ -27,6 +27,8 @@ dist/
 
 # QA / browser artifacts
 qa/playwright_artifacts/
+qa/_tmp_*
+.demo/
 playwright-report/
 test-results/
 

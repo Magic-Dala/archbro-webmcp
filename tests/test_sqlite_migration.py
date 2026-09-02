@@ -5,18 +5,16 @@ the failure is noticed, the alteration is not.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 
 import psycopg
-import pytest
 
+from conftest import requires_database
 
-DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
-pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL not set")
+pytestmark = requires_database
 
 SCRIPT = Path(__file__).resolve().parents[1] / "qa" / "migrate_sqlite_to_postgres.py"
 
@@ -65,6 +63,8 @@ def _migrate(sqlite_path: Path, dsn: str, *extra: str) -> subprocess.CompletedPr
         capture_output=True,
         text=True,
         check=False,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
     )
 
 

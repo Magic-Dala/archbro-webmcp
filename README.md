@@ -2,8 +2,6 @@
 
 Archbro is a human-guided agentic project workspace where humans and AI agents share one living architecture, execution state, and review boundary.
 
-**Live WebMCP demo:** https://archbro-dev.magicdala.com/?mode=webmcp
-
 Instead of letting an agent guess the UI or maintain a separate plan, Archbro exposes semantic browser-native WebMCP Site Tools. The host agent can read current project reality, reason about architecture drift, submit a reviewable recommendation, and continue execution after a human decision.
 
 ## Product loop
@@ -51,7 +49,11 @@ Default semantic Site Tools (14 when no connected MCP gateway is configured):
 
 If the deployment configures connected MCP servers, three gateway tools are added: `archbro_list_connected_mcp_servers`, `archbro_list_connected_mcp_tools`, and `archbro_call_connected_mcp_tool`, for 17 total. They are absent when no gateway is configured. The calling host agent owns reasoning. Archbro owns validation, state, governance, and deterministic execution. A WebMCP agent can recommend an architecture change but cannot approve it.
 
+Connected provider access is principal-scoped and fail-closed. Public or tunneled provider routes require a verified per-user identity rather than the shared local-development principal. GitHub keeps the official MCP read-only mode and adds an Archbro-owned backstop: only tools explicitly advertising MCP `annotations.readOnlyHint=true` are exposed or callable, so missing, false, malformed, and unknown tool metadata are rejected before provider dispatch. Google Drive OAuth requests read-only Drive access. Microsoft Teams is read-only by default; write scopes and write tools appear only when `ARCHBRO_TEAMS_ENABLE_WRITE=true`. Reconnect flows force account selection for GitHub, Google Drive, and Microsoft Teams, while Slack keeps workspace selection under the user's control.
+
 The Architecture workspace has two deliberately separate views. **Living** is the human-approved canonical design intent and keeps stable `node:<component_id>` identities. **Code** is derived implementation evidence at one exact GitHub commit and uses the separate `code-node:*` namespace. Publishing a Code Architecture snapshot does not mutate the accepted Living Architecture; implementation drift still requires a normal reviewable architecture proposal.
+
+Architecture diagrams are positioned by the backend with deterministic topology-aware layout and routing. The diagram endpoint supports `MAP`, `READ`, and `FULL` reading modes: `MAP` may reduce redundant relationship edges for a clearer overview, while `READ` and `FULL` retain the complete authored relationship set. Node placement and relationship routing remain stable across reading modes so changing information density does not reshuffle the graph.
 
 See [`docs/WEBMCP.md`](docs/WEBMCP.md) for the complete contract and governance invariants.
 
@@ -106,7 +108,7 @@ docs/DEMO.md                    # concise WebMCP demo script
 ## Run the stack with Docker Compose
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development guide:
-URLs, database access, troubleshooting, and working agreements.
+startup, database access, troubleshooting, and working agreements.
 
 The recommended way to get a working environment. One command, and no Google
 Cloud credentials or Gemini API key are needed:
@@ -119,7 +121,7 @@ Requires Docker Compose v2.24 or newer, which is when `env_file:` gained the
 long form that lets a missing `.env` be non-fatal.
 
 That builds the app image, starts PostgreSQL, blocks until both containers
-report healthy, and serves the app on `http://localhost:8080/`.
+report healthy, and serves the app on the Compose application port.
 
 | Command | What it does |
 | --- | --- |
@@ -143,10 +145,11 @@ app container reads that file when it exists.
 serving and deliberately does not touch persistence, so a transient database
 outage cannot trigger a restart storm.
 
-The `db` service runs PostgreSQL 17, reachable inside the Compose network at
-`postgresql://archbro:archbro@db:5432/archbro`. It is the only store Archbro
-has: `ARCHBRO_PERSISTENCE` accepts only `postgres` and the app refuses to start
-without `DATABASE_URL`. Compose builds that URL from the `POSTGRES_*` values.
+The `db` service runs PostgreSQL 17 and is reachable inside the Compose network
+through the `db` service on port `5432`, using the `archbro` database. It is the
+only store Archbro has: `ARCHBRO_PERSISTENCE` accepts only `postgres` and the app
+refuses to start without `DATABASE_URL`. Compose builds that connection value
+from the `POSTGRES_*` settings.
 
 Both published ports bind to `127.0.0.1`, so the development database -- whose
 password really is `archbro` -- is not reachable from the rest of the network.
@@ -170,7 +173,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m uvicorn archbro.main:app --host 127.0.0.1 --port 8011
 ```
 
-Open `http://127.0.0.1:8011/` for the normal local product surface, or `http://127.0.0.1:8011/?mode=webmcp` for the stricter WebMCP acceptance mode.
+After starting Uvicorn on port `8011`, use the normal local product surface. Enable WebMCP mode when running the stricter acceptance flow.
 
 ## Environment
 
@@ -196,11 +199,11 @@ For deterministic WebMCP acceptance without built-in model calls:
 ARCHBRO_PROVIDER=fake
 ```
 
-Production deployment (the `archbro-main` stack) must set `ARCHBRO_ENV=production`
-and `ARCHBRO_AUTH_MODE=firebase`. Production startup fails closed if Firebase
-identity or its public browser config is missing; the local-development principal
-cannot be activated in production. The separate remote `archbro-dev` staging stack
-may remain explicit `local/local` until Firebase is provisioned for that environment.
+Both deployed stacks (`archbro-main` and `archbro-dev`) must set
+`ARCHBRO_ENV=production` and `ARCHBRO_AUTH_MODE=firebase`. Deployment validation
+fails closed if Firebase identity or its public browser config is missing; the
+local-development principal is valid only for direct local development and cannot
+be used by an externally reachable deployed stack.
 
 `qa/setup_archbro_identity_platform.ps1` provisions the complete browser login
 boundary directly through Google Cloud Identity Platform. It enables email/password,
@@ -224,9 +227,9 @@ Then run, for example:
 ```powershell
 .\qa\setup_archbro_identity_platform.ps1 `
   -ProjectId "your-firebase-project" `
-  -AuthDomain "your-firebase-project.firebaseapp.com" `
-  -PublicHost "archbro.magicdala.com" `
-  -StagingHost "archbro-dev.magicdala.com"
+  -AuthDomain "<firebase-auth-domain>" `
+  -PublicHost "<production-host>" `
+  -StagingHost "<development-host>"
 ```
 
 Do not place the OAuth client secrets on the command line, in the generated public
@@ -278,11 +281,11 @@ A production-oriented `Dockerfile` is included. The container listens on `$PORT`
 
 Two deployments exist.
 
-**Current (`magicdala.com`).** `main` and `dev` run as two isolated Compose stacks on one GCE instance, each with its own PostgreSQL. GitHub Actions builds, pushes, and deploys on a push to either branch. [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md) records every resource, why it is set up that way, and how to rebuild it; see also [`deploy/`](deploy/) and `.github/workflows/deploy.yml`. Both are reached only through Cloudflare Tunnels — the instance publishes no HTTP port at all — and `dev` additionally sits behind Cloudflare Access with an email allowlist. `.env` files are placed on the instance by hand and are never written by the workflow.
+**Current deployment.** `main` and `dev` run as two isolated Compose stacks on one GCE instance, each with its own PostgreSQL. GitHub Actions builds, pushes, and deploys on a push to either branch. [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md) records every resource, why it is set up that way, and how to rebuild it; see also [`deploy/`](deploy/) and `.github/workflows/deploy.yml`. Both are reached only through separate Cloudflare Tunnels — the instance publishes no HTTP port at all — and `dev` additionally sits behind Cloudflare Access with an email allowlist. `.env` files are placed on the instance by hand and are never written by the workflow.
 
-**Development:** `https://archbro-dev.magicdala.com` is live now and maps to the `dev` stack through the dedicated `archbro-dev` Cloudflare Tunnel.
+**Development:** the `dev` stack is live through its dedicated tunnel.
 
-**Production:** `https://archbro.magicdala.com` is reserved for the `main` stack and is not live yet. When enabled, it will use the separate `archbro-main` tunnel; the current deployment does not use the retired Worker/Cloud Run challenge route.
+**Production:** the `main` stack remains reserved until production enablement; the current deployment does not use the retired Worker/Cloud Run challenge route.
 
 ## License
 

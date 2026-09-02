@@ -49,6 +49,18 @@ Archbro exposes **14 tools by default**. Connected-MCP gateway tools are a separ
 
 When an external MCP gateway is configured, Archbro adds exactly three tools: `archbro_list_connected_mcp_servers`, `archbro_list_connected_mcp_tools`, and `archbro_call_connected_mcp_tool`, for **17 total**. With no configured gateway those three tools are absent rather than returning empty discovery noise.
 
+## Connected MCP provider boundary
+
+Connected-provider state is isolated by the verified Archbro principal. An externally reachable provider route rejects the shared local-development principal, so two browsers cannot collapse into one OAuth-backed gateway state.
+
+- **GitHub:** the provider keeps the official MCP read-only mode and Archbro independently requires `annotations.readOnlyHint=true` before a GitHub tool is listed or called. False, missing, malformed, and unknown tool metadata fail closed before provider dispatch.
+- **Google Drive:** OAuth requests read-only Drive access.
+- **Microsoft Teams:** read scopes/tools are the default. Write scopes and write tools are enabled only by explicit `ARCHBRO_TEAMS_ENABLE_WRITE=true` configuration.
+- **Reconnect behavior:** GitHub, Google Drive, and Microsoft Teams force account selection instead of silently reusing the current browser account. Slack preserves its own user-controlled workspace selection behavior.
+- **OAuth process model:** first-party OAuth transient state is held in process memory. Deployed provider OAuth therefore requires a single application worker; the guard accounts for `WEB_CONCURRENCY`, `UVICORN_WORKERS`, Uvicorn `--workers N`, and `--workers=N` configuration.
+
+These provider restrictions are independent of the normal Archbro project permission check. The generic connected-tool call surface still requires Archbro write authorization because non-GitHub external tools may mutate their provider.
+
 ## Governance invariants
 
 1. WebMCP recommendations never directly approve architecture changes.
@@ -62,6 +74,10 @@ When an external MCP gateway is configured, Archbro adds exactly three tools: `a
 9. Code Architecture is not Living Architecture. Code nodes use `code-node:*`, require exact 40-character Git revision provenance plus source excerpts, and cannot alter accepted `node:<component_id>` topology or version.
 10. Before publishing Code Architecture, the host must inspect the connected GitHub repository at the exact revision. File names, folder proximity, or an unpinned branch HEAD are insufficient implementation evidence.
 11. Initial WebMCP planning is recursive even though persistence is atomic: the host must first choose stable SYSTEM_MAP roots, then evaluate every canonical component in preorder. Every SYSTEM_MAP root must be EXPANDED with at least one child. Below those roots, each scope must be EXPANDED with its exact immediate child ids or a JUSTIFIED_LEAF with a specific reason; only then may the host reconcile authored relationships and tasks. `planning_trace` must exactly match the submitted hierarchy; post-bootstrap structural changes still use reviewable `archbro_expand_architecture_scope` proposals.
+
+## Diagram reading modes
+
+The architecture diagram API accepts `MAP`, `READ`, and `FULL`. `MAP` may collapse parallel or transitively redundant relationships to keep the overview readable; `READ` and `FULL` retain the complete authored relationship set. Layout is computed from the canonical graph rather than from the filtered display set, so node placement and edge routing remain deterministic when the viewer changes reading mode.
 
 ## Living Architecture vs Code Architecture
 

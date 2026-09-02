@@ -86,13 +86,14 @@ def _validate(tmp_path: Path, stack: str, env_text: str) -> subprocess.Completed
     )
 
 
-def test_dev_accepts_explicit_local_staging_contract(tmp_path: Path) -> None:
+def test_dev_rejects_explicit_local_staging_contract(tmp_path: Path) -> None:
     result = _validate(
         tmp_path,
         "archbro-dev",
         "ARCHBRO_ENV=local\nARCHBRO_AUTH_MODE=local\n",
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "ARCHBRO_ENV=production" in result.stdout + result.stderr
 
 
 def test_dev_accepts_complete_firebase_cutover_contract(tmp_path: Path) -> None:
@@ -120,9 +121,7 @@ def test_dev_rejects_mixed_runtime_auth_modes(tmp_path: Path) -> None:
         "ARCHBRO_ENV=local\nARCHBRO_AUTH_MODE=firebase\n",
     )
     assert result.returncode != 0
-    assert "must use local/local or a complete production/firebase configuration" in (
-        result.stdout + result.stderr
-    )
+    assert "ARCHBRO_ENV=production" in result.stdout + result.stderr
 
 
 def test_main_rejects_local_staging_contract(tmp_path: Path) -> None:

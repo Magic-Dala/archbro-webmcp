@@ -234,9 +234,9 @@ An identity outage must be visible. It must not become fake success or local-dem
 - [ ] Logs contain no authorization header, token, secret, or full claims payload.
 - [ ] Repository/event integration permissions have not leaked into the authentication identity.
 
-## Official references
+## Official reference topics
 
-- [How Application Default Credentials works](https://cloud.google.com/docs/authentication/application-default-credentials)
-- [ADC with an attached service account](https://cloud.google.com/docs/authentication/set-up-adc-attached-service-account)
-- [Firebase API-key guidance](https://firebase.google.com/docs/projects/api-keys)
-- [Firebase GitHub sign-in configuration](https://firebase.google.com/docs/auth/web/github-auth)
+- Application Default Credentials behavior
+- Application Default Credentials with an attached service account
+- Firebase API-key guidance
+- Firebase GitHub sign-in configuration

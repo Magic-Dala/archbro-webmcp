@@ -36,6 +36,7 @@ def diagram_request(url: str, project_id: str) -> dict | None:
     return {
         "scope": query.get("scope", [None])[0],
         "expected_architecture_version": query.get("expected_architecture_version", [None])[0],
+        "reading_mode": query.get("reading_mode", [None])[0],
         "url": url,
     }
 
@@ -338,10 +339,13 @@ def main() -> int:
             assert page.locator('[data-projection-role="CONTEXT"]').count() == 0
             if page.locator(".graph-edge text").count():
                 page.locator('button[data-reading-mode="READ"]').click()
+                page.wait_for_function("() => document.querySelector('.graph-stage')?.dataset.readingMode === 'READ'")
                 assert all(float(value) == 0 for value in page.locator(".graph-edge text").evaluate_all("els => els.map(el => getComputedStyle(el).opacity)"))
                 page.locator('button[data-reading-mode="FULL"]').click()
+                page.wait_for_function("() => document.querySelector('.graph-stage')?.dataset.readingMode === 'FULL'")
                 assert any(float(value) > 0 for value in page.locator(".graph-edge text").evaluate_all("els => els.map(el => getComputedStyle(el).opacity)"))
                 page.locator('button[data-reading-mode="MAP"]').click()
+                page.wait_for_function("() => document.querySelector('.graph-stage')?.dataset.readingMode === 'MAP'")
 
             assert diagram_requests, "initial project load must request the root backend diagram"
             assert diagram_requests[-1]["scope"] is None
@@ -357,18 +361,16 @@ def main() -> int:
             assert diagram_requests[-1]["expected_architecture_version"] == str(version)
             assert page.locator(".graph-stage").get_attribute("data-reading-mode") == "MAP"
             scope_anchor = page.locator('[data-projection-role="SCOPE"]')
-            assert scope_anchor.count() == 1
-            assert scope_anchor.get_attribute("data-component") == "backend"
-            assert "CURRENT SCOPE" in (scope_anchor.text_content() or "")
+            assert scope_anchor.count() == 0, "current scope is represented by the scope bar, not duplicated as a graph node"
             primary = page.locator('[data-projection-role="PRIMARY"]')
             assert {primary.nth(index).get_attribute("data-component") for index in range(primary.count())} == {"api", "review"}
             assert page.locator('[data-projection-role="CONTEXT"]').count() == 0
-            assert page.locator('.graph-hierarchy').count() == 2
+            assert page.locator('.graph-hierarchy').count() == 0
             assert page.locator('.graph-edge').count() == 0
-            assert {page.locator('[data-node]').nth(index).get_attribute('data-component') for index in range(page.locator('[data-node]').count())} == {"backend", "api", "review"}
+            assert {page.locator('[data-node]').nth(index).get_attribute('data-component') for index in range(page.locator('[data-node]').count())} == {"api", "review"}
             text_overflow = page.locator('#graphCanvas .node-card').evaluate_all("""cards => cards.flatMap(card => { const surface = card.querySelector('.node-surface')?.getBBox(); if (!surface) return []; return [...card.querySelectorAll('text')].map(text => ({text: text.textContent, box: text.getBBox()})).filter(item => item.box.x < surface.x - 1 || item.box.y < surface.y - 1 || item.box.x + item.box.width > surface.x + surface.width + 1 || item.box.y + item.box.height > surface.y + surface.height + 1); })""")
             assert not text_overflow, text_overflow
-            trace.append({"scope": "backend", "anchor": "backend", "primary": ["api", "review"], "hierarchy_connectors": page.locator('.graph-hierarchy').count()})
+            trace.append({"scope": "backend", "primary": ["api", "review"], "hierarchy_connectors": page.locator('.graph-hierarchy').count()})
 
             api_node = page.locator('[data-component="api"]')
             assert api_node.get_attribute("data-node-action") == "drill"
@@ -383,12 +385,11 @@ def main() -> int:
             assert diagram_requests[-1]["scope"] == "api"
             assert diagram_requests[-1]["expected_architecture_version"] == str(version)
             api_scope_anchor = page.locator('[data-projection-role="SCOPE"]')
-            assert api_scope_anchor.count() == 1
-            assert api_scope_anchor.get_attribute("data-component") == "api"
+            assert api_scope_anchor.count() == 0
             assert page.locator('[data-projection-role="CONTEXT"]').count() == 0
-            assert page.locator('.graph-hierarchy').count() == 1
+            assert page.locator('.graph-hierarchy').count() == 0
             assert page.locator('.graph-edge').count() == 0
-            assert {page.locator('[data-node]').nth(index).get_attribute('data-component') for index in range(page.locator('[data-node]').count())} == {"api", "projection"}
+            assert {page.locator('[data-node]').nth(index).get_attribute('data-component') for index in range(page.locator('[data-node]').count())} == {"projection"}
             assert leaf.get_attribute("data-node-action") == "inspect"
             trace.append({"scope": "api", "primary": ["projection"]})
 
@@ -400,8 +401,9 @@ def main() -> int:
             before_modes = len(diagram_requests)
             for mode in ["MAP", "READ", "FULL"]:
                 page.locator(f'button[data-reading-mode="{mode}"]').click()
-                assert page.locator(".graph-stage").get_attribute("data-reading-mode") == mode
-            assert len(diagram_requests) == before_modes, "MAP/READ/FULL must not refetch topology"
+                page.wait_for_function(f"() => document.querySelector('.graph-stage')?.dataset.readingMode === '{mode}'")
+                assert diagram_requests[-1]["reading_mode"] == mode
+            assert len(diagram_requests) == before_modes + 2, "READ and FULL must request their own routed projections; MAP was already active"
 
             page.locator("[data-graph-back]").click()
             page.wait_for_function("() => document.querySelector('.graph-scope-copy strong')?.textContent === 'Backend Services'")

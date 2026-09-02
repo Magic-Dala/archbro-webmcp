@@ -84,9 +84,67 @@ async function agentSurfaceApi(path, {method = 'GET', body, signal} = {}) {
   return response.status === 204 ? null : response.json();
 }
 
+async function listAuthorizedProviderConnections({signal} = {}) {
+  const connections = await agentSurfaceApi('/mcp/connections', {signal});
+  return (connections || []).filter((connection) => (
+    connection?.id
+    && !connection.authorization_pending
+    && connection.last_probe_ok === true
+  ));
+}
+
+function providerConnectionAsServer(connection) {
+  return {
+    id: connection.id,
+    name: connection.name || connection.provider || 'Connected MCP',
+    description: connection.endpoint || `${connection.provider || 'provider'} connection authorized by the current user`,
+    provider: connection.provider || null,
+    source_kind: 'authorized_provider',
+    tool_count: connection.tool_count ?? null,
+    auth_configured: Boolean(connection.has_credentials),
+  };
+}
+
+async function providerConnectionById(serverId, {signal} = {}) {
+  const connections = await listAuthorizedProviderConnections({signal});
+  return connections.find((connection) => connection.id === serverId) || null;
+}
+
+function mergeProviderConnectionsIntoAgentContext(context, connections) {
+  if (!context || !connections.length) return context;
+  const providerLines = connections.map((connection) => (
+    `- ${connection.id}: ${connection.name || connection.provider || 'Connected MCP'}`
+    + ` — ${connection.endpoint || 'authorized provider connection'}`
+    + (connection.tool_count === null || connection.tool_count === undefined ? '' : ` (${connection.tool_count} tools)`)
+  ));
+  let content = String(context.content || '');
+  const emptyExternalSources = '## External Sources\n- none configured';
+  if (content.includes(emptyExternalSources)) {
+    content = content.replace(emptyExternalSources, `## External Sources\n${providerLines.join('\n')}`);
+  } else {
+    const routingMarker = '\n## Routing';
+    const insertion = `\n${providerLines.join('\n')}`;
+    content = content.includes(routingMarker)
+      ? content.replace(routingMarker, `${insertion}${routingMarker}`)
+      : `${content}${insertion}`;
+  }
+  return {
+    ...context,
+    connected_source_count: Number(context.connected_source_count || 0) + connections.length,
+    content,
+  };
+}
+
 async function getAgentContext({signal} = {}) {
   const projectId = activeProjectId();
-  return agentSurfaceApi(`/projects/${encodeURIComponent(projectId)}/agent-context`, {signal});
+  const context = await agentSurfaceApi(`/projects/${encodeURIComponent(projectId)}/agent-context`, {signal});
+  let providerConnections = [];
+  try {
+    providerConnections = await listAuthorizedProviderConnections({signal});
+  } catch {
+    // Keep canonical project context readable if the optional provider hub is unavailable.
+  }
+  return mergeProviderConnectionsIntoAgentContext(context, providerConnections);
 }
 
 function querySuffix(entries) {
@@ -319,7 +377,16 @@ async function listConnectedMcpServers(bridge, {signal} = {}) {
     return bridge.listConnectedMcpServers({signal});
   }
   const projectId = activeProjectId();
-  return agentSurfaceApi(`/projects/${encodeURIComponent(projectId)}/mcp/servers`, {signal});
+  const [projectSources, providerConnections] = await Promise.all([
+    agentSurfaceApi(`/projects/${encodeURIComponent(projectId)}/mcp/servers`, {signal}),
+    listAuthorizedProviderConnections({signal}),
+  ]);
+  const servers = [...(projectSources?.servers || [])];
+  const ids = new Set(servers.map((server) => server.id));
+  for (const connection of providerConnections) {
+    if (!ids.has(connection.id)) servers.push(providerConnectionAsServer(connection));
+  }
+  return {project_id: projectId, servers};
 }
 
 async function listConnectedMcpTools(bridge, {serverId, signal} = {}) {
@@ -327,6 +394,17 @@ async function listConnectedMcpTools(bridge, {serverId, signal} = {}) {
     return bridge.listConnectedMcpTools({serverId, signal});
   }
   const projectId = activeProjectId();
+  const providerConnection = await providerConnectionById(serverId, {signal});
+  if (providerConnection) {
+    const result = await agentSurfaceApi(`/mcp/connections/${encodeURIComponent(serverId)}/tools`, {signal});
+    return {
+      project_id: projectId,
+      server_id: serverId,
+      source_kind: 'authorized_provider',
+      tools: result?.tools || [],
+      tool_count: result?.tool_count ?? (result?.tools || []).length,
+    };
+  }
   return agentSurfaceApi(
     `/projects/${encodeURIComponent(projectId)}/mcp/servers/${encodeURIComponent(serverId)}/tools`,
     {signal},
@@ -338,6 +416,21 @@ async function callConnectedMcpTool(bridge, {serverId, toolName, arguments: args
     return bridge.callConnectedMcpTool({serverId, toolName, arguments: args, signal});
   }
   const projectId = activeProjectId();
+  const providerConnection = await providerConnectionById(serverId, {signal});
+  if (providerConnection) {
+    const result = await agentSurfaceApi(
+      `/mcp/connections/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolName)}`,
+      {method: 'POST', body: {arguments: args}, signal},
+    );
+    return {
+      project_id: projectId,
+      server_id: serverId,
+      tool_name: toolName,
+      result,
+      classification: 'EXTERNAL_EVIDENCE',
+      canonical_state_mutated: false,
+    };
+  }
   return agentSurfaceApi(
     `/projects/${encodeURIComponent(projectId)}/mcp/servers/${encodeURIComponent(serverId)}/call`,
     {method: 'POST', body: {tool_name: toolName, arguments: args}, signal},
@@ -386,7 +479,7 @@ function createCoreTools(bridge) {
     {
       name: `${TOOL_PREFIX}get_architecture_diagram`,
       title: 'Get Living Architecture diagram',
-      description: 'Read the backend-authored root or one canonical subsystem projection, including SCOPE/PRIMARY nodes, aggregate-edge provenance, scope metadata, and deterministic positioned graph. Use this to drill architecture one level at a time instead of inferring hierarchy in the host.',
+      description: 'Read the backend-authored root or one canonical subsystem projection, including SCOPE/PRIMARY/CONTEXT nodes, aggregate-edge provenance, scope metadata, and deterministic positioned graph. Use this to drill architecture one level at a time instead of inferring hierarchy in the host.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -462,7 +555,7 @@ function createCoreTools(bridge) {
     {
       name: `${TOOL_PREFIX}bootstrap_project`,
       title: 'Create and save ArchBro project',
-      description: 'Agent-facing initial planning commit. Infer a useful hierarchical Architecture v1 from the user goal even when the prompt does not ask for hierarchy. First author SYSTEM_MAP roots, then recursively evaluate every canonical scope in preorder. Mark a scope EXPANDED when independently addressable architecture responsibilities remain below it; mark JUSTIFIED_LEAF only when no meaningful architecture boundary remains and provide a specific reason. Every SYSTEM_MAP root must be EXPANDED; if the user goal names an atomic service directly, place it beneath an appropriate root boundary. Do not stop at broad multi-responsibility containers such as a backend application, web client, or data platform merely because the prompt was brief. During RECONCILE, author each dependency at the deepest canonical endpoints that actually own the interaction; use root-to-root relationships only for true boundary-level interactions. Hierarchy is expressed by children, never by fabricated containment relationships. Archbro validates complete scope coverage and commits Architecture v1 atomically.',
+      description: 'Agent-facing initial planning commit. Infer a useful hierarchical Architecture v1 from the user goal even when the prompt does not ask for hierarchy. First author SYSTEM_MAP roots, then recursively evaluate every canonical scope in preorder. Mark a scope EXPANDED when independently addressable architecture responsibilities remain below it; mark JUSTIFIED_LEAF only when no meaningful architecture boundary remains and provide a specific reason. Every SYSTEM_MAP root must be EXPANDED; if the user goal names an atomic service directly, place it beneath an appropriate root boundary. Do not stop at broad multi-responsibility containers such as a backend application, web client, or data platform merely because the prompt was brief. During RECONCILE, author each dependency at the deepest canonical endpoints that actually own the interaction; use root-to-root relationships only for true boundary-level interactions. Hierarchy is expressed by children, never by fabricated containment relationships. ArchBro validates complete scope coverage and commits Architecture v1 atomically.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -631,7 +724,7 @@ function createConnectedMcpTools(bridge) {
     {
       name: `${TOOL_PREFIX}list_connected_mcp_servers`,
       title: 'List connected MCP servers',
-      description: 'List external MCP servers explicitly bound to the selected ArchBro project through server-side configuration.',
+      description: 'List external MCP sources available to the selected ArchBro project, including user-authorized provider connections and deployment-bound MCP servers.',
       inputSchema: {type: 'object', properties: {}, additionalProperties: false},
       annotations: {readOnlyHint: true, untrustedContentHint: true},
       execute: async (_input, client = {}) => asToolResult(await listConnectedMcpServers(bridge, {signal: client.signal})),
@@ -639,7 +732,7 @@ function createConnectedMcpTools(bridge) {
     {
       name: `${TOOL_PREFIX}list_connected_mcp_tools`,
       title: 'List connected MCP tools',
-      description: 'Discover only the allowlisted tools exposed by one external MCP server connected through ArchBro.',
+      description: 'Discover tools exposed by one MCP source returned by list_connected_mcp_servers, including authorized provider connections.',
       inputSchema: {type: 'object', properties: {server_id: {type: 'string', minLength: 1}}, required: ['server_id'], additionalProperties: false},
       annotations: {readOnlyHint: true, untrustedContentHint: true},
       execute: async ({server_id}, client = {}) => asToolResult(await listConnectedMcpTools(bridge, {serverId: server_id, signal: client.signal})),
@@ -647,7 +740,7 @@ function createConnectedMcpTools(bridge) {
     {
       name: `${TOOL_PREFIX}call_connected_mcp_tool`,
       title: 'Call connected MCP tool',
-      description: 'Call one allowlisted external MCP tool through the ArchBro server-side gateway. The returned data is external evidence and is not automatically written into ArchBro canonical state.',
+      description: 'Call one tool from an MCP source returned by list_connected_mcp_servers. Provider output is external evidence and is not automatically written into ArchBro canonical state.',
       inputSchema: {type: 'object', properties: {server_id: {type: 'string', minLength: 1}, tool_name: {type: 'string', minLength: 1}, arguments: {type: 'object', additionalProperties: true}}, required: ['server_id', 'tool_name'], additionalProperties: false},
       annotations: {readOnlyHint: false, untrustedContentHint: true},
       execute: async ({server_id, tool_name, arguments: args = {}}, client = {}) => asToolResult(await callConnectedMcpTool(bridge, {serverId: server_id, toolName: tool_name, arguments: args, signal: client.signal})),
@@ -659,7 +752,7 @@ function connectedMcpGatewayConfigured() {
   return Boolean(globalThis.window?.__ARCHBRO_RUNTIME_CONFIG__?.connected_mcp_gateway_configured);
 }
 
-export function createArchBroTools(bridge, {includeConnectedMcp = connectedMcpGatewayConfigured()} = {}) {
+export function createArchBroTools(bridge, {includeConnectedMcp = true} = {}) {
   return includeConnectedMcp
     ? [...createCoreTools(bridge), ...createConnectedMcpTools(bridge)]
     : createCoreTools(bridge);
@@ -691,6 +784,7 @@ export async function registerArchBroWebMCP({modelContext, bridge, signal, inclu
   for (const tool of tools) await resolvedModelContext.registerTool(tool, signal ? {signal} : undefined);
   return tools;
 }
+
 
 export async function autoRegisterArchBroWebMCP() {
   const modelContext = resolveModelContext();

@@ -140,13 +140,13 @@ def test_owner_identity_is_server_trusted_and_other_user_is_denied(dsn):
     assert project["owner_user_id"] == "alice"
 
     assert alice.get(f"/projects/{project_id}").status_code == 200
-    assert bob.get(f"/projects/{project_id}").status_code == 403
-    assert bob.patch(f"/projects/{project_id}", json={"name": "Hijacked"}).status_code == 403
-    assert bob.delete(f"/projects/{project_id}").status_code == 403
+    assert bob.get(f"/projects/{project_id}").status_code == 404
+    assert bob.patch(f"/projects/{project_id}", json={"name": "Hijacked"}).status_code == 404
+    assert bob.delete(f"/projects/{project_id}").status_code == 404
     assert bob.get("/projects").json() == []
 
     spoofed = bob.get(f"/projects/{project_id}", headers={"X-User-ID": "alice"})
-    assert spoofed.status_code == 403
+    assert spoofed.status_code == 404
 
 
 def test_node_context_and_path_preserve_project_read_authorization(dsn):
@@ -167,11 +167,11 @@ def test_node_context_and_path_preserve_project_read_authorization(dsn):
     )
 
     assert alice.get(f"/projects/{project_id}/architecture/nodes/node:a/context").status_code == 200
-    assert bob.get(f"/projects/{project_id}/architecture/nodes/node:a/context").status_code == 403
+    assert bob.get(f"/projects/{project_id}/architecture/nodes/node:a/context").status_code == 404
     assert bob.get(
         f"/projects/{project_id}/architecture/path",
         params={"source_id": "node:a", "target_id": "node:b"},
-    ).status_code == 403
+    ).status_code == 404
 
 
 def test_trusted_team_member_can_work_and_review_but_not_manage_project(dsn):
@@ -231,7 +231,7 @@ def test_real_trusted_identity_fails_closed_on_legacy_unowned_project(dsn):
     repo.save_architecture(legacy.id, Architecture())
 
     trusted = _client(repo, TrustedPrincipal(user_id="alice"))
-    assert trusted.get(f"/projects/{legacy.id}").status_code == 403
+    assert trusted.get(f"/projects/{legacy.id}").status_code == 404
     assert trusted.get("/projects").json() == []
 
     # No configured auth provider keeps the explicit local-development path working.

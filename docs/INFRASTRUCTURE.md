@@ -7,9 +7,9 @@ Cloudflare, never in this repository.
 ## Overview
 
 ```
-                     ┌─ archbro.magicdala.com ──── tunnel: archbro-main ──┐
-Cloudflare ──────────┤                                                    ├── GCE VM "magicdala"
-                     └─ archbro-dev.magicdala.com                         │
+                     ┌─ production host ──── tunnel: archbro-main ──┐
+Cloudflare ──────────┤                                              ├── GCE VM "magicdala"
+                     └─ development host                            │
                           └─ Access (email allowlist) ─ tunnel: archbro-dev ┘
 
 VM inbound: 80 closed · 443 closed · 22 open (deploys only)
@@ -24,9 +24,9 @@ can open a connection to the application except through Cloudflare.
 | Resource | Identifier | Purpose |
 | --- | --- | --- |
 | Compute instance | `magicdala`, zone `us-central1-a`, e2-medium | Runs both stacks |
-| Artifact Registry | `us-central1-docker.pkg.dev/magic-dala/archbro` | Deployment images |
+| Artifact Registry | project deployment-image repository | Deployment images |
 | Workload Identity Pool | `github`, provider `github` | Lets GitHub Actions authenticate without a stored key |
-| Service account | `archbro-deployer@magic-dala.iam.gserviceaccount.com` | The identity Actions assumes |
+| Service account | deployment service account | The identity Actions assumes |
 
 **Deployer roles**, one per thing it actually does:
 
@@ -58,13 +58,19 @@ pushes roughly 600KB rather than 155MB.
 ```
 
 `.env` files are placed **by hand** and are never written by the deploy workflow.
-`archbro-main` fails closed unless it has the complete production/Firebase
-contract (`ARCHBRO_ENV=production`, `ARCHBRO_AUTH_MODE=firebase`, a Firebase
-project id, `ARCHBRO_FIREBASE_API_KEY`, and `ARCHBRO_FIREBASE_AUTH_DOMAIN` —
-Google sign-in opens `https://<authDomain>/__/auth/handler`, so without it the
-app boots and only the sign-in button is broken). `archbro-dev` may remain
-explicit `local/local` staging until Firebase is provisioned; mixed or incomplete
-configurations are rejected before the app container is recreated.
+Both `archbro-main` and `archbro-dev` fail closed unless they have the complete
+production/Firebase contract (`ARCHBRO_ENV=production`,
+`ARCHBRO_AUTH_MODE=firebase`, a Firebase project id,
+`ARCHBRO_FIREBASE_API_KEY`, and `ARCHBRO_FIREBASE_AUTH_DOMAIN`). The development
+stack is externally reachable too, so it cannot use the deterministic
+`local-demo` principal without collapsing provider OAuth sessions across users.
+Mixed or incomplete configurations are rejected before the app container is
+recreated.
+
+First-party provider OAuth transient state is process-local. Deployed provider
+OAuth therefore runs as a single application worker. The runtime guard checks
+`WEB_CONCURRENCY`, `UVICORN_WORKERS`, Uvicorn `--workers N`, and `--workers=N`
+and fails closed when any configured worker count exceeds one.
 
 The `connectors` service reads the repositories named in
 `ARCHBRO_GITHUB_CONNECTORS_JSON` and delivers what changed to the Agent. It
@@ -79,17 +85,17 @@ so containers, networks, and database volumes never overlap. The stacks join a
 shared external network, `archbro-edge`, which is how the tunnel connectors
 reach them without anything being published on the host.
 
-## Cloudflare — zone `magicdala.com`
+## Cloudflare routing
 
 | Resource | Identifier |
 | --- | --- |
 | Tunnel (main) | `archbro-main` |
 | Tunnel (dev) | `archbro-dev` |
-| Access application | `Archbro dev` → `archbro-dev.magicdala.com` |
+| Access application | `Archbro dev` |
 | Access policy | team email allowlist |
 | Login method | One-time PIN |
 
-DNS is two CNAMEs to `<tunnel-id>.cfargotunnel.com`, both proxied. Proxying is
+Each environment uses a proxied CNAME that targets its Cloudflare Tunnel. Proxying is
 required: Access only applies to traffic that passes through Cloudflare.
 
 Routing lives in Cloudflare rather than a local config file — the tunnels were
@@ -102,12 +108,8 @@ production down with it.
 ### The bypass that has to stay closed
 
 Cloudflare only guards the path through Cloudflare. While a reverse proxy on the
-VM still had a route for `archbro-dev.magicdala.com`, this returned 200 and
-walked straight past Access:
-
-```
-curl --resolve archbro-dev.magicdala.com:443:<vm-ip> https://archbro-dev.magicdala.com/healthz
-```
+VM still exposed the development application directly, a direct-origin health check
+returned 200 and walked straight past Access.
 
 The fix was removing that route and closing 80/443 entirely. **Any future
 change that publishes a port on the VM reopens this hole.** Adding Access in
@@ -141,8 +143,8 @@ deploy rather than held on the machine.
 3. Create the Workload Identity Pool and OIDC provider, restricted to the
    repository owner; create the deployer service account with the three roles
    above; bind `workloadIdentityUser` to `attribute.repository/Magic-Dala/archbro`
-4. Create one tunnel per environment with `config_src=cloudflare`; set each
-   one's ingress to `<hostname> -> http://<stack>-app:8080`; run a connector on
+4. Create one tunnel per environment with `config_src=cloudflare`; route each
+   hostname to the stack app's internal port `8080`; run a connector on
    the VM with the tunnel token in its `.env`
 5. Point each hostname at its tunnel with a proxied CNAME
 6. For dev: create the Access application and policy, and enable One-time PIN

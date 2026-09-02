@@ -92,17 +92,23 @@ TEAMS_TOOLS: tuple[dict[str, Any], ...] = (
     },
 )
 
+TEAMS_WRITE_TOOL_NAMES = frozenset({
+    "teams_send_chat_message",
+    "teams_send_channel_message",
+})
+
 
 class MicrosoftTeamsGraphAdapter:
     """Small MCP-shaped adapter for user-delegated Microsoft Teams Graph calls."""
 
-    def __init__(self, access_token: str, *, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> None:
+    def __init__(self, access_token: str, *, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS, enable_write: bool = False) -> None:
         if not access_token.strip():
             raise ValueError("Microsoft Teams access token is required")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
         self._access_token = access_token.strip()
         self.timeout_seconds = timeout_seconds
+        self.enable_write = bool(enable_write)
 
     def update_access_token(self, access_token: str) -> None:
         token = access_token.strip()
@@ -111,10 +117,16 @@ class MicrosoftTeamsGraphAdapter:
         self._access_token = token
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return [json.loads(json.dumps(tool)) for tool in TEAMS_TOOLS]
+        return [
+            json.loads(json.dumps(tool))
+            for tool in TEAMS_TOOLS
+            if self.enable_write or tool.get("name") not in TEAMS_WRITE_TOOL_NAMES
+        ]
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         name = (tool_name or "").strip()
+        if name in TEAMS_WRITE_TOOL_NAMES and not self.enable_write:
+            raise ValueError("Microsoft Teams write tools are disabled; set ARCHBRO_TEAMS_ENABLE_WRITE=true to enable them")
         args = arguments or {}
         handlers = {
             "teams_list_teams": self._list_teams,

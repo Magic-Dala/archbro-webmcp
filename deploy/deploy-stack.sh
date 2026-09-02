@@ -185,18 +185,11 @@ case "$STACK" in
         require_production_firebase
         ;;
     archbro-dev)
-        # The existing remote dev stack is an explicitly non-production staging
-        # environment protected by Cloudflare Access. Keep local/local valid until
-        # Firebase is actually provisioned; a future Firebase cutover must be
-        # complete before deploy is allowed to recreate the app container.
-        if [ "$ARCHBRO_ENV_VALUE" = "local" ] && [ "$ARCHBRO_AUTH_MODE_VALUE" = "local" ]; then
-            :
-        elif [ "$ARCHBRO_ENV_VALUE" = "production" ] && [ "$ARCHBRO_AUTH_MODE_VALUE" = "firebase" ]; then
-            require_production_firebase
-        else
-            echo "::error::$ENV_FILE for archbro-dev must use local/local or a complete production/firebase configuration"
-            exit 1
-        fi
+        # Dev is also externally reachable. Cloudflare Access protects the edge,
+        # but provider OAuth/session isolation depends on each browser having a
+        # distinct verified principal. The deterministic local-demo identity is
+        # therefore never valid for a deployed dev stack.
+        require_production_firebase
         ;;
     *)
         echo "::error::unsupported stack $STACK"

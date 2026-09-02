@@ -12,8 +12,7 @@ import {
 
 const prototype = window.ArchbroPrototype;
 const storedProjectId = localStorage.getItem('archbro-project-id');
-const WEBMCP_PUBLIC_HOSTS = new Set(['archbro-dev.magicdala.com', 'archbro.magicdala.com']);
-const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp' || WEBMCP_PUBLIC_HOSTS.has(window.location.hostname);
+const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp';
 const AUTH_PROVIDER_SIGN_INS = new Map([
   ['google', signInWithGoogleAccount],
   ['github', signInWithGitHubAccount],
@@ -378,9 +377,37 @@ async function loadProjectSnapshots() {
   return snapshots;
 }
 
-function graphPathData(points = []) {
+function graphPathData(points = [], radius = 8) {
   if (!points.length) return '';
-  return `M ${points[0].x} ${points[0].y} ${points.slice(1).map((point) => `L ${point.x} ${point.y}`).join(' ')}`;
+  if (points.length < 3 || radius <= 0) {
+    return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+  }
+  const commands = [`M ${points[0].x} ${points[0].y}`];
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const next = points[index + 1];
+    const previousLength = Math.hypot(current.x - previous.x, current.y - previous.y);
+    const nextLength = Math.hypot(next.x - current.x, next.y - current.y);
+    const cornerRadius = Math.min(radius, previousLength / 2, nextLength / 2);
+    if (cornerRadius < 1) {
+      commands.push(`L ${current.x} ${current.y}`);
+      continue;
+    }
+    const before = {
+      x: current.x - ((current.x - previous.x) / previousLength) * cornerRadius,
+      y: current.y - ((current.y - previous.y) / previousLength) * cornerRadius,
+    };
+    const after = {
+      x: current.x + ((next.x - current.x) / nextLength) * cornerRadius,
+      y: current.y + ((next.y - current.y) / nextLength) * cornerRadius,
+    };
+    commands.push(`L ${before.x} ${before.y}`);
+    commands.push(`Q ${current.x} ${current.y} ${after.x} ${after.y}`);
+  }
+  const end = points[points.length - 1];
+  commands.push(`L ${end.x} ${end.y}`);
+  return commands.join(' ');
 }
 
 function renderArchitectureSnapshot(snapshot) {
@@ -802,17 +829,18 @@ function normalizeCodeArchitectureSnapshot(payload) {
   };
 }
 
-function architectureDiagramPath(projectId, architectureVersion, scopeComponentId = null) {
+function architectureDiagramPath(projectId, architectureVersion, scopeComponentId = null, readingMode = 'MAP') {
   const params = new URLSearchParams();
   if (scopeComponentId) params.set('scope', scopeComponentId);
   if (Number(architectureVersion) > 0) params.set('expected_architecture_version', String(Number(architectureVersion)));
+  if (['MAP','READ','FULL'].includes(readingMode)) params.set('reading_mode', readingMode);
   const query=params.toString();
   return `/projects/${projectId}/architecture/diagram${query ? `?${query}` : ''}`;
 }
 
-async function loadArchitectureDiagram(projectId, architecture, scopeComponentId = null) {
+async function loadArchitectureDiagram(projectId, architecture, scopeComponentId = null, readingMode = 'MAP') {
   if (!architecture?.components?.length) return null;
-  const payload = await api(architectureDiagramPath(projectId, architecture.version, scopeComponentId));
+  const payload = await api(architectureDiagramPath(projectId, architecture.version, scopeComponentId, readingMode));
   return normalizeScopedDiagramResponse(payload, scopeComponentId);
 }
 
@@ -1651,7 +1679,7 @@ function renderTasks() {
   document.querySelectorAll('#taskList [data-task-select]').forEach((button) => button.addEventListener('click', () => selectTaskContext(button.dataset.taskSelect)));
   document.querySelectorAll('#taskList [data-task-navigate]').forEach((row) => {
     row.addEventListener('dblclick', (event) => {
-      if (event.target.closest('[data-task-action], [data-task-select]')) return;
+      if (event.target.closest('[data-task-action]')) return;
       navigateTaskToArchitecture(row.dataset.taskNavigate);
     });
     row.addEventListener('keydown', (event) => {
@@ -1889,11 +1917,10 @@ function graphNodeKindMarkup(node) {
   return `<text class="node-kind" x="${node.x+18}" y="${node.y+25}">${escapeHtml(line)}</text>`;
 }
 
-function graphFocusState(selectedNode) {
+function graphFocusState(selectedNode, projectedEdges = state.diagram?.edges || []) {
   if (!selectedNode || state.graphFocusMode === 'all') return null;
   const nodes = new Set([selectedNode.id]);
   const edges = new Set();
-  const projectedEdges = state.diagram?.edges || [];
   if (state.graphFocusMode === 'connected') {
     projectedEdges.forEach((edge) => {
       if (edge.source === selectedNode.id || edge.target === selectedNode.id) { edges.add(edge.id); nodes.add(edge.source); nodes.add(edge.target); }
@@ -1946,10 +1973,11 @@ async function navigateGraphScope(scopeComponentId, {focusComponentId = state.sc
   if (!state.projectId || !state.architecture) return false;
   const targetScope = scopeComponentId || null;
   try {
-    const nextDiagram = await loader(state.projectId, state.architecture, targetScope);
+    const nextMode = nextReadingModeForScope(state.readingMode, targetScope);
+    const nextDiagram = await loader(state.projectId, state.architecture, targetScope, nextMode);
     if (!nextDiagram) throw new Error('Scoped diagram is unavailable.');
     state.scopeComponentId = targetScope;
-    state.readingMode = nextReadingModeForScope(state.readingMode, targetScope);
+    state.readingMode = nextMode;
     state.selectedComponentId = null;
     state.graphFocusMode = 'all';
     state.diagram = nextDiagram;
@@ -1964,11 +1992,22 @@ async function navigateGraphScope(scopeComponentId, {focusComponentId = state.sc
   }
 }
 
-function setGraphReadingMode(mode, {render = renderGraph} = {}) {
+async function setGraphReadingMode(mode, {loader = loadArchitectureDiagram, render = renderGraph, notify = toast} = {}) {
   if (!['MAP','READ','FULL'].includes(mode)) return false;
-  state.readingMode = mode;
-  render();
-  return true;
+  if (mode === state.readingMode) return true;
+  try {
+    const nextDiagram = await loader(state.projectId, state.architecture, state.scopeComponentId, mode);
+    if (!nextDiagram) throw new Error('Diagram is unavailable for this reading mode.');
+    state.diagram = nextDiagram;
+    state.readingMode = mode;
+    state.selectedComponentId = null;
+    state.graphFocusMode = 'all';
+    render();
+    return true;
+  } catch (err) {
+    notify(err?.message || String(err), true);
+    return false;
+  }
 }
 
 async function activateGraphNode(node, {navigate = navigateGraphScope, render = renderGraph} = {}) {
@@ -2129,6 +2168,204 @@ function renderCodeGraph() {
   $('riskList').innerHTML = `<ul><li>Classification: ${escapeHtml(diagram.classification || 'IMPLEMENTATION_EVIDENCE')}</li><li>Canonical state mutated: ${diagram.canonicalStateMutated ? 'YES' : 'NO'}</li><li>${escapeHtml(diagram.evidenceVerification.note || 'Evidence is pinned to the supplied Git revision.')}</li></ul>`;
 }
 
+function graphDisplayModel(diagram) {
+  const scoped = Boolean(diagram?.scope?.componentId);
+  const nodes = scoped
+    ? (diagram?.nodes || []).filter((node) => node.projectionRole !== 'SCOPE')
+    : (diagram?.nodes || []);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = (diagram?.edges || []).filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+  return {scoped, nodes, edges};
+}
+
+function graphVisualConnections(edges = [], nodes = []) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const grouped = new Map();
+  edges.forEach((edge) => {
+    const pair = [String(edge.source), String(edge.target)].sort();
+    // JSON tuple encoding is collision-free for arbitrary component ids; a
+    // delimiter such as "::" can merge unrelated pairs when ids contain it.
+    const key = JSON.stringify(pair);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(edge);
+  });
+  return [...grouped.entries()].map(([key, members]) => {
+    const ordered = [...members].sort((left, right) => {
+      const leftBackbone = String(left.layout_role || 'BACKBONE') === 'BACKBONE' ? 0 : 1;
+      const rightBackbone = String(right.layout_role || 'BACKBONE') === 'BACKBONE' ? 0 : 1;
+      if (leftBackbone !== rightBackbone) return leftBackbone - rightBackbone;
+      const leftSource = nodeById.get(left.source), leftTarget = nodeById.get(left.target);
+      const rightSource = nodeById.get(right.source), rightTarget = nodeById.get(right.target);
+      const leftForward = (leftSource?.x ?? 0) <= (leftTarget?.x ?? 0) ? 0 : 1;
+      const rightForward = (rightSource?.x ?? 0) <= (rightTarget?.x ?? 0) ? 0 : 1;
+      if (leftForward !== rightForward) return leftForward - rightForward;
+      const leftProvenance = Array.isArray(left.provenance) ? left.provenance.length : 0;
+      const rightProvenance = Array.isArray(right.provenance) ? right.provenance.length : 0;
+      if (leftProvenance !== rightProvenance) return rightProvenance - leftProvenance;
+      return String(left.id).localeCompare(String(right.id));
+    });
+    const primary = ordered[0];
+    const directions = new Set(members.map((edge) => `${edge.source}->${edge.target}`));
+    return {
+      ...primary,
+      id: `visual:${key}`,
+      label: members.length > 1 ? `${members.length} relationships` : (primary.label || primary.semantic_type || ''),
+      layout_role: 'BACKBONE',
+      memberIds: members.map((edge) => edge.id),
+      bidirectional: directions.size > 1,
+    };
+  }).sort((left, right) => String(left.id).localeCompare(String(right.id)));
+}
+
+function graphDisplayViewBox(diagram, nodes, edges) {
+  if (!diagram?.scope?.componentId || !nodes.length) return `0 0 ${diagram.width} ${diagram.height}`;
+  const xs = [];
+  const ys = [];
+  nodes.forEach((node) => {
+    xs.push(node.x, node.x + node.width);
+    ys.push(node.y, node.y + node.height);
+  });
+  edges.forEach((edge) => (edge.points || []).forEach((point) => {
+    xs.push(point.x);
+    ys.push(point.y);
+  }));
+  const padding = 34;
+  let minX = Math.min(...xs) - padding;
+  let maxX = Math.max(...xs) + padding;
+  let minY = Math.min(...ys) - padding;
+  let maxY = Math.max(...ys) + padding;
+  const minWidth = Math.min(Number(diagram.width) || 0, 520);
+  const minHeight = Math.min(Number(diagram.height) || 0, 320);
+  if (maxX - minX < minWidth) {
+    const delta = (minWidth - (maxX - minX)) / 2;
+    minX -= delta;
+    maxX += delta;
+  }
+  if (maxY - minY < minHeight) {
+    const delta = (minHeight - (maxY - minY)) / 2;
+    minY -= delta;
+    maxY += delta;
+  }
+  return `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
+}
+
+function graphRectOverlaps(left, right, padding = 0) {
+  return !(
+    left.x + left.width + padding <= right.x - padding
+    || right.x + right.width + padding <= left.x - padding
+    || left.y + left.height + padding <= right.y - padding
+    || right.y + right.height + padding <= left.y - padding
+  );
+}
+
+function graphSegmentHitsRect(start, end, rect, padding = 0) {
+  const left = rect.x - padding;
+  const right = rect.x + rect.width + padding;
+  const top = rect.y - padding;
+  const bottom = rect.y + rect.height + padding;
+  if (start.x === end.x) {
+    const low = Math.min(start.y, end.y), high = Math.max(start.y, end.y);
+    return start.x > left && start.x < right && Math.max(low, top) < Math.min(high, bottom);
+  }
+  if (start.y === end.y) {
+    const low = Math.min(start.x, end.x), high = Math.max(start.x, end.x);
+    return start.y > top && start.y < bottom && Math.max(low, left) < Math.min(high, right);
+  }
+  return false;
+}
+
+let graphLabelMeasureContext = null;
+
+function graphMeasuredLabelWidth(label) {
+  if (!graphLabelMeasureContext) graphLabelMeasureContext = document.createElement('canvas').getContext('2d');
+  const family = getComputedStyle(document.body).fontFamily || 'Arial, sans-serif';
+  graphLabelMeasureContext.font = `750 9.5px ${family}`;
+  return Math.max(42, Math.ceil(graphLabelMeasureContext.measureText(label).width) + 12);
+}
+
+function graphEdgeLabelPlacements(edges, nodes) {
+  const occupied = [];
+  const result = new Map();
+  const nodeRects = nodes.map((node) => ({x:node.x, y:node.y, width:node.width, height:node.height}));
+  const minNodeY = nodeRects.length ? Math.min(...nodeRects.map((rect) => rect.y)) : 48;
+  const maxNodeBottom = nodeRects.length ? Math.max(...nodeRects.map((rect) => rect.y + rect.height)) : 320;
+  const segmentsByEdge = new Map(edges.map((edge) => [edge.id, (edge.points || []).slice(0,-1).map((start,index) => {
+    const end = edge.points[index+1];
+    return {start,end,index,length:Math.abs(end.x-start.x)+Math.abs(end.y-start.y),horizontal:start.y===end.y};
+  })]));
+  const fractions = [0.5, 0.75, 0.25, 0.88, 0.12, 0.65, 0.35];
+
+  edges.forEach((edge) => {
+    const label = String(edge.label || edge.semantic_type || '').trim();
+    if (!label) return;
+    const width = graphMeasuredLabelWidth(label);
+    const height = 17;
+    const target = edge.points[edge.points.length - 1];
+    const arrowBox = {x:target.x-11, y:target.y-11, width:22, height:22};
+    const candidates = [];
+    const segments = [...(segmentsByEdge.get(edge.id) || [])].sort((a,b) => b.length-a.length || a.index-b.index);
+    segments.forEach((segment) => {
+      fractions.forEach((fraction) => {
+        const baseX = segment.start.x + (segment.end.x-segment.start.x)*fraction;
+        const baseY = segment.start.y + (segment.end.y-segment.start.y)*fraction;
+        if (segment.horizontal && segment.length >= 24) {
+          [-14, 22, -30, 38, -46, 54, -62, 70].forEach((offset) => {
+            const baselineY = baseY + offset;
+            candidates.push({segmentIndex:segment.index, x:baseX, y:baselineY, box:{x:baseX-width/2, y:baselineY-height+4, width, height}});
+          });
+        } else if (!segment.horizontal && segment.length >= 24) {
+          [8, 16, 28, 42, 58].forEach((extra) => {
+            const distance = width/2 + extra;
+            [1,-1].forEach((direction) => {
+              const x = baseX + direction*distance;
+              const baselineY = baseY + 4;
+              candidates.push({segmentIndex:segment.index, x, y:baselineY, box:{x:x-width/2, y:baselineY-height+4, width, height}});
+            });
+          });
+        }
+      });
+    });
+
+    // Dense short routes can have no local label slot at all. Keep a
+    // deterministic overflow lane in the graph padding instead of hiding the
+    // relationship or placing text on a node/edge.
+    const routeXs = (edge.points || []).map((point) => point.x);
+    const routeCenterX = routeXs.length ? (Math.min(...routeXs) + Math.max(...routeXs)) / 2 : 48;
+    const laneStep = width + 14;
+    const laneXs = [routeCenterX, routeCenterX-laneStep, routeCenterX+laneStep, routeCenterX-2*laneStep, routeCenterX+2*laneStep];
+    const topBaseline = Math.max(18, minNodeY - 16);
+    const bottomBaseline = maxNodeBottom + 28;
+    [topBaseline, bottomBaseline].forEach((baselineY) => laneXs.forEach((x) => {
+      candidates.push({segmentIndex:-1, x, y:baselineY, box:{x:x-width/2, y:baselineY-height+4, width, height}});
+    }));
+
+    const safe = (candidate, avoidOtherEdges = true) => {
+      if (graphRectOverlaps(candidate.box, arrowBox, 3)) return false;
+      if (nodeRects.some((rect) => graphRectOverlaps(candidate.box, rect, 4))) return false;
+      if (occupied.some((rect) => graphRectOverlaps(candidate.box, rect, 4))) return false;
+      const ownSegments = segmentsByEdge.get(edge.id) || [];
+      if (ownSegments.some((segment) => graphSegmentHitsRect(segment.start, segment.end, candidate.box, 3))) return false;
+      if (!avoidOtherEdges) return true;
+      return !edges.some((other) => {
+        if (other.id === edge.id) return false;
+        return (segmentsByEdge.get(other.id) || []).some((segment) => graphSegmentHitsRect(segment.start, segment.end, candidate.box, 3));
+      });
+    };
+
+    let selected = candidates.find((candidate) => safe(candidate, true));
+    // Preserve complete READ/FULL semantics if a very dense scope has no wholly
+    // edge-free label lane. Even this fallback still forbids nodes, other labels,
+    // this edge, its elbows, and its arrowhead; acceptance will surface any
+    // unrelated-edge collision instead of silently hiding the relationship.
+    if (!selected) selected = candidates.find((candidate) => safe(candidate, false));
+    if (selected) {
+      occupied.push(selected.box);
+      result.set(edge.id, selected);
+    }
+  });
+  return result;
+}
+
 function renderGraph() {
   renderArchitectureChrome();
   if (state.architectureGraphKind === 'code') {
@@ -2145,22 +2382,29 @@ function renderGraph() {
     $('graphReviewState').textContent = 'Diagram unavailable'; renderSelectedNode(); renderLists(); return;
   }
   const diagram = state.diagram;
+  const display = graphDisplayModel(diagram);
   const selected = diagramNodeByComponentId(state.selectedComponentId);
   if (state.selectedComponentId && !selected) state.selectedComponentId = null;
-  const focus = graphFocusState(selected);
+  const focus = graphFocusState(selected, display.edges);
   const nodeById = new Map(diagram.nodes.map((node) => [node.id,node]));
-  const attentionNodes = diagram.nodes.filter((node) => diagramNodeHealth(node).needsAttention);
+  const attentionNodes = display.nodes.filter((node) => diagramNodeHealth(node).needsAttention);
   const activeTaskCount = state.tasks.filter((task) => task.status === 'IN_PROGRESS').length;
-  const hierarchy = diagram.nodes.map((node) => {
+  const hierarchy = display.scoped ? '' : diagram.nodes.map((node) => {
     if (!node.parent_id) return '';
     const parent=nodeById.get(node.parent_id); if (!parent) return '';
     return `<line class="graph-hierarchy" x1="${parent.x+parent.width/2}" y1="${parent.y+parent.height/2}" x2="${node.x+node.width/2}" y2="${node.y+node.height/2}"/>`;
   }).join('');
-  const edges = diagram.edges.map((edge) => {
-    const highlighted=!focus || focus.edges.has(edge.id); const anchor=edge.points[Math.floor((edge.points.length-1)/2)]; const label=edge.label || edge.semantic_type || '';
-    return `<g class="graph-edge projection-${escapeHtml(String(edge.projection_kind || 'AUTHORED').toLowerCase())}${highlighted ? ' is-focused' : ' is-dimmed'}" data-edge="${escapeHtml(edge.id)}"><path d="${graphPathData(edge.points)}" marker-end="url(#arrow)"/>${label ? `<text class="graph-detail-full" x="${anchor.x}" y="${anchor.y-7}" text-anchor="middle">${escapeHtml(label)}</text>` : ''}</g>`;
+  const visibleEdges = graphVisualConnections(display.edges, display.nodes);
+  const labelPlacements = graphEdgeLabelPlacements(visibleEdges, display.nodes);
+  const edges = visibleEdges.map((edge) => {
+    const highlighted=!focus || edge.memberIds.some((edgeId)=>focus.edges.has(edgeId)); const label=edge.label || edge.semantic_type || ''; const labelPlacement=labelPlacements.get(edge.id);
+    const projectionKind=edge.memberIds.length > 1 ? 'merged' : String(edge.projection_kind || 'AUTHORED').toLowerCase();
+    const sourcePoint=edge.points[0];
+    const sourcePort=edge.bidirectional ? '' : `<circle class="graph-edge-source-port" cx="${sourcePoint.x}" cy="${sourcePoint.y}" r="2.25"/>`;
+    const startMarker=edge.bidirectional ? ' marker-start="url(#arrow-backbone)"' : '';
+    return `<g class="graph-edge projection-${escapeHtml(projectionKind)} layout-backbone${highlighted ? ' is-focused' : ' is-dimmed'}" data-edge="${escapeHtml(edge.id)}">${sourcePort}<path d="${graphPathData(edge.points)}"${startMarker} marker-end="url(#arrow-backbone)"/>${label && labelPlacement ? `<text class="graph-edge-label graph-detail-read" data-edge-label="${escapeHtml(edge.id)}" x="${labelPlacement.x}" y="${labelPlacement.y}" text-anchor="middle">${escapeHtml(label)}</text>` : ''}</g>`;
   }).join('');
-  const nodes = diagram.nodes.map((node) => {
+  const nodes = display.nodes.map((node) => {
     const health=diagramNodeHealth(node), selectedNode=state.selectedComponentId===node.component_id, highlighted=!focus || focus.nodes.has(node.id);
     const names=wrapGraphText(node.label,Math.max(12,Math.floor((node.width-48)/8.8)),2).map((line,index)=>`<text class="node-name" x="${node.x+18}" y="${node.y+55+index*17}">${escapeHtml(line)}</text>`).join('');
     const responsibility=wrapGraphText(node.responsibility,Math.max(16,Math.floor((node.width-48)/7.4)),2).map((line,index)=>`<text class="node-responsibility graph-detail-read" x="${node.x+18}" y="${node.y+96+index*14}">${escapeHtml(line)}</text>`).join('');
@@ -2169,8 +2413,21 @@ function renderGraph() {
     return `<g class="node-card projection-${role.toLowerCase()} health-${health.key} is-${action}${selectedNode ? ' selected' : ''}${highlighted ? ' is-focused' : ' is-dimmed'}" data-node="${escapeHtml(node.id)}" data-component="${escapeHtml(node.component_id)}" data-child-count="${node.childCount}" data-projection-role="${role}" data-node-action="${action}" role="button" aria-label="${escapeHtml(drillable ? `Inspect ${node.label}; double click to open subsystem with ${node.childCount} child${node.childCount===1?'':'ren'}` : `Inspect ${node.label}`)}" tabindex="0"><rect class="node-surface" x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="16"/>${graphNodeKindMarkup(node)}<circle class="node-health-dot" cx="${node.x+node.width-20}" cy="${node.y+21}" r="4.5"/>${names}${responsibility}<text class="node-status graph-detail-full" x="${node.x+18}" y="${node.y+node.height-13}">${escapeHtml(health.label)} · depth ${node.depth}</text>${cue}</g>`;
   }).join('');
   $('graphReviewState').textContent=attentionNodes.length ? `${attentionNodes.length} node${attentionNodes.length===1?'':'s'} need attention` : 'All projected nodes aligned';
-  const meta=`<div class="graph-meta"><span>${diagram.nodes.length} visible nodes</span><span>${diagram.edges.length} projected relationship${diagram.edges.length===1?'':'s'}</span><span>${activeTaskCount} task${activeTaskCount===1?'':'s'} active</span><span>Accepted v${diagram.architectureVersion}</span>${attentionNodes.length ? `<span class="graph-meta-attention">${attentionNodes.length} need attention</span>` : '<span class="graph-meta-ok">No action needed</span>'}</div>`;
-  canvas.innerHTML=`${graphScopeToolbar(diagram)}<div class="graph-stage" data-reading-mode="${state.readingMode}">${meta}<svg class="living-graph-svg" viewBox="0 0 ${diagram.width} ${diagram.height}" role="img" aria-label="Accepted scoped project architecture graph"><defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8 Z"/></marker></defs>${hierarchy}${edges}${nodes}</svg></div>`;
+  const boundaryRelationshipCount = diagram.scope?.directRelationships?.length || 0;
+  const collapsedConnectionMeta = visibleEdges.length !== display.edges.length
+    ? ` · ${visibleEdges.length} visual connection${visibleEdges.length===1?'':'s'}`
+    : '';
+  const relationshipMeta = display.scoped
+    ? `${display.edges.length} direct child relationship${display.edges.length===1?'':'s'}${collapsedConnectionMeta}`
+    : `${display.edges.length} projected relationship${display.edges.length===1?'':'s'}${collapsedConnectionMeta}`;
+  const scopeMeta = display.scoped && boundaryRelationshipCount
+    ? `<span class="graph-meta-scope">${boundaryRelationshipCount} boundary relationship${boundaryRelationshipCount===1?'':'s'}${display.edges.length===0 ? ' · kept at scope boundary' : ''}</span>`
+    : display.scoped && display.edges.length === 0
+      ? '<span class="graph-meta-scope">No authored child-to-child links</span>'
+      : '';
+  const meta=`<div class="graph-meta"><span>${display.nodes.length} visible nodes</span><span>${relationshipMeta}</span>${scopeMeta}<span>${activeTaskCount} task${activeTaskCount===1?'':'s'} active</span><span>Accepted v${diagram.architectureVersion}</span>${attentionNodes.length ? `<span class="graph-meta-attention">${attentionNodes.length} need attention</span>` : '<span class="graph-meta-ok">No action needed</span>'}</div>`;
+  const viewBox = graphDisplayViewBox(diagram, display.nodes, visibleEdges);
+  canvas.innerHTML=`${graphScopeToolbar(diagram)}<div class="graph-stage" data-reading-mode="${state.readingMode}">${meta}<svg class="living-graph-svg" viewBox="${viewBox}" role="img" aria-label="Accepted scoped project architecture graph"><defs><marker id="arrow-backbone" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" viewBox="0 0 7 7" refX="6.35" refY="3.5" orient="auto-start-reverse" overflow="visible"><path d="M1.2 1.1 L5.8 3.5 L1.2 5.9" fill="none" stroke="var(--brand-deep)" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>${hierarchy}${edges}${nodes}</svg></div>`;
   canvas.querySelectorAll('[data-reading-mode]').forEach((button)=>button.addEventListener('click',()=>setGraphReadingMode(button.dataset.readingMode)));
   canvas.querySelector('[data-graph-back]')?.addEventListener('click',()=>navigateGraphScope(parentGraphScopeComponentId(diagram),{focusComponentId:state.scopeComponentId}));
   canvas.querySelectorAll('[data-scope-target]').forEach((button)=>button.addEventListener('click',()=>navigateGraphScope(button.dataset.scopeTarget || null,{focusComponentId:state.scopeComponentId})));
@@ -2492,9 +2749,29 @@ function mcpProviderStatusEntry(providerId) {
 }
 
 function mcpProviderStatusEndpoint(providerId) {
+  return `/mcp/oauth/${encodeURIComponent(providerId)}/status`;
+}
+
+function mcpLegacyProviderStatusEndpoint(providerId) {
   if (providerId === 'github') return '/mcp/auth/github/status';
   if (providerId === 'google-drive') return '/mcp/auth/google-drive/status';
-  return `/mcp/oauth/${encodeURIComponent(providerId)}/status`;
+  return null;
+}
+
+async function resolveMcpProviderStatus(providerId) {
+  const generic = await api(mcpProviderStatusEndpoint(providerId));
+  if (generic?.configured === true) return {...generic, oauth_strategy: 'generic'};
+
+  const legacyEndpoint = mcpLegacyProviderStatusEndpoint(providerId);
+  if (!legacyEndpoint) return {...generic, oauth_strategy: 'generic'};
+
+  try {
+    const legacy = await api(legacyEndpoint);
+    if (legacy?.configured === true) return {...legacy, oauth_strategy: 'legacy-runtime'};
+  } catch {
+    // Keep the deployment OAuth result when the optional runtime fallback is unavailable.
+  }
+  return {...generic, oauth_strategy: 'generic'};
 }
 
 function invalidateMcpProviderStatus(providerId) {
@@ -2513,7 +2790,7 @@ function requestMcpProviderStatus(providerId, {force = false} = {}) {
   if (entry.inFlight) return entry.inFlight;
 
   const generation = entry.generation;
-  const request = api(mcpProviderStatusEndpoint(providerId))
+  const request = resolveMcpProviderStatus(providerId)
     .then((value) => {
       if (entry.generation === generation) {
         entry.value = value;
@@ -2543,9 +2820,9 @@ function renderMcpOAuthStatusShell(preset) {
   const titles = {github: 'Connect GitHub', slack: 'Connect Slack', 'google-drive': 'Connect Google Drive', 'microsoft-teams': 'Connect Microsoft Teams'};
   $('mcpOAuthTitle').textContent = titles[providerId] || 'Connect provider';
   const descriptions = {
-    github: 'A GitHub authorization window will open. ArchBro uses the official GitHub MCP OAuth runtime and keeps the resulting session backend-only.',
-    slack: 'A Slack authorization window will open. ArchBro keeps the OAuth client and resulting user token backend-only and memory-only.',
-    'google-drive': 'A Google authorization window will open. ArchBro requests Drive access and calls the Drive API directly; no Google Cloud MCP project or IAM setup is needed.',
+    github: 'Sign in to your own GitHub account and approve ArchBro. Your GitHub token stays backend-only and is attached only to your ArchBro user while connecting to GitHub remote MCP.',
+    slack: 'Sign in to your own Slack workspace account and approve ArchBro. Your Slack user token stays backend-only and is attached only to your ArchBro user while connecting to Slack remote MCP.',
+    'google-drive': 'Sign in to your own Google account and approve ArchBro. Your Google token stays backend-only and is attached only to your ArchBro user while connecting to Google Drive remote MCP.',
     'microsoft-teams': 'A Microsoft authorization window will open. ArchBro uses delegated Microsoft Graph access for Teams and keeps the OAuth session backend-only and memory-only.',
   };
   $('mcpOAuthDescription').textContent = descriptions[providerId] || 'A provider sign-in window will open.';
@@ -2555,8 +2832,6 @@ function renderMcpOAuthStatusShell(preset) {
 function renderMcpOAuthStatusLoading(preset) {
   if ($('mcpPreset').value !== preset) return;
   $('mcpOAuthReady').classList.add('hidden');
-  $('mcpGithubSetup').classList.add('hidden');
-  $('mcpGoogleSetup').classList.add('hidden');
   $('mcpProviderSetup').classList.add('hidden');
   $('mcpOAuthRedirectReady').textContent = 'Checking provider sign-in status…';
   $('mcpOAuthConnectBtn').classList.remove('hidden');
@@ -2569,32 +2844,9 @@ function renderMcpOAuthStatus(preset, status) {
   if ($('mcpPreset').value !== preset || !status) return;
   const providerId = mcpOAuthProviderId(preset);
   $('mcpOAuthReady').classList.add('hidden');
-  $('mcpGithubSetup').classList.add('hidden');
-  $('mcpGoogleSetup').classList.add('hidden');
   $('mcpProviderSetup').classList.add('hidden');
   delete $('mcpOAuthConnectBtn').dataset.statusRetry;
 
-  if (providerId === 'github') {
-    $('mcpOAuthRedirectReady').textContent = status.message || 'Ready to authorize with GitHub.';
-    $('mcpOAuthReady').classList.toggle('hidden', !status.configured);
-    $('mcpGithubSetup').classList.toggle('hidden', status.configured);
-    $('mcpOAuthConnectBtn').classList.remove('hidden');
-    $('mcpOAuthConnectBtn').disabled = !status.configured;
-    $('mcpOAuthConnectBtn').textContent = status.connected ? 'Reconnect GitHub' : 'Continue with GitHub';
-    return;
-  }
-
-  if (providerId === 'google-drive') {
-    $('mcpOAuthRedirectReady').textContent = status.message || 'Ready to authorize Google Drive.';
-    const prerequisiteBlocked = !status.connected && status.prerequisites && status.prerequisites.ready !== true;
-    $('mcpOAuthReady').classList.toggle('hidden', !status.configured || prerequisiteBlocked);
-    $('mcpGoogleSetup').classList.toggle('hidden', status.connected || !prerequisiteBlocked);
-    $('mcpGoogleSetupText').textContent = status.message || 'Google Drive prerequisites are not ready.';
-    $('mcpOAuthConnectBtn').classList.remove('hidden');
-    $('mcpOAuthConnectBtn').disabled = !status.configured;
-    $('mcpOAuthConnectBtn').textContent = status.connected ? 'Reconnect Google Drive' : 'Continue with Google Drive';
-    return;
-  }
 
   const configured = status.configured === true;
   $('mcpOAuthRedirectReady').textContent = configured
@@ -2647,7 +2899,7 @@ function openMcpOAuthPopup(providerId) {
     `popup=yes,width=${width},height=${height},left=${left},top=${top}`,
   );
   if (!popup) {
-    toast('Your browser blocked the OAuth window. Allow popups for this localhost page and retry.', true);
+    toast('Your browser blocked the OAuth window. Allow popups for this ArchBro site and retry.', true);
     return null;
   }
   activeMcpOAuthPopup = popup;
@@ -2692,8 +2944,8 @@ function applyMcpPreset(preset = $('mcpPreset').value) {
     $('mcpUrl').value = 'https://mcp.slack.com/mcp';
   } else if (preset === 'google-drive') {
     $('mcpName').value = 'Google Drive';
-    $('mcpUrl').value = '';
-    $('mcpAuthHint').textContent = 'Google Drive OAuth · direct Drive API';
+    $('mcpUrl').value = 'https://drivemcp.googleapis.com/mcp/v1';
+    $('mcpAuthHint').textContent = 'Google Drive OAuth · remote MCP';
   } else if (preset === 'microsoft-teams') {
     $('mcpName').value = 'Microsoft Teams';
     $('mcpUrl').value = 'https://graph.microsoft.com/v1.0';
@@ -2757,6 +3009,53 @@ function selectMcpPreset(preset) {
   void loadMcpOAuthStatus(preset, {background: true});
 }
 
+async function startLegacyMcpOAuth(providerId, popup, preset, status) {
+  let connectionId = null;
+  try {
+    const started = await api(`/mcp/auth/${encodeURIComponent(providerId)}/start`, {method: 'POST'});
+    connectionId = started.connection?.id || null;
+    if (started.connected) {
+      popup.close();
+      toast(`${status.name} connected: ${started.tool_count || started.connection?.tool_count || 0} tools discovered.`);
+      await refreshMcpProviderStatusAfterMutation(providerId);
+      await loadMcpConnections();
+      setMcpPickerTab('connected');
+      return;
+    }
+    if (!started.authorization_url || !connectionId) {
+      throw new Error(`${status.name} did not return an authorization URL.`);
+    }
+    popup.location.replace(started.authorization_url);
+    popup.focus();
+
+    const deadline = Date.now() + 180000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const result = await api(`/mcp/auth/${encodeURIComponent(providerId)}/${encodeURIComponent(connectionId)}/poll`, {method: 'POST'});
+      if (!result.connected) {
+        if (providerId === 'google-drive' && popup.closed) {
+          throw new Error('Google Drive authorization was cancelled.');
+        }
+        continue;
+      }
+      if (!popup.closed) popup.close();
+      toast(`${status.name} connected: ${result.tool_count || 0} tools discovered.`);
+      await refreshMcpProviderStatusAfterMutation(providerId);
+      await loadMcpConnections();
+      setMcpPickerTab('connected');
+      return;
+    }
+    throw new Error(`${status.name} authorization timed out. Retry Connect when ready.`);
+  } catch (err) {
+    if (!popup.closed) popup.close();
+    if (connectionId) {
+      try { await api(`/mcp/connections/${encodeURIComponent(connectionId)}`, {method: 'DELETE'}); } catch {}
+    }
+    toast(err.message, true);
+    await refreshMcpProviderStatusAfterMutation(providerId);
+  }
+}
+
 async function startMcpOAuth() {
   const preset = $('mcpPreset').value;
   const providerId = mcpOAuthProviderId(preset);
@@ -2774,109 +3073,11 @@ async function startMcpOAuth() {
     popup.close();
     return;
   }
-  if (providerId === 'github' && !status?.configured) {
-    popup.close();
-    toast('GitHub OAuth runtime is unavailable.', true);
-    return;
-  }
 
   $('mcpOAuthConnectBtn').disabled = true;
   $('mcpOAuthConnectBtn').textContent = 'Waiting for authorization…';
 
-  if (providerId === 'github') {
-    let connectionId = null;
-    try {
-      const started = await api('/mcp/auth/github/start', {method: 'POST'});
-      connectionId = started.connection?.id || null;
-      if (started.connected) {
-        popup.close();
-        toast(`GitHub connected: ${started.tool_count || started.connection?.tool_count || 0} tools discovered.`);
-        await refreshMcpProviderStatusAfterMutation(providerId);
-        await loadMcpConnections();
-        setMcpPickerTab('connected');
-        return;
-      }
-      if (!started.authorization_url || !connectionId) throw new Error('GitHub did not return an authorization URL.');
-      popup.location.replace(started.authorization_url);
-      popup.focus();
 
-      const deadline = Date.now() + 180000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        const result = await api(`/mcp/auth/github/${encodeURIComponent(connectionId)}/poll`, {method: 'POST'});
-        if (!result.connected) {
-          // The official runtime receives the OAuth callback on its own local
-          // server. The browser window can close before that callback is
-          // exchanged, especially when the provider replaces the popup with
-          // a success page, so keep polling until the backend reports success.
-          continue;
-        }
-        if (!popup.closed) popup.close();
-        toast(`GitHub connected: ${result.tool_count} tools discovered.`);
-        await refreshMcpProviderStatusAfterMutation(providerId);
-        await loadMcpConnections();
-        setMcpPickerTab('connected');
-        return;
-      }
-      throw new Error('GitHub authorization timed out. Retry Connect when ready.');
-    } catch (err) {
-      if (!popup.closed) popup.close();
-      if (connectionId) {
-        try { await api(`/mcp/connections/${encodeURIComponent(connectionId)}`, {method: 'DELETE'}); } catch {}
-      }
-      toast(err.message, true);
-      await refreshMcpProviderStatusAfterMutation(providerId);
-    }
-    return;
-  }
-
-  if (providerId === 'google-drive') {
-    let connectionId = null;
-    try {
-      if (!status?.configured) {
-        popup.close();
-        throw new Error(status?.message || 'Google Drive sign-in is unavailable.');
-      }
-      const started = await api('/mcp/auth/google-drive/start', {method: 'POST'});
-      connectionId = started.connection?.id || null;
-      if (started.connected) {
-        popup.close();
-        toast(`Google Drive connected: ${started.tool_count || started.connection?.tool_count || 0} tools discovered.`);
-        await refreshMcpProviderStatusAfterMutation(providerId);
-        await loadMcpConnections();
-        setMcpPickerTab('connected');
-        return;
-      }
-      if (!started.authorization_url || !connectionId) throw new Error('Google Drive did not return an authorization URL.');
-      popup.location.replace(started.authorization_url);
-      popup.focus();
-
-      const deadline = Date.now() + 180000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        const result = await api(`/mcp/auth/google-drive/${encodeURIComponent(connectionId)}/poll`, {method: 'POST'});
-        if (!result.connected) {
-          if (popup.closed) throw new Error('Google Drive authorization was cancelled.');
-          continue;
-        }
-        if (!popup.closed) popup.close();
-        toast(`Google Drive connected: ${result.tool_count} tools discovered.`);
-        await refreshMcpProviderStatusAfterMutation(providerId);
-        await loadMcpConnections();
-        setMcpPickerTab('connected');
-        return;
-      }
-      throw new Error('Google Drive authorization timed out. Retry Connect when ready.');
-    } catch (err) {
-      if (!popup.closed) popup.close();
-      if (connectionId) {
-        try { await api(`/mcp/connections/${encodeURIComponent(connectionId)}`, {method: 'DELETE'}); } catch {}
-      }
-      toast(err.message, true);
-      await refreshMcpProviderStatusAfterMutation(providerId);
-    }
-    return;
-  }
 
   if (!status?.configured) {
     popup.close();
@@ -2884,9 +3085,22 @@ async function startMcpOAuth() {
     return;
   }
 
-  popup.location.replace(`/mcp/oauth/${encodeURIComponent(providerId)}/start`);
-  popup.focus();
-  watchMcpOAuthPopup(popup, preset);
+  if (status.oauth_strategy === 'legacy-runtime') {
+    await startLegacyMcpOAuth(providerId, popup, preset, status);
+    return;
+  }
+
+  try {
+    const started = await api(`/mcp/oauth/${encodeURIComponent(providerId)}/start`, {method: 'POST'});
+    if (!started?.authorization_url) throw new Error(`${status.name} did not return an authorization URL.`);
+    popup.location.replace(started.authorization_url);
+    popup.focus();
+    watchMcpOAuthPopup(popup, preset);
+  } catch (err) {
+    if (!popup.closed) popup.close();
+    toast(err.message, true);
+    await refreshMcpProviderStatusAfterMutation(providerId);
+  }
 }
 
 function setMcpPickerTab(tab) {
@@ -3788,7 +4002,7 @@ $('mcpConnectionForm').addEventListener('submit', async (e) => {
   }
 });
 window.addEventListener('message', async (event) => {
-  const trustedOAuthOrigins = new Set([window.location.origin, 'https://archbro-dev.magicdala.com', 'https://archbro.magicdala.com']);
+  const trustedOAuthOrigins = new Set([window.location.origin, 'https://archbro-dev.magicdala.com', 'https://archbro.magicdala.com', 'https://archbro-webmcp.magicdala.com']);
   if (!trustedOAuthOrigins.has(event.origin)) return;
   if (activeMcpOAuthPopup && event.source && event.source !== activeMcpOAuthPopup) return;
   const payload = event.data;

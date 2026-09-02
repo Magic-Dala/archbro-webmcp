@@ -2,7 +2,6 @@ import asyncio
 import os
 
 import pytest
-from dotenv import load_dotenv
 
 from archbro.backend.agent.orchestration import AgentOrchestrator
 from archbro.backend.core.action_executor import ActionExecutor
@@ -27,7 +26,6 @@ from conftest import requires_database
 
 pytestmark = requires_database
 
-load_dotenv()
 
 
 class _CountingGeminiProvider(GeminiProvider):

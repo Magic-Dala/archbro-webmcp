@@ -27,7 +27,10 @@ from archbro.integrations.microsoft_teams import MicrosoftTeamsGraphAdapter
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_TIMEOUT_SECONDS = 15.0
-GOOGLE_DRIVE_REQUIRED_SCOPE = "https://www.googleapis.com/auth/drive"
+GOOGLE_DRIVE_ACCEPTED_SCOPES = frozenset({
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.readonly",
+})
 GOOGLE_OAUTH_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_AUTH_TIMEOUT_SECONDS = 180.0
 
@@ -148,6 +151,15 @@ class ExternalMcpGateway:
         self._connections[connection_id] = state
         return self._public(state)
 
+    @staticmethod
+    def _provider_bearer_headers(provider: str, token: str) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {token}"}
+        if provider == "github":
+            # GitHub's official remote MCP server treats this as a strict
+            # read-only capability filter and removes mutation tools.
+            headers["X-MCP-Readonly"] = "true"
+        return headers
+
     def add_bearer_connection(
         self,
         *,
@@ -168,7 +180,7 @@ class ExternalMcpGateway:
             name=name,
             transport="streamable_http",
             url=url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=self._provider_bearer_headers(provider, token),
         )
         connection_id = f"mcp_{uuid4().hex}"
         state = _ConnectionState(
@@ -199,6 +211,8 @@ class ExternalMcpGateway:
                 "127.0.0.1:8085:8085",
                 "-e",
                 "GITHUB_OAUTH_CALLBACK_PORT=8085",
+                "-e",
+                "GITHUB_READ_ONLY=1",
                 "ghcr.io/github/github-mcp-server",
             ],
             env={},
@@ -426,7 +440,7 @@ class ExternalMcpGateway:
             name=name,
             transport="streamable_http",
             url=url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=self._provider_bearer_headers(provider, token),
         )
         expires_at = time.time() + expires_in if expires_in else None
         connection_id = f"mcp_{uuid4().hex}"
@@ -490,7 +504,11 @@ class ExternalMcpGateway:
                 expires_at=expires_at,
             ),
             display_endpoint="Microsoft Teams · Microsoft Graph v1.0",
-            graph_adapter=MicrosoftTeamsGraphAdapter(token, timeout_seconds=self.timeout_seconds),
+            graph_adapter=MicrosoftTeamsGraphAdapter(
+                token,
+                timeout_seconds=self.timeout_seconds,
+                enable_write=os.getenv("ARCHBRO_TEAMS_ENABLE_WRITE", "").strip().lower() in {"1", "true", "yes", "on"},
+            ),
         )
         self._connections[connection_id] = state
         return self._public(state)
@@ -1085,7 +1103,7 @@ class ExternalMcpGateway:
         scopes = payload.get("scope")
         if not isinstance(scopes, str):
             return False
-        return GOOGLE_DRIVE_REQUIRED_SCOPE in set(scopes.split())
+        return bool(GOOGLE_DRIVE_ACCEPTED_SCOPES & set(scopes.split()))
 
     @staticmethod
     def _stop_browser_auth_session(session: _ExternalBrowserAuthSession) -> None:

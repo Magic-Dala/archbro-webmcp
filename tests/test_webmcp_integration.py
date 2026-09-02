@@ -60,11 +60,23 @@ def bootstrap_semantic_project(client: TestClient) -> str:
 def test_real_host_acceptance_invokes_discovered_ping_before_page_api_diagnostics():
     root = Path(__file__).resolve().parents[1]
     runbook = (root / "docs" / "CODEX_WEBMCP_ACCEPTANCE.md").read_text(encoding="utf-8")
-    assert "https://archbro-dev.magicdala.com/?mode=webmcp" in runbook
+    assert "Open a fresh Archbro deployment page in WebMCP acceptance mode." in runbook
+    assert "http://" not in runbook
+    assert "https://" not in runbook
     assert "must not use Playwright" in runbook
     assert "Do not inspect `document.modelContext` as a prerequisite" in runbook
     assert "Do not switch to another testing mechanism." in runbook
 
+
+def test_webmcp_ui_mode_is_explicit_but_site_tools_auto_register_on_the_normal_url():
+    root = Path(__file__).resolve().parents[1]
+    app = (root / "frontend" / "web" / "app.js").read_text(encoding="utf-8")
+    module = (root / "frontend" / "web" / "archbro-webmcp.js").read_text(encoding="utf-8")
+    assert "const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp';" in app
+    assert "WEBMCP_PUBLIC_HOSTS" not in app
+    assert "webmcp-mode-disabled" not in module
+    assert "function webMcpModeEnabled()" not in module
+    assert "queueMicrotask(() => { autoRegisterArchBroWebMCP()" in module
 
 def test_webmcp_asset_uses_current_imperative_document_model_context_surface(dsn):
     client = make_client(dsn)
@@ -73,8 +85,8 @@ def test_webmcp_asset_uses_current_imperative_document_model_context_surface(dsn
     assert index.status_code == 200
     assert 'src="/runtime-config.js"' in index.text
     assert 'src="/static/firebase-auth-client.js?v=20260901-auth-providers"' in index.text
-    assert 'type="module" src="/static/app.js?v=20260901-auth-providers"' in index.text
-    assert 'type="module" src="/static/archbro-webmcp.js?v=20260831-webmcp-build-watchdog"' in index.text
+    assert 'type="module" src="/static/app.js?v=' in index.text
+    assert 'type="module" src="/static/archbro-webmcp.js?v=20260903-provider-bridge-v3"' in index.text
     assert index.headers["cache-control"] == "no-store, max-age=0"
 
     module = client.get("/static/archbro-webmcp.js")
@@ -82,10 +94,8 @@ def test_webmcp_asset_uses_current_imperative_document_model_context_surface(dsn
     assert "document.modelContext.registerTool()" in module.text
     app = client.get("/static/app.js")
     assert app.status_code == 200
-    assert "WEBMCP_AGENT_MODE" in app.text
-    assert "WEBMCP_PUBLIC_HOSTS" in app.text
-    assert "archbro-dev.magicdala.com" in app.text
-    assert "archbro.magicdala.com" in app.text
+    assert "const WEBMCP_AGENT_MODE = new URLSearchParams(window.location.search).get('mode') === 'webmcp';" in app.text
+    assert "WEBMCP_PUBLIC_HOSTS" not in app.text
     assert "Built-in architecture generation is disabled in WebMCP Agent Mode." in app.text
     brief_block = app.text.split("async getProjectBrief()", 1)[1].split("async getDecisionContext()", 1)[0]
     assert "await refresh();" in brief_block
@@ -155,14 +165,14 @@ def test_webmcp_manifest_and_ping_have_server_build_identity(dsn, monkeypatch):
     manifest = manifest_response.json()
     assert manifest["surface"] == "archbro-webmcp"
     assert manifest["surface_version"] == "archbro.semantic-webmcp.v4"
-    assert manifest["expected_tool_count"] == 14
+    assert manifest["expected_tool_count"] == 17
     assert manifest["connected_mcp_gateway_configured"] is False
     assert len(manifest["asset_sha256"]) == 64
 
     runtime_config = client.get("/runtime-config.js")
     assert runtime_config.headers["cache-control"] == "no-store, max-age=0"
     assert manifest["asset_sha256"] in runtime_config.text
-    assert '"webmcp_expected_tool_count": 14' in runtime_config.text
+    assert '"webmcp_expected_tool_count": 17' in runtime_config.text
 
     module = client.get("/static/archbro-webmcp.js")
     assert module.headers["cache-control"] == "no-store, max-age=0"
@@ -218,6 +228,7 @@ def test_webmcp_architecture_focus_navigates_to_the_requested_nodes_parent_scope
 def test_semantic_task_routes_commit_mutation_and_audit_event_through_one_repository_transition(dsn):
     root = Path(__file__).resolve().parents[1]
     source = (root / "src" / "archbro" / "backend" / "api" / "agent_surface.py").read_text(encoding="utf-8")
+    module = (root / "frontend" / "web" / "archbro-webmcp.js").read_text(encoding="utf-8")
     create_block = source.split('@router.post("/projects/{project_id}/tasks")', 1)[1].split('@router.patch("/projects/{project_id}/tasks/{task_id}/status")', 1)[0]
     update_block = source.split('@router.patch("/projects/{project_id}/tasks/{task_id}/status")', 1)[1].split('@router.post("/projects/{project_id}/observations")', 1)[0]
     for block in (create_block, update_block):
@@ -229,7 +240,6 @@ def test_semantic_task_routes_commit_mutation_and_audit_event_through_one_reposi
     assert "except ConcurrentStateError as exc:" in update_block
     assert "HTTPException(status_code=409" in update_block
 
-    module = (root / "frontend" / "web" / "archbro-webmcp.js").read_text(encoding="utf-8")
     create_tool = module.split("name: `${TOOL_PREFIX}create_task`", 1)[1].split("name: `${TOOL_PREFIX}update_task_status`", 1)[0]
     assert "request_id" in create_tool
     assert "required: ['request_id', 'title']" in create_tool
@@ -359,6 +369,17 @@ def test_semantic_task_and_observation_apis_reject_invalid_project_references(ds
         "related_components": ["does-not-exist"],
     })
     assert bad_observation.status_code == 422
+
+
+def test_webmcp_provider_hub_is_part_of_connected_source_discovery():
+    root = Path(__file__).resolve().parents[1]
+    module = (root / "frontend" / "web" / "archbro-webmcp.js").read_text(encoding="utf-8")
+    assert "listAuthorizedProviderConnections" in module
+    assert "agentSurfaceApi('/mcp/connections'" in module
+    assert "/mcp/connections/${encodeURIComponent(serverId)}/tools" in module
+    assert "source_kind: 'authorized_provider'" in module
+    assert "includeConnectedMcp = true" in module
+    assert "mergeProviderConnectionsIntoAgentContext" in module
 
 
 def test_runtime_config_exposes_connected_mcp_capability_only_when_configured(dsn, monkeypatch):

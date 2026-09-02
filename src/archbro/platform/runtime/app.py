@@ -181,11 +181,9 @@ def create_app(
             "surface_version": WEBMCP_SURFACE_VERSION,
             "asset_sha256": webmcp_asset_sha256,
             "connected_mcp_gateway_configured": gateway_configured,
-            "expected_tool_count": (
-                WEBMCP_DEFAULT_TOOL_COUNT + WEBMCP_GATEWAY_TOOL_COUNT
-                if gateway_configured
-                else WEBMCP_DEFAULT_TOOL_COUNT
-            ),
+            # The discovery/call tools are always registered. They can expose either
+            # deployment-bound MCP servers or the current user's authorized provider hub.
+            "expected_tool_count": WEBMCP_DEFAULT_TOOL_COUNT + WEBMCP_GATEWAY_TOOL_COUNT,
         }
 
     app = FastAPI(title="Archbro")

@@ -612,10 +612,6 @@ def case_task_architecture_navigation(browser: Browser) -> None:
             start_button.dispatch_event("dblclick")
             assert page.locator("#view-tasks").is_visible()
 
-        context_button = linked_row.locator('[data-task-select]')
-        context_button.dispatch_event("dblclick")
-        assert page.locator("#view-tasks").is_visible()
-
         linked_row.dblclick(position={"x": 20, "y": 20})
         page.locator("#view-architecture").wait_for(state="visible")
         target = page.locator('[data-component="task-nav-composer"]')

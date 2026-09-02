@@ -16,6 +16,11 @@ from archbro.backend.mcp.provider_gateway import ExternalMcpGateway
 
 
 OAUTH_STATE_TTL_SECONDS = 600
+MICROSOFT_TEAMS_WRITE_SCOPES = ("ChatMessage.Send", "ChannelMessage.Send")
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,7 @@ class OAuthProvider:
     tenant_id_env: str | None = None
     connection_kind: str = "mcp"
     omit_client_secret_with_pkce: bool = False
+    client_secret_required: bool = False
 
 
 @dataclass
@@ -44,6 +50,39 @@ class _PendingOAuth:
 
 
 PROVIDERS: dict[str, OAuthProvider] = {
+    "github": OAuthProvider(
+        id="github",
+        name="GitHub",
+        mcp_url="https://api.githubcopilot.com/mcp/",
+        authorization_url="https://github.com/login/oauth/authorize",
+        token_url="https://github.com/login/oauth/access_token",
+        client_id_env="ARCHBRO_GITHUB_OAUTH_CLIENT_ID",
+        client_secret_env="ARCHBRO_GITHUB_OAUTH_CLIENT_SECRET",
+        # GitHub classic OAuth has no read-only private-repository scope.
+        # `repo` is retained only so private code can be inspected; unrelated
+        # package/project/gist/notification privileges are intentionally omitted.
+        scopes=(
+            "repo",
+            "read:org",
+            "read:user",
+        ),
+        use_pkce=True,
+        client_secret_required=True,
+    ),
+    "google-drive": OAuthProvider(
+        id="google-drive",
+        name="Google Drive",
+        mcp_url="https://drivemcp.googleapis.com/mcp/v1",
+        authorization_url="https://accounts.google.com/o/oauth2/v2/auth",
+        token_url="https://oauth2.googleapis.com/token",
+        client_id_env="ARCHBRO_GOOGLE_DRIVE_OAUTH_CLIENT_ID",
+        client_secret_env="ARCHBRO_GOOGLE_DRIVE_OAUTH_CLIENT_SECRET",
+        scopes=(
+            "https://www.googleapis.com/auth/drive.readonly",
+        ),
+        use_pkce=True,
+        client_secret_required=True,
+    ),
     "slack": OAuthProvider(
         id="slack",
         name="Slack",
@@ -71,8 +110,8 @@ PROVIDERS: dict[str, OAuthProvider] = {
             "mpim:read",
         ),
         scope_separator=",",
-        use_pkce=True,
-        omit_client_secret_with_pkce=True,
+        use_pkce=False,
+        client_secret_required=True,
     ),
     "microsoft-teams": OAuthProvider(
         id="microsoft-teams",
@@ -94,8 +133,6 @@ PROVIDERS: dict[str, OAuthProvider] = {
             "Channel.ReadBasic.All",
             "Chat.Read",
             "ChannelMessage.Read.All",
-            "ChatMessage.Send",
-            "ChannelMessage.Send",
         ),
         use_pkce=True,
         connection_kind="microsoft_teams_graph",
@@ -124,7 +161,7 @@ class McpOAuthManager:
         missing: list[str] = []
         if not client_id:
             missing.append("client ID")
-        if not client_secret and not provider.use_pkce:
+        if not client_secret and (provider.client_secret_required or not provider.use_pkce):
             missing.append("client secret")
         if provider.tenant_id_env and not tenant_id:
             missing.append("tenant ID")
@@ -153,16 +190,23 @@ class McpOAuthManager:
             "response_type": "code",
             "state": state,
         }
-        scope_value = provider.scope_separator.join(provider.scopes)
-        # Slack's MCP user-token endpoint uses `scope` for user scopes.  The
+        scopes = provider.scopes
+        if provider.id == "microsoft-teams" and _env_flag("ARCHBRO_TEAMS_ENABLE_WRITE"):
+            scopes = (*scopes, *MICROSOFT_TEAMS_WRITE_SCOPES)
+        scope_value = provider.scope_separator.join(scopes)
+        # Slack's MCP user-token endpoint uses `scope` for user scopes. The
         # separate `user_scope` parameter belongs to Slack's standard
         # /oauth/v2/authorize installation flow, not /oauth/v2_user/authorize.
         params["scope"] = scope_value
+        if provider.id in {"github", "microsoft-teams"}:
+            # Reconnect must expose the account picker instead of silently
+            # reusing the browser's current SSO session.
+            params["prompt"] = "select_account"
         if provider.id == "google-drive":
             params.update({
                 "access_type": "offline",
                 "include_granted_scopes": "true",
-                "prompt": "consent",
+                "prompt": "select_account consent",
             })
         if provider.use_pkce:
             code_verifier = secrets.token_urlsafe(64)
@@ -207,9 +251,9 @@ class McpOAuthManager:
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
         }
-        # Slack's public-client flow omits the secret. Microsoft Teams also
-        # supports a confidential PKCE deployment, so send its optional secret
-        # when one has been provisioned.
+        # Confidential providers send the deployment app secret. PKCE providers
+        # may omit it only when that provider is explicitly configured as a
+        # public client; end-user provider credentials never enter this payload.
         if client_secret and (not provider.use_pkce or not provider.omit_client_secret_with_pkce):
             token_payload["client_secret"] = client_secret
         if pending.code_verifier:

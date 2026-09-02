@@ -47,6 +47,57 @@ class DiagramEdgeProjectionKind(StrEnum):
     DERIVED_CROSSING = "DERIVED_CROSSING"
 
 
+class DiagramEdgeLayoutRole(StrEnum):
+    BACKBONE = "BACKBONE"
+    CROSS_CUTTING = "CROSS_CUTTING"
+
+
+class DiagramRelationshipCategory(StrEnum):
+    FLOW = "FLOW"
+    DATA = "DATA"
+    EVENT = "EVENT"
+    ACCESS = "ACCESS"
+    OBSERVABILITY = "OBSERVABILITY"
+    VALIDATION = "VALIDATION"
+    DELIVERY = "DELIVERY"
+    SUPPORT = "SUPPORT"
+
+
+_BACKBONE_RELATIONSHIP_CATEGORIES = frozenset(
+    {
+        DiagramRelationshipCategory.FLOW,
+        DiagramRelationshipCategory.DATA,
+        DiagramRelationshipCategory.EVENT,
+    }
+)
+
+
+def _relationship_category(semantic_type: str) -> DiagramRelationshipCategory:
+    normalized = "_".join(str(semantic_type or "").strip().upper().replace("-", "_").split())
+    if any(stem in normalized for stem in ("AUTHENTICAT", "AUTHORIZ", "ACCESS", "PERMISSION", "IDENTITY")):
+        return DiagramRelationshipCategory.ACCESS
+    if any(stem in normalized for stem in ("MONITOR", "OBSERV", "TELEMETR", "METRIC", "TRACE", "LOG")):
+        return DiagramRelationshipCategory.OBSERVABILITY
+    if any(stem in normalized for stem in ("VALIDAT", "VERIF", "TEST", "CHECK", "LINT")):
+        return DiagramRelationshipCategory.VALIDATION
+    if any(stem in normalized for stem in ("PROVISION", "DEPLOY", "RELEASE", "OPERAT", "RUNS")):
+        return DiagramRelationshipCategory.DELIVERY
+    if any(stem in normalized for stem in ("SUBSCRIB", "PUBLISH", "CONSUM", "EMIT", "FANOUT", "EVENT", "STREAM", "NOTIFY", "BROADCAST")):
+        return DiagramRelationshipCategory.EVENT
+    if any(stem in normalized for stem in ("PERSIST", "READ", "WRITE", "STORE", "APPEND", "QUERY", "SCHEMA", "DATABASE")):
+        return DiagramRelationshipCategory.DATA
+    if any(stem in normalized for stem in ("CALL", "INVOK", "COMMAND", "REQUEST", "DISPATCH", "SEND", "RECEIVE", "CONNECT", "UPDATE", "TRIGGER", "ROUTE", "DELEGAT")):
+        return DiagramRelationshipCategory.FLOW
+    return DiagramRelationshipCategory.SUPPORT
+
+
+def _layout_role_for_semantic_types(semantic_types: Iterable[str]) -> DiagramEdgeLayoutRole:
+    categories = {_relationship_category(item) for item in semantic_types if str(item).strip()}
+    if categories & _BACKBONE_RELATIONSHIP_CATEGORIES:
+        return DiagramEdgeLayoutRole.BACKBONE
+    return DiagramEdgeLayoutRole.CROSS_CUTTING
+
+
 class DiagramStatus(BaseModel):
     canonical_status: str
     task_status: TaskStatus | None = None
@@ -89,6 +140,7 @@ class DiagramEdge(BaseModel):
     label: str
     supporting_text: str = ""
     projection_kind: DiagramEdgeProjectionKind = DiagramEdgeProjectionKind.AUTHORED
+    layout_role: DiagramEdgeLayoutRole = DiagramEdgeLayoutRole.BACKBONE
     provenance: list[RelationshipProvenance] = Field(default_factory=list)
 
 
@@ -98,6 +150,143 @@ class DiagramView(BaseModel):
     summary: str = ""
     nodes: list[DiagramNode] = Field(default_factory=list)
     edges: list[DiagramEdge] = Field(default_factory=list)
+
+
+def map_edge_ids(diagram: DiagramView) -> frozenset[str]:
+    edges = sorted(diagram.edges, key=lambda edge: edge.id)
+    if len(edges) <= 1:
+        return frozenset(edge.id for edge in edges)
+
+    backbone = [edge for edge in edges if edge.layout_role == DiagramEdgeLayoutRole.BACKBONE]
+
+    def reduced_backbone_ids(candidates: list[DiagramEdge]) -> set[str]:
+        if len(candidates) <= 1:
+            return {edge.id for edge in candidates}
+
+        # MAP renders one visual connection per directed endpoint pair. Parallel
+        # backbone semantics must therefore collapse before transitive reduction;
+        # otherwise two A->B edges incorrectly prove each other redundant and
+        # both disappear. Prefer richer aggregate provenance, then stable id.
+        representative_by_pair: dict[tuple[str, str], DiagramEdge] = {}
+        for edge in candidates:
+            pair = (edge.source, edge.target)
+            current = representative_by_pair.get(pair)
+            if current is None or (-len(edge.provenance), edge.id) < (-len(current.provenance), current.id):
+                representative_by_pair[pair] = edge
+        candidates = sorted(representative_by_pair.values(), key=lambda edge: edge.id)
+        if len(candidates) <= 1:
+            return {edge.id for edge in candidates}
+
+        adjacency: dict[str, list[DiagramEdge]] = defaultdict(list)
+        indegree = {node.id: 0 for node in diagram.nodes}
+        for edge in candidates:
+            adjacency[edge.source].append(edge)
+            indegree[edge.target] = indegree.get(edge.target, 0) + 1
+        for group in adjacency.values():
+            group.sort(key=lambda edge: edge.id)
+
+        ready = sorted(node_id for node_id, degree in indegree.items() if degree == 0)
+        pending = dict(indegree)
+        visited = 0
+        while ready:
+            node_id = ready.pop(0)
+            visited += 1
+            for edge in adjacency.get(node_id, []):
+                pending[edge.target] -= 1
+                if pending[edge.target] == 0:
+                    ready.append(edge.target)
+                    ready.sort()
+
+        if visited == len(indegree):
+            selected: set[str] = set()
+            for edge in candidates:
+                stack = [edge.source]
+                seen = {edge.source}
+                alternate = False
+                while stack and not alternate:
+                    current = stack.pop()
+                    for candidate in adjacency.get(current, []):
+                        if candidate.id == edge.id:
+                            continue
+                        if candidate.target == edge.target:
+                            alternate = True
+                            break
+                        if candidate.target not in seen:
+                            seen.add(candidate.target)
+                            stack.append(candidate.target)
+                if not alternate:
+                    selected.add(edge.id)
+            return selected
+
+        # MAP may omit a cycle edge, but READ/FULL retain the complete cycle.
+        parent = {node.id: node.id for node in diagram.nodes}
+
+        def find(node_id: str) -> str:
+            while parent[node_id] != node_id:
+                parent[node_id] = parent[parent[node_id]]
+                node_id = parent[node_id]
+            return node_id
+
+        selected: set[str] = set()
+        for edge in candidates:
+            source_root, target_root = find(edge.source), find(edge.target)
+            if source_root == target_root:
+                continue
+            parent[max(source_root, target_root)] = min(source_root, target_root)
+            selected.add(edge.id)
+        return selected
+
+    selected = reduced_backbone_ids(backbone)
+
+    # BACKBONE controls architecture flow. CROSS_CUTTING edges are used only
+    # to connect an otherwise isolated architecture island in MAP; they never
+    # become rank constraints. Prefer validation/delivery evidence over purely
+    # observational/support edges, then prefer an edge aggregating more
+    # canonical provenance.
+    parent = {node.id: node.id for node in diagram.nodes}
+
+    def find(node_id: str) -> str:
+        while parent[node_id] != node_id:
+            parent[node_id] = parent[parent[node_id]]
+            node_id = parent[node_id]
+        return node_id
+
+    def union(source: str, target: str) -> None:
+        source_root, target_root = find(source), find(target)
+        if source_root == target_root:
+            return
+        parent[max(source_root, target_root)] = min(source_root, target_root)
+
+    edge_by_id = {edge.id: edge for edge in edges}
+    for edge_id in selected:
+        edge = edge_by_id[edge_id]
+        union(edge.source, edge.target)
+
+    category_priority = {
+        DiagramRelationshipCategory.VALIDATION: 0,
+        DiagramRelationshipCategory.DELIVERY: 1,
+        DiagramRelationshipCategory.ACCESS: 2,
+        DiagramRelationshipCategory.OBSERVABILITY: 3,
+        DiagramRelationshipCategory.SUPPORT: 4,
+    }
+
+    def cross_key(edge: DiagramEdge) -> tuple[int, int, str, str, str]:
+        semantic_types = [item.semantic_type for item in edge.provenance] or [edge.semantic_type]
+        categories = {_relationship_category(item) for item in semantic_types}
+        priority = min((category_priority.get(category, 5) for category in categories), default=5)
+        return (priority, -len(edge.provenance), edge.source, edge.target, edge.id)
+
+    cross_cutting = sorted(
+        (edge for edge in edges if edge.layout_role == DiagramEdgeLayoutRole.CROSS_CUTTING),
+        key=cross_key,
+    )
+    for edge in cross_cutting:
+        if find(edge.source) == find(edge.target):
+            continue
+        selected.add(edge.id)
+        union(edge.source, edge.target)
+
+    return frozenset(selected)
 
 
 class DiagramScopePathEntry(BaseModel):
@@ -384,6 +573,7 @@ def _authored_edge(record: _AuthoredRelationship) -> DiagramEdge:
         label=relationship.relationship_type,
         supporting_text=relationship.description,
         projection_kind=DiagramEdgeProjectionKind.AUTHORED,
+        layout_role=_layout_role_for_semantic_types([relationship.relationship_type]),
         provenance=[record.provenance],
     )
 
@@ -473,6 +663,7 @@ def _project_edges(
                 label=label,
                 supporting_text="",
                 projection_kind=DiagramEdgeProjectionKind.DERIVED_CROSSING,
+                layout_role=_layout_role_for_semantic_types(semantic_types),
                 provenance=[item.provenance for item in ordered],
             )
         )

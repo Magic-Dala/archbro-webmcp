@@ -28,12 +28,12 @@ returns the service is genuinely up rather than merely started.
 
 ## Where to look
 
-| URL | What |
+| Surface | What |
 | --- | --- |
-| http://localhost:8080/ | The application |
-| http://localhost:8080/?mode=webmcp | WebMCP mode |
-| **http://localhost:8080/docs** | **Interactive API docs — call any endpoint from the browser** |
-| http://localhost:8080/healthz | Liveness probe, returns `{"status":"ok"}` |
+| Application root | The application |
+| WebMCP mode | WebMCP acceptance surface |
+| **API docs** | **Interactive API docs — call any endpoint from the browser** |
+| Liveness probe | Returns `{"status":"ok"}` |
 
 `/docs` is usually the fastest way to try an endpoint by hand; it is generated
 from the route definitions, so it is never out of date.
@@ -83,16 +83,12 @@ docker compose up -d --wait
 ```
 
 **How the app reaches the database.** Compose builds `DATABASE_URL` from the
-`POSTGRES_*` values and injects it:
+`POSTGRES_*` values and injects it. The connection targets the `db` service on
+port `5432` and uses the `archbro` database.
 
-```
-postgresql://archbro:archbro@db:5432/archbro
-             ^user   ^password ^service name in the Compose network
-```
-
-`db` is the service name, and Compose's internal DNS resolves it. The port is
-also published on `127.0.0.1:5432` so a GUI client on your machine can connect;
-it is bound to loopback deliberately, because that password really is
+`db` is the service name, and Compose's internal DNS resolves it. The database
+port is also published on loopback so a GUI client on your machine can connect;
+it is loopback-only deliberately, because the development password really is
 `archbro`.
 
 Inspect the database directly:
@@ -122,6 +118,14 @@ in `.env`. See `.env.example` for every variable.
 `docker-compose.yml` pins `ARCHBRO_ENV` and `ARCHBRO_AUTH_MODE` to `local` and
 a `.env` cannot override them, because `environment:` outranks `env_file:`.
 That is deliberate: this file must never be usable as a deployment.
+
+Provider OAuth has an additional runtime constraint. Its transient authorization
+state is process-local, so deployed provider OAuth must run with exactly one
+application worker. The production guard checks `WEB_CONCURRENCY`,
+`UVICORN_WORKERS`, Uvicorn `--workers N`, and `--workers=N` and rejects a
+multi-worker configuration. Direct local development may still use the explicit
+local principal, but externally reachable provider routes require verified
+per-user authentication.
 
 ## When something is wrong
 

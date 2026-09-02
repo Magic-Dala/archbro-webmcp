@@ -4,13 +4,9 @@ Use this runbook for black-box acceptance through Archbro's native browser WebMC
 
 ## Target
 
-Open a fresh page at:
+Open a fresh Archbro deployment page in WebMCP acceptance mode.
 
-```text
-https://archbro-dev.magicdala.com/?mode=webmcp
-```
-
-For local development, the same flow may be run against `http://127.0.0.1:<port>/?mode=webmcp`.
+For local development, run the same flow against the local application port with WebMCP mode enabled.
 
 Always perform a fresh navigation or explicit reload before tool discovery. A server restart cannot replace JavaScript already executing in an older page instance.
 

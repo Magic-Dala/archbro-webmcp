@@ -39,6 +39,7 @@ from archbro.backend.core.contracts import (
 from archbro.backend.core.observation import ObservationInProgressError
 from archbro.backend.core.diagram import (
     ArchitectureNodeNotFoundError,
+    map_edge_ids,
     project_scoped_diagram,
 )
 from archbro.backend.core.diagram_layout import layout_diagram
@@ -350,6 +351,11 @@ def build_router(
         try:
             authorizer.require(principal, project, permission)
         except ProjectAuthorizationError as exc:
+            # Do not reveal whether an opaque project id exists to a principal
+            # that has no read access at all. Principals that can already read
+            # the project still receive 403 for a stronger denied permission.
+            if not authorizer.can_read(principal, project):
+                raise HTTPException(status_code=404, detail="project not found")
             raise HTTPException(status_code=403, detail=str(exc))
         return project
 
@@ -481,6 +487,7 @@ def build_router(
         http_request: Request,
         scope: str | None = Query(default=None),
         expected_architecture_version: int | None = Query(default=None, ge=0),
+        reading_mode: Literal["MAP", "READ", "FULL"] = Query(default="FULL"),
     ):
         await authorized_project(http_request, project_id, ProjectPermission.READ)
         architecture = repository.get_architecture(project_id)
@@ -511,14 +518,23 @@ def build_router(
                     "component_id": scope,
                 },
             )
-        diagram = projection.diagram
+        full_diagram = projection.diagram
+        route_edge_ids = map_edge_ids(full_diagram) if reading_mode == "MAP" else None
+        positioned_graph = layout_diagram(full_diagram, route_edge_ids=route_edge_ids)
+        diagram = (
+            full_diagram.model_copy(
+                update={"edges": [edge for edge in full_diagram.edges if edge.id in route_edge_ids]}
+            )
+            if route_edge_ids is not None
+            else full_diagram
+        )
         return {
             "schema": projection.schema,
             "project_id": project_id,
             "architecture_version": projection.architecture_version,
             "scope": projection.scope.model_dump(mode="json"),
             "diagram": diagram.model_dump(mode="json"),
-            "positioned_graph": asdict(layout_diagram(diagram)),
+            "positioned_graph": asdict(positioned_graph),
         }
 
     @router.get("/projects/{project_id}/architecture/proposals")
