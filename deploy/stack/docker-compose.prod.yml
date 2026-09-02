@@ -62,6 +62,34 @@ services:
       retries: 5
       start_period: 20s
 
+  # Reads watched repositories and delivers what changed to the Agent. Serves
+  # nothing, so it deliberately stays off the edge network even though it holds
+  # the repository credentials. With ARCHBRO_GITHUB_CONNECTORS_JSON unset — the
+  # default — every pass is a no-op.
+  connectors:
+    image: ${ARCHBRO_IMAGE:?set ARCHBRO_IMAGE, normally injected by the deploy workflow}
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      default:
+    command:
+      - sh
+      - -c
+      # `|| true` keeps one failing repository — an expired token, a rate limit
+      # — from ending the schedule for every other repository.
+      - |
+        while true; do
+          python -m archbro.platform.runtime.connector_sync || true
+          sleep "${ARCHBRO_CONNECTOR_INTERVAL_SECONDS:-300}"
+        done
+
 networks:
   # Shared with the tunnel connectors, which is how they reach these
   # containers without anything being published on the host.

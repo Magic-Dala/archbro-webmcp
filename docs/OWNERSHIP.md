@@ -8,7 +8,8 @@ This file maps product responsibilities to stable code boundaries. Ownership is 
 | --- | --- | --- |
 | `frontend/` | Shaun | Goal / Ask, Architecture View, Task View, Proposal Review, browser UX |
 | `src/archbro/backend/` | Jim | Project State, Goal contract, Architecture, Tasks, Agent logic, drift evaluation, change proposals, product API |
-| `src/archbro/integrations/` | Ayushi | Firebase Auth, user/team identity, permissions, GitHub integration, external-event normalization |
+| `src/archbro/integrations/` | Ayushi | Firebase Auth, user/team identity, permissions |
+| `src/archbro/integrations/github/` | Max | GitHub ingestion and normalization into pipeline signals |
 | `src/archbro/platform/` | Max | PostgreSQL persistence, runtime composition, event pipeline, CI/CD/Cloud Run, logging/observability |
 
 ## Platform direction
@@ -63,7 +64,7 @@ Ayushi -> Jim
 Max -> Jim
 
 Firebase Auth -> Ayushi -> Jim
-GitHub -> Ayushi -> Max -> Jim
+GitHub -> Max -> Jim
 PostgreSQL -> Max -> Jim repository contract
 Jim -> LLM
 ```

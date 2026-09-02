@@ -68,9 +68,15 @@ class ConnectorSync:
         delivery: SignalDeliverer,
         cursor_store: SyncCursorStore,
         stall_threshold: int = 5,
+        server_id: str | None = None,
     ) -> None:
         if stall_threshold < 1:
             raise ValueError("stall_threshold must be at least 1")
+        # One MCP server can feed many sources. The cursor is keyed by
+        # connector_id, so reusing it as the server id makes two repositories
+        # read through the same server share a cursor and overwrite each
+        # other's position. Defaults to the connector for single-source servers.
+        self._server_id = server_id
         self._gateway = gateway
         self._adapter = adapter
         self._delivery = delivery
@@ -91,7 +97,7 @@ class ConnectorSync:
         arguments = self._adapter.build_arguments(position)
         raw = await self._gateway.call_tool(
             project_id,
-            connector_id,
+            self._server_id or connector_id,
             self._adapter.tool_name,
             arguments,
         )

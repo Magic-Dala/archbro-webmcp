@@ -31,6 +31,13 @@ class NormalizedSignal:
        observes two repositories. Qualify it:
        ``github:{repository}:pr:{number}``, ``github:{repository}:commit:{sha}``.
 
+    3. **Spelled one way only.** The key is compared as a string, so a qualifier
+       with two spellings defeats the deduplication it exists for. ``{repository}``
+       is therefore GitHub's numeric repository id, never ``owner/name``: GitHub
+       treats the name as case-insensitive, and it changes on rename or transfer,
+       so the same pull request would arrive under two identities. The readable
+       name belongs in the payload as evidence, not in the identity.
+
     A content hash such as a commit sha is already globally unique, but keeping
     the qualified form everywhere makes the identity self-describing.
     """

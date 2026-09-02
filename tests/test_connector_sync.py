@@ -277,3 +277,36 @@ def test_empty_result_does_not_lose_the_existing_position(dsn):
 
     assert report.applied == 0
     assert store.load("proj_1", "github").position == "start"
+
+
+def test_the_mcp_server_and_the_sync_source_are_named_separately(dsn):
+    """One MCP server can feed many sources, so they cannot share an id.
+
+    The cursor is keyed by ``(project_id, connector_id)`` while the gateway is
+    addressed by server id. Using one value for both makes two repositories read
+    through the same GitHub server share a cursor and overwrite each other's
+    position.
+    """
+    store = _cursor_store(dsn)
+    store.save(
+        SyncCursor(
+            project_id="proj_1",
+            connector_id="github:987654321:main",
+            position="2026-09-01T00:00:00Z",
+        )
+    )
+    gateway = _FakeGateway({"commits": []})
+    adapter = _FakeAdapter([], None)
+    sync = ConnectorSync(
+        gateway=gateway,
+        adapter=adapter,
+        delivery=_FakeDelivery([]),
+        cursor_store=store,
+        server_id="github",
+    )
+
+    asyncio.run(sync.sync("proj_1", "github:987654321:main"))
+
+    # Addressed by server id, but positioned by source id.
+    assert gateway.calls[0][1] == "github"
+    assert adapter.seen_positions == ["2026-09-01T00:00:00Z"]

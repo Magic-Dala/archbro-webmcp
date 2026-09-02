@@ -66,6 +66,14 @@ app boots and only the sign-in button is broken). `archbro-dev` may remain
 explicit `local/local` staging until Firebase is provisioned; mixed or incomplete
 configurations are rejected before the app container is recreated.
 
+The `connectors` service reads the repositories named in
+`ARCHBRO_GITHUB_CONNECTORS_JSON` and delivers what changed to the Agent. It
+watches **operator-configured repositories only** — it is not driven by the
+per-user GitHub OAuth connection in the app, and people cannot point it at their
+own repositories. With the variable unset, which is the default, every pass is a
+no-op. It serves nothing, so it stays off the tunnel network even though it
+holds the repository credential.
+
 Each environment is a separate Compose project (`archbro-main`, `archbro-dev`),
 so containers, networks, and database volumes never overlap. The stacks join a
 shared external network, `archbro-edge`, which is how the tunnel connectors
