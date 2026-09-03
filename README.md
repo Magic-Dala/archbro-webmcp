@@ -2,7 +2,7 @@
   <img src="docs/img/archbro-logo.png" width="80" alt="Archbro logo" />
 </p>
 
-<h1 align="center">Archbro</h1>
+<h1 align="center">Archbro - WebMCP</h1>
 
 <p align="center">
   <a href="https://github.com/Magic-Dala/archbro-webmcp/actions/workflows/ci.yml">
