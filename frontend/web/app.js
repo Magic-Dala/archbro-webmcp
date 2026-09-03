@@ -87,6 +87,7 @@ state.experience = {
 let activeMcpOAuthPopup = null;
 let mcpOAuthStatusRequestId = 0;
 const MCP_PROVIDER_STATUS_TTL_MS = 5000;
+const MCP_COMING_SOON_PRESETS = new Set(['slack', 'google-drive', 'microsoft-teams', 'custom']);
 const mcpProviderStatusCache = new Map();
 const handledMcpOAuthPopups = new WeakSet();
 
@@ -2723,6 +2724,10 @@ function syncMcpTransportFields() {
   $('mcpStdioFields').classList.toggle('hidden', isHttp);
 }
 
+function isMcpComingSoon(preset = $('mcpPreset').value) {
+  return MCP_COMING_SOON_PRESETS.has(preset);
+}
+
 function mcpOAuthProviderId(preset = $('mcpPreset').value) {
   if (preset === 'github-remote') return 'github';
   if (preset === 'slack') return 'slack';
@@ -2827,6 +2832,35 @@ function renderMcpOAuthStatusShell(preset) {
   };
   $('mcpOAuthDescription').textContent = descriptions[providerId] || 'A provider sign-in window will open.';
   return providerId;
+}
+
+function renderMcpComingSoon(preset) {
+  if ($('mcpPreset').value !== preset) return;
+  const providerId = mcpOAuthProviderId(preset);
+  const oauthMode = Boolean(providerId);
+  $('mcpManualPanel').classList.toggle('hidden', oauthMode);
+  $('mcpOAuthPanel').classList.toggle('hidden', !oauthMode);
+  $('mcpManualConnectBtn').classList.toggle('hidden', oauthMode);
+  $('mcpOAuthConnectBtn').classList.toggle('hidden', !oauthMode);
+
+  if (oauthMode) {
+    const sourceIcon = $('mcpConfigIcon');
+    $('mcpOAuthProviderIcon').innerHTML = sourceIcon?.innerHTML || '';
+    $('mcpOAuthProviderIcon').className = `mcp-oauth-provider-icon ${sourceIcon?.className || ''}`;
+    $('mcpOAuthTitle').textContent = `${$('mcpConfigTitle').textContent} integration`;
+    $('mcpOAuthDescription').textContent = 'This MCP integration is planned for a future ArchBro WebMCP release.';
+    $('mcpOAuthReady').classList.add('hidden');
+    $('mcpProviderSetup').classList.add('hidden');
+    $('mcpOAuthRedirectReady').textContent = '';
+    $('mcpProviderSetupText').textContent = '';
+    delete $('mcpOAuthConnectBtn').dataset.statusRetry;
+    $('mcpOAuthConnectBtn').disabled = true;
+    $('mcpOAuthConnectBtn').textContent = 'Coming soon';
+    return;
+  }
+
+  $('mcpManualConnectBtn').disabled = true;
+  $('mcpManualConnectBtn').textContent = 'Coming soon';
 }
 
 function renderMcpOAuthStatusLoading(preset) {
@@ -2958,6 +2992,10 @@ function applyMcpPreset(preset = $('mcpPreset').value) {
 }
 
 async function loadMcpOAuthStatus(preset = $('mcpPreset').value, {force = false, background = false} = {}) {
+  if (isMcpComingSoon(preset)) {
+    renderMcpComingSoon(preset);
+    return null;
+  }
   const requestId = ++mcpOAuthStatusRequestId;
   const providerId = renderMcpOAuthStatusShell(preset);
   if (!providerId) return null;
@@ -3006,6 +3044,12 @@ function selectMcpPreset(preset) {
   $('mcpConfigTitle').textContent = title;
   $('mcpConfigSubtitle').textContent = subtitle;
   applyMcpPreset(preset);
+  if (isMcpComingSoon(preset)) {
+    renderMcpComingSoon(preset);
+    return;
+  }
+  $('mcpManualConnectBtn').disabled = false;
+  $('mcpManualConnectBtn').textContent = 'Connect MCP';
   void loadMcpOAuthStatus(preset, {background: true});
 }
 
@@ -3058,6 +3102,7 @@ async function startLegacyMcpOAuth(providerId, popup, preset, status) {
 
 async function startMcpOAuth() {
   const preset = $('mcpPreset').value;
+  if (isMcpComingSoon(preset)) return;
   const providerId = mcpOAuthProviderId(preset);
   if (!providerId) return;
   if ($('mcpOAuthConnectBtn').dataset.statusRetry === 'true') {
@@ -3197,6 +3242,7 @@ function openMcpConnections() {
 }
 
 async function addMcpConnection() {
+  if (isMcpComingSoon()) throw new Error('This MCP integration is coming soon.');
   if (mcpOAuthProviderId()) throw new Error('Use the provider sign-in button for GitHub, Slack, Google Drive, or Microsoft Teams.');
   const transport = $('mcpTransport').value;
   const secret = $('mcpBearerToken').value.trim();
