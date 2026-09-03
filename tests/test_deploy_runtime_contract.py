@@ -323,3 +323,51 @@ def test_main_accepts_quoted_contract_with_inline_comments(tmp_path: Path) -> No
         ),
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_webmcp_requires_the_complete_production_contract(tmp_path: Path) -> None:
+    """This repository serves one production surface and has no staging stack.
+
+    Without its own case the stack falls through to the catch-all and deploys
+    whatever the .env happens to say, including local auth.
+    """
+    result = _validate(
+        tmp_path,
+        "archbro-webmcp",
+        "ARCHBRO_ENV=local\nARCHBRO_AUTH_MODE=local\n",
+    )
+
+    assert result.returncode != 0
+    assert "ARCHBRO_ENV=production" in result.stdout + result.stderr
+
+
+def test_webmcp_accepts_a_complete_production_contract(tmp_path: Path) -> None:
+    result = _validate(
+        tmp_path,
+        "archbro-webmcp",
+        "\n".join(
+            [
+                "ARCHBRO_ENV=production",
+                "ARCHBRO_AUTH_MODE=firebase",
+                "FIREBASE_PROJECT_ID=archbro-webmcp-example",
+                "ARCHBRO_FIREBASE_API_KEY=example-key",
+                "ARCHBRO_FIREBASE_AUTH_DOMAIN=archbro-webmcp-example.firebaseapp.com",
+                "",
+            ]
+        ),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_deploy_workflow_serves_only_the_production_surface() -> None:
+    # A staging branch here would deploy a second stack nobody configured, onto
+    # a host that does not exist.
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/deploy.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "archbro-webmcp.magicdala.com" in workflow
+    assert "/opt/archbro/webmcp" in workflow
+    assert "archbro-dev" not in workflow
+    assert "archbro.magicdala.com" not in workflow

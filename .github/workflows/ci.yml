@@ -9,7 +9,7 @@ on:
   push:
     # Re-test the exact merge/squash commit before deployment. PR-head CI alone
     # is not sufficient because the merge commit is a distinct Git object.
-    branches: [main, dev]
+    branches: [main]
   pull_request:
 
 concurrency:
