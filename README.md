@@ -1,4 +1,30 @@
-# Archbro
+<p align="center">
+  <img src="docs/img/archbro-logo.png" width="80" alt="Archbro logo" />
+</p>
+
+<h1 align="center">Archbro - WebMCP</h1>
+
+<p align="center">
+  <a href="https://github.com/Magic-Dala/archbro-webmcp/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/Magic-Dala/archbro-webmcp/ci.yml?branch=main&amp;style=flat-square&amp;label=CI" alt="CI status" />
+  </a>
+  <a href="https://www.python.org/">
+    <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.11 or newer" />
+  </a>
+  <a href="https://fastapi.tiangolo.com/">
+    <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&amp;logo=fastapi&amp;logoColor=white" alt="FastAPI" />
+  </a>
+  <a href="https://github.com/webmachinelearning/webmcp">
+    <img src="https://img.shields.io/badge/WebMCP-Site_Tools-654FF0?style=flat-square" alt="WebMCP Site Tools" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-2ea44f?style=flat-square" alt="MIT license" />
+  </a>
+</p>
+
+<p align="center">
+  <img src="docs/img/Archbro_thumbnail.png" width="960" alt="Archbro project workspace shown on desktop and tablet" />
+</p>
 
 Archbro is a human-guided agentic project workspace where humans and AI agents share one living architecture, execution state, and review boundary.
 
